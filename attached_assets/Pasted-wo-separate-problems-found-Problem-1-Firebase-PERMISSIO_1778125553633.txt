@@ -1,0 +1,31 @@
+wo separate problems found:
+
+Problem 1 — Firebase PERMISSION_DENIED on drivers
+
+[bw-drivers] listener error: PERMISSION_DENIED
+
+The dispatch console cannot read the /online/620611 Firebase path. This means even though D002 is genuinely online and available in Firebase, the dispatch console sees zero Firebase drivers. The driver list used by smartAutoDispatch is empty or stale from Firebase's side.
+
+Problem 2 — autoDispatch feature flag is OFF
+
+"autoDispatch": false
+
+The company settings have auto-dispatch disabled. However, smartAutoDispatch is still looping — which means it's being triggered from somewhere else in the code regardless of this flag.
+
+What you see in the loop:
+
+Job #6112605074 — all available drivers tried, resetting loop
+
+This keeps repeating every few seconds. It's cycling through an effectively empty or unresponsive driver pool, finding no one to offer to (because Firebase drivers can't be read due to permission denied), then resetting and trying again endlessly.
+
+What needs fixing:
+
+Firebase rules — the /online/{companyId} path needs read permission for authenticated dispatcher sessions. This is a database.rules.json issue that requires firebase deploy --only database after fixing the rule.
+
+Feature flag respect — smartAutoDispatch should check autoDispatch flag before looping, or the flag should be turned ON for this company.
+
+Jobs 6112605071 and 6112605073 — these are pre-booked/scheduled jobs. Job 6112605071 was already being skipped correctly earlier: "Skipping pre-booked job — dispatch window opens in 1 min" — so the timing logic is working, it just needs a driver to actually be visible.
+
+Bottom line for your dispatch team: The server is running fine and the jobs are in the queue. The blocker is that the console can't see D002 because Firebase is returning PERMISSION_DENIED on the driver presence path. Fix the Firebase rules first, and the dispatch offers should flow through.
+
+Want me to check and fix the database.rules.json now?

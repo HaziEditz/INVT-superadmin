@@ -1,0 +1,44 @@
+Now I have the full picture. There is no checklist document anywhere — not in the project files and not on the canvas (which has only stacked app iframes). I've audited the actual code instead.
+
+Here is the complete gap analysis — built directly from the codebase — cross-referenced against the dispatcher dev's answers:
+
+The checklist document does not exist in this project. The canvas has only stacked app iframe shapes. I ran the audit directly from the source code.
+
+Firebase Path Reference Table — Built from Code
+Path	Who writes	What is written	When
+rentalTaxiRequests/{key}	server.js	{jobId, status:'dispatching'}	Rental job created
+rentalTaxiRequests/{key}	server.js	{status:'confirmed', assignedDriverId, assignedAt, jobId}	Rental job assigned
+rentalTaxiRequests/{key}	server.js	{status:'cancelled', cancelledAt, jobId}	Rental job cancelled
+notification/{driverId}	Default.aspx	{bookingid, joboffer, jobpickup, jobdropoff, JobphoneNo, jobname, jobbags, jobpassengers, jobvehicletype, jobFare, jobServiceType, jobBookingSrc}	Regular job offered
+jobDetails/{bookingId}	Default.aspx	Same payload as above	Regular job offered
+autodisp/{driverId}	Default.aspx	{bookingid} only	Auto-dispatch offer
+rideStatus/{companyId}/{jobId}	Default.aspx	{RecallStatus, recalledAt, message}	Job recalled only
+activeDispatchers/{companyId}/{sessionKey}	Default.aspx	{email, uid, companyId, loginTime, heartbeat, ip, ua, sessionKey}	Dispatcher heartbeat
+jobs/{companyId}/{vehicleId}/{driverId}	Default.aspx	{Status:'Cancelled', BookingId}	Cancel/away
+adminAccess/{companyId}/{uid}	server.js	true	User registration
+users/{uid}/companyId, companyName	server.js	strings	User registration
+Gaps Against Dispatcher Dev's Answers
+1. "Firebase path for assignment" — INCOMPLETE
+The dev said rentalTaxiRequests/{key}. That's only for rental jobs. For every regular taxi/food/freight/TM job, assignment is not written to Firebase at all — it lives in SQL/in-memory only. The SA portal cannot read current driver assignment from Firebase for regular jobs unless it queries the SQL endpoint.
+
+2. "Assignment writes: driverId, driverName, vehicleId, assignedAt" — WRONG for both types
+
+Rental: writes assignedDriverId, assignedAt, jobId — no driverName, no vehicleId
+Regular: writes nothing to Firebase on assignment — only notification/{driverId} gets the offer payload (before driver accepts), which has no assignedAt
+3. "completedAt gets written" — WRONG for rental, incomplete for regular
+
+Rental is a bug: rentalTaxiRequests/{key} is never patched on completion — only on cancellation and assignment. The SA portal sees the rental record stuck at status:'confirmed' forever after the trip finishes. completedAt is never written to Firebase for rental jobs.
+Regular: JobCompleteTime (UTC ISO) is written on the in-memory job record, visible via the SQL/REST endpoint — but nothing goes to Firebase.
+4. Path inconsistency — notification has two different structures
+
+Default.aspx writes to notification/{driverId} (flat — driverId is the node)
+ChatRoom.js listens on notification/{companyId}/{key} (nested under companyId)
+These are separate Firebase subtrees. A driver app writing a response to notification/{companyId} will be picked up by ChatRoom but not the dispatcher's offer-response listener.
+5. autodisp/{driverId} payload is nearly empty
+Only {bookingid: BookingId} — no pickup, dropoff, fare or any job details. A driver receiving this cannot act on it without a second lookup.
+
+6. jobDetails/{bookingId} has no company isolation
+The path is flat — if two companies ever share a booking ID sequence, writes overwrite each other.
+
+One Bug I Can Fix Right Now
+The rental completion gap (point 3) is a direct revenue risk — SA portal never sees the job complete. I can add the completion patch to server.js now. Want me to fix that immediately?

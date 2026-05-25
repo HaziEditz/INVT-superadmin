@@ -1,0 +1,37 @@
+Here's what to tell dispatch, issue by issue:
+
+On job 6112605072 (Assigned, driver can't see it):
+
+Good — the offline sync patch on your side is the right call. On our end, job 6112605072 (= your Firebase booking 6206112605074, taxi) is confirmed Assigned to D002 (AcceptedAt: 04:39 UTC). The stale "Completed" status your driver's app was reading was written by your offline sync handler before the fix, not by us. No further action needed from our side on this one.
+
+On job 6112605071 (showing as food):
+
+Two separate things are getting conflated by an ID collision — need to untangle them:
+
+Your allbookings job 6112605071 (hail, no ServiceType): We do not read from allbookings for dispatch. The only place we use that path is as a fallback inside the passenger recall notification helper — not for job ingestion. If your app is showing that hail job in your unassigned queue, the source is your own system, not ours.
+
+Our internal job (previously also labeled 6112605071): This was our auto-generated sequential ID for your Firebase booking 6206112605073. The IDs were colliding because our newCompanyJobId() function builds IDs from the company suffix + date + sequence (611 + 260507 + 1 = 6112605071), which matches the format of your external system's real job IDs exactly. This is now fixed — we now use the Firebase BookingId as our internal Id directly, so passenger jobs from Firebase will show as 6206112605073, 6206112605074, etc. — no more collisions with your ASP.NET job numbering.
+
+On the food label for 6206112605073: The passenger app wrote serviceType: 'food' (lowercase) to that Firebase record. Our normalizer reads lowercase serviceType before uppercase ServiceType, so we got 'food'. If you're reading ServiceType: 'taxi' (uppercase), there are two different casing variants in the same Firebase record pointing to different services. This is a passenger app data issue — whichever field the passenger app sets is the true service the passenger booked. Worth verifying with your passenger app team which field they intend as canonical.
+
+Force-remove from our queue: That food job has been removed from our queue as of this restart. Going forward, the clean way to remove a passenger booking from our auto-dispatch is to update its pendingjobs/620611/{bookingId} Status to "Cancelled" in Firebase — our child_changed listener catches that and removes it automatically within seconds.
+
+On the two web booking jobs (6206112605073, 6206112605074):
+
+Both confirmed ingested in the previous session. Current status:
+
+6206112605074 (taxi) — Assigned to D002 ✅ confirmed AcceptedAt 04:39 UTC
+6206112605073 (food) — removed from our queue this restart. Was looping forever because D002 doesn't have food service enabled. See above re: the food label question
+No page reload needed — our once('value') initial re-scan will pick up all three remaining pendingjobs entries the next time the dispatch page loads.
+
+Summary of all code changes made this session:
+
+Fix	Detail
+_pjInit guard bypass	once('value') re-scans all existing Firebase jobs on startup
+Status: "Pending" handling	Client listener + server handler both now accept Pending same as Waiting
+paymentStatus propagation	_normFbJob maps it; both Scheduled and Waiting/Pending jobStore entries carry it through
+serviceType: "tm" ghost job	Corrected to "taxi" in jobstore → D002 dispatched successfully
+ID collision fix	Passenger jobs now use Firebase BookingId as internal Id (13-digit, can't collide)
+Food job removed	Removed from queue; Firebase cancellation path documented
+driverRegistrations Firebase rule	Added to database.rules.json (needs deploy)
+allbookings — no change needed	Only used for recall notifications, not job ingestion — correct

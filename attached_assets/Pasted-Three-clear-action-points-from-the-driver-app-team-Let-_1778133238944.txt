@@ -1,0 +1,50 @@
+Three clear action points from the driver app team. Let me search the codebase in parallel for the FinalFare/fare field names and our job-completion write paths before replying.
+
+
+11 actions
+Let me check the exact completedJobs write shape and what the SA portal reads for fare.
+
+
+9 actions
+I have everything I need. Let me now read the SA portal fare read path to give a complete answer before replying.
+
+
+3 actions
+All findings confirmed. Here's the complete reply to the driver app team on all three points:
+
+Reply — all three points acknowledged and aligned.
+
+1 — rideStatus ownership: confirmed, no conflict
+
+Our live dispatch offer flow does not write rideStatus — that path was never part of our actual writeJobDetailsToFirebase call at offer time. At offer we write:
+
+notification/{driverId} — foreground push
+jobDetails/{cid}/{bookingId} — trip detail payload
+jobs/{cid}/{vehicleId}/{driverId} — offer/accept handshake
+rideStatus only appears in our code at two narrow points: recall notifications (_bwNotifyPassengerRecall) and ETA anchor stamps on offer. Neither conflicts with your lifecycle ownership. Driver app now owns rideStatus/{cid}/{bookingId} from Assigned through Completed — we have no writes in that span. Your table is the canonical contract for that path going forward.
+
+2 — online/ fields: confirmed double-fixed, no issue
+
+Both our side (_bwWriteAssignmentToFirebase) and your side (driver app Promise.all at accept tap) now write current/currentJobId and top-level vehiclestatus: Assigned. Since both use .update() they merge cleanly — last-write-wins on each field, and neither clobbers the other's fields. With both in place, the driver can restart the app at any point post-acceptance and fully reconstruct the active job card.
+
+3 — FinalFare: the field is fare, not FinalFare
+
+FinalFare does not exist anywhere in our codebase — no reads, no writes, no references. The SA portal and payout report read from two Firebase paths:
+
+Firebase path	Field read	Used by
+completedJobs/{cid}/{tripId}	fare (Number)	SA-MasterReport
+driverEarnings/taxi/{cid}/{driverId}	totalEarned, pendingAmount	SA-Payouts, Owner portal
+At trip completion the driver app should write to completedJobs/620611/{bookingId}:
+
+{
+  fare:        <Number — final metered amount>,
+  paymentType: 'cash' | 'card' | 'total_mobility',
+  completedAt: <ISO string or epoch ms>,
+  driverId:    <String>,
+  pickup:      <String>,
+  dropoff:     <String>
+}
+
+That's what SA-MasterReport reads directly. For payout accumulation, driverEarnings/taxi/620611/{driverId} needs totalEarned and pendingAmount incremented by fare — our dispatch console handles that write when it receives the driver's Available status change, but if the driver app writes completedJobs directly (e.g. offline sync), it should also increment driverEarnings or we'll double-count when the Available event arrives.
+
+Recommendation: driver app writes completedJobs/{cid}/{bookingId} at completion; dispatch side reads completedJobs on the Available status change but skips the driverEarnings increment if completedJobs/{bookingId} already exists. That prevents double-counting regardless of which side writes first. We can add that guard on our end if you confirm the driver app is writing completedJobs directly.

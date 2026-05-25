@@ -1,0 +1,68 @@
+Here are the three files in full:
+
+1. artifacts/api-server/src/routes/bookings.ts — What gets written to Firebase
+POST /api/bookings does all Firebase writes.
+
+Fields written to every booking object:
+
+Field	Value
+BookingId	passed-in jobId or auto-generated web-{timestamp}-{random}
+CreatedAt	UTC ISO
+CreatedBy	"WEB"
+CreatedByName	"Web Booking Portal"
+CompanyId / CompanyName	from request
+PassengerName / PassengerPhone / PassengerEmail	from request
+PickAddress / DropAddress	flat strings
+pickupLocation / dropoffLocation	{ address, lat, lng } — geocoded if coords not supplied
+ScheduledFor	ISO UTC; for ASAP bookings this is now
+ScheduledForMs	milliseconds (only if actually scheduled)
+Fare	string "24.50" or ""
+Info	notes string
+ServiceType	"taxi" / "food" / "courier"
+Status	"PaymentPending" (card) / "Scheduled" (scheduled non-card) / "Pending" (ASAP non-card)
+WebBooking	true
+paymentMethod	"card" (explicit) or whichever method was chosen
+paymentStatus	"pending" (card) or the method name (account/acc/tm/giftcard/cash)
+Additional fields spread onto allbookings only:
+
+AssignedDriver: ""
+AssignedVehicle: ""
+Paths written:
+
+Path	When
+pendingjobs/{companyId}/{bookingId}	Immediately — only if NOT a card payment
+allbookings/{companyId}/{bookingId}	Always
+Passengerjobs/{passengerKey}/{bookingId}	Only if passengerKey is provided
+passengerIndex/phone/{normalizedPhone}	Only if passengerKey provided
+passengerIndex/email/{normalizedEmail}	Only if passengerKey + email provided
+2. artifacts/api-server/src/routes/stripe.ts — Stripe session creation
+POST /api/stripe/create-booking-payment accepts: cid, bookingId, description, amount, currency, email
+
+Metadata stored on the Stripe session:
+
+{
+  "bookingId": "<bookingId>",
+  "companyId": "<cid>",
+  "type": "booking_payment"
+}
+
+Note: the field is companyId (not cid) inside the metadata — that's what the webhook reads back at session.metadata.companyId.
+
+Redirect URLs:
+
+Success: https://{domain}/payment-success?booking={bookingId}&cid={cid}
+Cancel: https://{domain}/payment-cancel?booking={bookingId}&cid={cid}
+Webhook (POST /api/stripe/webhook) — on checkout.session.completed:
+
+Reads the full booking from allbookings/{companyId}/{bookingId}
+Writes to allbookings/{companyId}/{bookingId} (update): Status: "Pending", paymentMethod: "card", paymentStatus: "paid", stripeSessionId, paidAt
+Writes full booking (with paid fields merged in) to pendingjobs/{companyId}/{bookingId} — this is the trigger that sends the job to dispatch
+3. artifacts/invercargill-taxis/src/pages/PaymentSuccessPage.tsx — After payment
+This page writes nothing to Firebase itself. It is purely a polling page:
+
+Reads booking and cid from the URL query params
+Polls GET /api/bookings/{bookingId}/payment-status?cid={cid} every 3 seconds
+That endpoint reads allbookings/{cid}/{bookingId}/paymentStatus from Firebase
+When it sees "paid" (written by the webhook), it shows the confirmation screen
+If it hasn't seen "paid" within 45 seconds, shows a soft timeout screen ("Payment received, booking will be dispatched shortly")
+All actual Firebase writes happen in the webhook, not the success page.

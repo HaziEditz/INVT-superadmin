@@ -1,0 +1,29 @@
+Confirmed — and fixed. Three things done:
+
+1. Diagnostic logs added (both listeners)
+
+[Notif] onValue fired — exists: … | path: notification/D002 now fires at the very top of the notification callback, before any guard checks.
+
+[Jobs] onValue fired — exists: … | status: … | bookingId: … now fires at the very top of the jobs-path callback.
+
+These will show immediately in the driver app console the moment Firebase delivers anything to either path — even if the app was backgrounded and reconnected. If neither log appears after dispatch writes the offer, the WebSocket has dropped and the listeners have detached.
+
+2. Root cause found and fixed — the accept modal was never shown from the jobs path
+
+The onValue listener on jobs/{cid}/{vehicleId}/{driverId} was never wired to show the accept/decline modal. When a brand-new offer arrived on that path and the driver was free, the code jumped directly to status: 'current' — skipping setIncomingJob entirely. No popup. The driver was already "on a job" they never agreed to.
+
+Fixed: brand-new offer + free driver now:
+
+Creates the job as status: 'offered'
+Calls setIncomingJob(...) → accept/decline modal appears
+Fires a local push notification if the app is backgrounded
+Writes allbookings/{cid}/{bookingId}/Status: 'Offered' so your console reflects offer delivery
+This mirrors exactly what the notification-path listener already did. Driver-busy path is unchanged (silent offer, badge only, no popup).
+
+3. What to check on your side
+
+If the [Jobs] onValue fired log does not appear after you write the offer:
+
+The listener detached — most likely after a background → foreground cycle caused a Firebase WebSocket reconnect that wasn't re-subscribed
+Confirm whether dispatch is also writing to notification/{vehicleId} (e.g. notification/TAXI02) — if so, the relay copies it to notification/D002 which triggers the notification listener independently of the jobs path
+If [Jobs] onValue fired DOES appear but the modal still doesn't show, the offer is hitting the "already known" dedup guard — meaning the notification listener already handled it first.

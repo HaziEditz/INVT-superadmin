@@ -1,0 +1,31 @@
+Q1 — Which path does our driver availability check use?
+
+Our listener is cars_Ref = firebase.database().ref("online/620611") — that is, the top-level vehicle node (online/620611/TAXI02). The vehiclestatus we read is online/620611/TAXI02/vehiclestatus (the flat top-level field), not current/vehiclestatus.
+
+So your concern is valid and it's a real gap. Here's the precise behaviour:
+
+Live child_changed events (while dispatch page is open): our code has a fallback — if the top-level field says 'Available' but our in-memory scope already has the driver as 'Assigned', we keep 'Assigned'. So mid-session, a stale Firebase 'Available' won't flip D002 back to free.
+On fresh page load (child_added): the top-level value is taken at face value and sent straight to the server via [DriverStatusChanged]. If online/620611/TAXI02/vehiclestatus is still 'Available' at that moment, the server updates ZONE_DRIVERS to 'Available' for D002, and auto-dispatch would immediately try to offer them another job. This is the race condition you're describing.
+What we've just fixed: When D002 accepts a job, _resolveAcceptance now calls _bwWriteAssignmentToFirebase, which writes vehiclestatus: 'Assigned' directly to online/620611/TAXI02 (top-level). So the next time any dispatcher reloads, child_added gets 'Assigned' for TAXI02 — not 'Available' — and the ghost re-offer is blocked. The write fires immediately at acceptance time.
+
+Q2 — Did we write the assignment back to pendingjobs and allbookings?
+
+Before this fix: no. writeJobDetailsToFirebase (on offer) wrote to three Firebase paths — notification/{driverId}, jobs/{companyId}/{vehicleId}/{driverId}, and jobDetails/{companyId}/{bookingId}. On acceptance, _resolveAcceptance called our server's convertstatus(Assigned) — server-internal only. Nothing wrote back to pendingjobs or allbookings. That's why both paths still showed Status: Pending with no AssignedDriver even after D002 accepted.
+
+After this fix: _bwWriteAssignmentToFirebase (called from _resolveAcceptance on acceptance) now writes to:
+
+pendingjobs/620611/{bookingId}   → { Status: 'Assigned', AssignedDriver: 'D002', AssignedAt: <ISO> }
+allbookings/620611/{bookingId}   → { Status: 'Assigned', AssignedDriver: 'D002', AssignedAt: <ISO> }
+online/620611/{vehicleId}        → { vehiclestatus: 'Assigned' }
+
+Since our bookingId is now the 13-digit Firebase BookingId (6206112605074), these paths are exactly what your SA portal and passenger app would expect to read. Firebase rules confirm auth != null is sufficient for both writes — our anonymous auth satisfies that.
+
+For the current job 6206112605074: these writes didn't happen when D002 accepted earlier (the fix wasn't in yet). Your team can manually patch Firebase now: pendingjobs/620611/6206112605074 and allbookings/620611/6206112605074 → { Status: 'Assigned', AssignedDriver: 'D002' }. All future acceptances will write-back automatically.
+
+Summary of what's live in the code now (client-side, active on next page load):
+
+Path written at acceptance	Content
+pendingjobs/620611/{bookingId}	Status: Assigned, AssignedDriver, AssignedAt
+allbookings/620611/{bookingId}	Same
+online/620611/{vehicleId}	vehiclestatus: Assigned
+No server restart needed — these are client-side changes that take effect on the next dispatch page load.

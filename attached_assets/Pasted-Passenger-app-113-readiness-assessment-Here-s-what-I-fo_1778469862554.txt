@@ -1,0 +1,39 @@
+Passenger app — §113 readiness assessment
+
+Here's what I found in the code vs. what the spec requires:
+
+Already in place
+
+What	Status
+expo-camera installed and in use	✅
+expo-image-picker installed (needed for photo capture)	✅
+TMCardScanner component — modal with camera + manual fallback	✅
+Barcode scan auto-fill of card number fields	✅ (partial — covers the "typing always available" fallback requirement)
+Card registry lookup (tmCards/{cardNumber}) before accepting	✅
+Hoist toggle, expiry validation, "from registry" badge	✅
+Gaps against §113
+
+Gap	Blocked by Storage rules?
+Rename "Scan barcode" → "Capture card" in TMCardScanner	No
+Photo capture — spec says camera opens with card overlay and takes a still photo, not a barcode scan. Currently the camera only reads barcodes	No — expo-image-picker is already installed
+OCR auto-fill of TM number from photo — spec calls this out for driver app (ML Kit); passenger app has no OCR library	Possibly defer — barcode scan already fills the number; falling back to manual is spec-compliant
+Save TM card to profile — currently session-only. Spec says "capture once, save to profile, auto-fill on future bookings." There is no users/{uid}/tmCard in Firebase and no auto-fill in the booking screen	No
+"Change" link on the booking screen when a saved card is pre-loaded	No
+Account / ACC photo capture (optional per spec)	No for capture; Yes for upload URL
+cardCaptureMethod field written to booking records	No
+tmCardPhotoUrl, accountCardPhotoUrl, accCardPhotoUrl written to booking records	Yes — Storage rules needed first
+What I can build right now (no Storage rules needed):
+
+Photo capture mode — swap the barcode CameraView for ImagePicker.launchCameraAsync with a card-shaped overlay. Photo is held in local state and shown as a thumbnail. No upload yet — the URL field stays empty until Storage rules land.
+Profile persistence — write the TM card (number, name, expiry, hoist flag, cardCaptureMethod) to users/{uid}/tmCard in RTDB on save. Read it back in the booking screen on mount and pre-fill tmPassengers automatically.
+"Change" link — in the TM card row on the booking screen, when the card came from the profile, show "Saved card — Change" instead of "Add your TM card".
+cardCaptureMethod — add to booking RTDB/Firestore writes ("camera" or "manual").
+Account/ACC — add an optional "Take card photo" button using ImagePicker (thumbnail shown inline, no upload).
+What waits for Storage rules:
+
+Uploading the photo and writing tmCardPhotoUrl / accountCardPhotoUrl / accCardPhotoUrl to booking records. That's a one-function addition once you get the all-clear.
+One question before starting:
+
+The spec says "save to profile, auto-fill on future bookings." For a TM card that's saved to users/{uid}/tmCard, should the booking screen auto-add it to the tmPassengers list when TM mode is toggled on — or should it auto-fill the scanner and let the passenger confirm before adding? Confirming first is safer (card might have expired), but auto-adding is smoother if the registry lookup happens on mount.
+
+Want me to start on the non-Storage work now? I'd do all five items above in one pass.

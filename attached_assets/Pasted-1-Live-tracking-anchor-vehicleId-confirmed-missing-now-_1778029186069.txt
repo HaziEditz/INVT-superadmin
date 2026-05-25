@@ -1,0 +1,27 @@
+1 — Live tracking anchor: vehicleId confirmed missing, now fixed
+
+Two issues found and patched:
+
+Issue A — vehicleId not in the payload at all. writeJobDetailsToFirebase took vehicleId as a parameter but never put it in the notification body. Passenger app had no way to construct online/{cid}/{vid}/current from the job offer or from jobDetails. Fixed — vehicleId and companyId are now written into fullPayload on every dispatch.
+
+Issue B — jobDetails path missing companyId. The record was being written to /jobDetails/{bookingId} — no company isolation. Any passenger app reading /jobDetails/{cid}/{bookingId} would get nothing. Fixed — path is now /jobDetails/{companyId}/{bookingId}.
+
+Note: rideStatus/{cid}/{bookingId} already had vehicleId correctly — that path was fine. Passenger app can use either path now; both are consistent.
+
+Q2 — TM voucher bridge: three-layer gap confirmed, all three fixed
+
+The voucher was being dropped at every handoff point. Here is what was happening and what changed:
+
+Layer	Before	After
+_normFbJob (server ingest)	No TM fields at all — tmVoucherNumbers, tmPassengerName, etc. were all discarded	Now normalises all 10 TM fields; tmVoucherNumbers[] → tmVoucherNo (first element)
+_doSend (job offer builder)	No TM fields passed to writeJobDetailsToFirebase	Now extracts all TM fields from the job object (camelCase + PascalCase aliases)
+writeJobDetailsToFirebase (Firebase write)	No extras key in fullPayload	Now writes extras: { tmVoucherNo, tmPassengerName, tmCardExpiry, tmSubsidy, tmSubsidyHoist, tmPassengerPays, tmHoistRequired, tmHoistCount, tmPaymentMethod } when a voucher number is present
+Driver app now receives extras.tmVoucherNo on dispatched TM trips → will write trips/{cid}/{bookingId} → SA portal subsidy chain is intact.
+
+SA portal master report note — acknowledged, parked correctly
+
+Confirmed: SA-MasterReport.aspx reads completedJobs only. allbookings/{cid} dispatched trips are not included. Revenue and trip counts will be understated. When that report is next touched, it needs the same dual-path merge that Home.aspx uses. No action now — noted for scope.
+
+Parked items — acknowledged
+
+foodOrders/{cid}, freight post-booking tracking, and companies/{cid}/cardSettings all noted. Ready to scope when triggered.

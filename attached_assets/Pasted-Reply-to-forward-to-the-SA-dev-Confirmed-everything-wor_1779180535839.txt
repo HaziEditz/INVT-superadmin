@@ -1,0 +1,66 @@
+Reply to forward to the SA dev
+Confirmed everything works on this end. Reconciliation shape updated to match your plan — see below for the final response contract.
+
+Customer Web URLs to add to your Replit's secrets as CUSTOMER_WEB_URL:
+
+Dev: https://a31693bc-c232-4bb6-9fbc-15a66bef8840-00-mgk4upn2qqfv.picard.replit.dev (the live $REPLIT_DEV_DOMAIN)
+Production: https://bookawaka.com (once published — currently same as dev domain via $REPLIT_DOMAINS)
+Add it with the dev URL for now. Switch to https://bookawaka.com after we deploy. Both routes terminate at the same handlers, so your proxy code is the same either way. No trailing slash; the proxy should call ${CUSTOMER_WEB_URL}/api/admin/wallet/....
+
+Reconciliation response contract (final):
+
+GET /api/admin/wallet/reconciliation?from=ISO&to=ISO
+{
+  "from": "2026-05-01T00:00:00Z" | null,
+  "to":   "2026-05-31T23:59:59Z" | null,
+  "currency": "NZD",
+  "passengerCount": 42,
+  // Date-window-bounded balances — exactly what your sheet wants
+  "openingBalanceCents": 12500,     // sum of entries strictly BEFORE `from`
+  "openingBalance":      125.00,
+  "closingBalanceCents": 18750,     // sum of entries AT OR BEFORE `to`
+  "closingBalance":      187.50,
+  // Positive magnitudes (debits reported as |amount|, not signed-negative)
+  "totalCreditsCents": 9000,
+  "totalCredits":      90.00,
+  "totalDebitsCents":  2750,
+  "totalDebits":       27.50,
+  // Per-reason breakdown — has both your `totalCents` and the credit/debit split
+  "byReason": {
+    "cancellation":      { "count": 7, "creditsCents": 8000, "debitsCents":    0, "totalCents":  8000 },
+    "admin_adjustment":  { "count": 3, "creditsCents": 1000, "debitsCents": 2750, "totalCents": -1750 },
+    "refund_correction": { "count": 1, "creditsCents":    0, "debitsCents":    0, "totalCents":     0 }
+  },
+  // Sanity: live sum of all balanceCents fields right now. Should equal
+  // closingBalanceCents when `to` is omitted or in the future.
+  "snapshotBalanceCents": 18750,
+  "snapshotBalance":      187.50
+}
+
+Identity that always holds for any date window:
+
+closingBalanceCents − openingBalanceCents
+  === totalCreditsCents − totalDebitsCents
+
+Use this as a built-in integrity check in SA-Wallet.aspx — if those two values diverge, something is broken (clock skew on entry timestamps, missing createdAt, etc.) and you should refuse to render the report.
+
+Two notes for your byReason mapping:
+
+byReason["cancellation"] is the Slice 1 cancel-credit entries (passenger cancelled a card-paid ride, fare returned to wallet). These are always pure credits.
+byReason["admin_adjustment"] is the bucket your own /adjust calls write to. To break THAT down by adjustReason (refund_correction / goodwill_credit / dispute_resolution / fraud_clawback / other), pull the walletAdminAudit/{txId} collection — that's where reason is recorded explicitly. The reconciliation endpoint only groups by the top-level reason field on the ledger entry, not the sub-reason. If you want sub-reason breakdown in the report, let me know and I'll add a byAdjustReason block to the response.
+Smoke test handshake from your proxy — try this first:
+
+curl -i -H "X-Admin-Key: $BW_ADMIN_KEY" "$CUSTOMER_WEB_URL/api/admin/wallet/lookup?email=test@test.com"
+
+Expected: HTTP 404 {"error":"Passenger not found"} (no test@test.com in the index — that's the correct handshake signal that the key + URL + path all line up).
+
+Other handshake checks:
+
+Request	Expected
+No X-Admin-Key header	401 {"error":"Unauthorized"}
+Wrong X-Admin-Key	401 {"error":"Unauthorized"}
+Correct key + unknown identifier	404 {"error":"Passenger not found"}
+Correct key + /reconciliation (no dates)	200 + the contract above with zeros
+Go ahead and ship the SA Portal side. The only thing I'll add this side, once you've smoke-tested, is the gotcha entry in replit.md for the audit recovery pattern (ledger entry's auditTxId field is the recovery handle if walletAdminAudit/{txId} write ever fails — surface that in your audit viewer too so support staff know to check both paths).
+
+If you want the byAdjustReason sub-block in reconciliation, say the word and I'll add it in <10min.

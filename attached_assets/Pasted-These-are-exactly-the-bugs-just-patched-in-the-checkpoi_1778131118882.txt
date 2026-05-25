@@ -1,0 +1,17 @@
+These are exactly the bugs just patched in the checkpoint above — the timing of the message overlapped with the fix landing. Here's the precise answer to each of the SA portal's questions:
+
+Issue 1 — tripSummary.fare: 0 in /api/syncOfflineTrip
+
+Two separate causes, both now fixed:
+
+Dispatch trips: stopMeter() runs synchronously and zeros meterSecondsRef/meterDistanceRef before the getGps().then() async callback fires — that's when saveTripSummary was reading them, so it always got 0. Fixed by capturing both refs at the very top of completeJob before stopMeter() is called, then using those captured values in the callback.
+
+Hail trips: saveTripSummary was never called at all in completeHailTrip. The MeterOn journal entry added the job ID to the pending upload list, but with no summary written, uploadPendingTrips sent tripSummary: null → the portal showed fare: 0. Fixed by adding a full saveTripSummary call at the end of completeHailTrip using the already-computed fare, distKm, secs, and tariff breakdown values.
+
+Issue 2 — POST /api/job/sync-offline-trip missing for one trip
+
+That POST only existed in completeJob (dispatch trip path). Hail trips never called it — so whichever of the two trips was a hail trip simply had no code path to fire it. Fixed by adding the identical POST at the end of completeHailTrip, with TotalFare, FareBase, FareTime, FareDistance, FareExtras, JobDistance, FareCurrency, DropAddress, DropLatLng, and Source: 'hail'.
+
+Both completeJob and completeHailTrip also now call runPendingUpload() inside saveTripSummary.then() rather than relying on a reconnect event — this eliminates the race where a reconnect could flush the pending queue before the summary had been written to device storage.
+
+For trip 6112605072 specifically — allbookings/620611/6112605072 already has the correct FinalFare/fare/meterFare written to Firebase by the completeJob allbookings update (that path was always correct). The /api/syncOfflineTrip fare will be correct on the next completed trip.

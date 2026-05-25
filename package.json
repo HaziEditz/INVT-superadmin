@@ -1,0 +1,27 @@
+{
+  "name": "workspace",
+  "version": "1.0.0",
+  "description": "��#\u0000 \u0000I\u0000N\u0000V\u0000T\u0000-\u0000s\u0000u\u0000p\u0000e\u0000r\u0000a\u0000d\u0000m\u0000i\u0000n\u0000\r\u0000 \u0000",
+  "main": "server.ts",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "ts-node server.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@types/express-session": "^1.19.0",
+    "dotenv": "^16.4.7",
+    "express": "^5.2.1",
+    "express-session": "^1.19.0",
+    "resend": "^6.12.2",
+    "stripe": "^22.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.6.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3"
+  }
+}

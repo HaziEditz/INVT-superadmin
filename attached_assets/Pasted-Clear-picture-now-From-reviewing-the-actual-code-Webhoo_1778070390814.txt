@@ -1,0 +1,47 @@
+Clear picture now. From reviewing the actual code:
+
+Webhook — correctly implemented ✅ (lines 106–128 of stripe.ts)
+Stripe redirect — already done ✅ (window.location.href = stripeData.url at line 301 of BookPage)
+Fare estimate — not yet built. No /api/tariffs endpoint exists, and nothing fetches tariff data in the frontend
+Let me check the routes index and then build the tariffs endpoint and frontend display:
+
+
+2 actions
+Building both pieces in parallel — the tariffs API route and the BookPage integration:
+
+
+2 actions
+Now register the new route and update BookPage simultaneously:
+
+
+2 actions
+Now update BookPage to fetch and display the tariff guide:
+
+
+2 actions
+Now add the state, fetch, and the fare guide UI all at once:
+
+
+4 actions
+Now add the fare guide UI to the booking form. I need to place it near the amount field in step 2:
+
+
+2 actions
+Restart the API server to pick up the new tariffs route, and typecheck simultaneously:
+
+
+4 actions
+Both servers clean. Here's the full picture:
+
+Already in place (no changes needed):
+
+Webhook correctly updates Status: "Pending" + writes to pendingjobs on payment completion ✅
+window.location.href = stripeData.url redirect was already on line 301 ✅
+Now built — Fare Guide:
+
+New GET /api/tariffs?cid= endpoint reads tariffs/{companyId} from Firebase, automatically excludes any entry with isTM: true (time-metered tariffs that aren't relevant to a web passenger)
+Returns flag fall, rate per km, and minimum fare for each applicable tariff
+Booking form fetches tariffs silently when a company is selected — if data comes back, a Fare Guide card appears in step 2 above the amount field, showing each tariff's name and rates
+The guide only shows for taxi bookings (not food/courier, where tariff rates don't apply the same way)
+If Firebase has no tariff data for that company, the card simply doesn't render — nothing breaks
+The amount field below it is still there for when a fare has been quoted, and the help text now explicitly says it's required for card payment.

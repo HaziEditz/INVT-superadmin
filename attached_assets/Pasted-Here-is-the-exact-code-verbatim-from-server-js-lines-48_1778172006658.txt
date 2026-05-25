@@ -1,0 +1,64 @@
+Here is the exact code, verbatim from server.js lines 4807–4872:
+
+Step 1 — resolve _cjPayMethod (line 4807–4814)
+// §108d — resolve paymentType correctly for web (card) bookings.
+// Web booking jobs carry paymentMethod:'card' + paymentStatus:'paid' but
+// do NOT have PaymentType/paymentType (those are TM-specific fields).
+// Priority: PaymentType > paymentType > paymentMethod > PaymentMethod > 'cash'
+const _cjPayMethod = (
+  job.PaymentType   || job.paymentType   ||
+  job.PaymentMethod || job.paymentMethod || 'cash'
+).toLowerCase();
+
+Four-field priority chain, always lowercased, hard-fallback to 'cash'.
+
+Job origin	Field that wins
+TM (Total Mobility)	job.PaymentType = 'total_mobility'
+Cash dispatcher job	job.paymentMethod = 'cash'
+Web booking (Stripe)	job.PaymentMethod = 'card' or job.paymentMethod = 'card'
+None of the above	'cash' (hardcoded default)
+Step 2 — _cjPayMethod stamped into _dscCompletedJob (lines 4825–4828)
+_dscCompletedJob = {
+  // ...
+  paymentType:    _cjPayMethod,    // same value, both fields always written
+  paymentMethod:  _cjPayMethod,
+  paymentStatus:  job.paymentStatus || job.PaymentStatus || '',
+  stripeChargeId: job.stripeChargeId || job.StripeChargeId || null,
+  // ...
+};
+
+This object is returned to the dispatch client in the AJAX response. The client then writes completedJobs/{cid}/{tripId} using it.
+
+Step 3 — server patches allbookings directly (lines 4848–4872, §108d IIFE)
+(function _patchAllbookingsCompletion(j, cid, pm) {
+  getFirebaseServerToken().then(function(tok) {
+    if (!tok || !cid || !j.Id) return;
+    const _abPatch = {
+      Status:        'Completed',
+      paymentMethod: pm,         // ← _cjPayMethod, lowercased
+      PaymentMethod: pm,         // ← both cases always written
+      completedAt:   j.JobCompleteTime || new Date().toISOString(),
+    };
+    // paymentStatus only written if present on the job
+    if (j.paymentStatus || j.PaymentStatus) {
+      _abPatch.paymentStatus = j.paymentStatus || j.PaymentStatus;
+      _abPatch.PaymentStatus = j.paymentStatus || j.PaymentStatus;
+    }
+    // stripeChargeId only written if present on the job
+    if (j.stripeChargeId || j.StripeChargeId) {
+      _abPatch.stripeChargeId = j.stripeChargeId || j.StripeChargeId;
+    }
+    firebaseDbPatch(`allbookings/${cid}/${j.Id}`, _abPatch, tok);
+  });
+})(job, sessionCompanyId, _cjPayMethod);
+
+What this means for the SA portal
+Field	Always written at completion?	Value
+Status	Yes	'Completed'
+paymentMethod	Yes	resolved chain above (lowercased)
+PaymentMethod	Yes	same value
+completedAt	Yes	ISO string
+paymentStatus	Only if non-empty on job	'paid' for Stripe/web jobs
+PaymentStatus	Only if non-empty on job	same
+stripeChargeId	Only if present on job	Stripe charge ID
+Root cause of §108d: before this fix, the completion path only wrote Status:'Completed' to allbookings and left paymentMethod as whatever was stored at booking-creation time — which for web bookings was whatever the Stripe webhook wrote (sometimes 'card', sometimes absent). The IIFE now always writes both cases of paymentMethod using the four-field resolution chain, server-side, using a service-account token so it fires even if the dispatcher's browser session has expired.

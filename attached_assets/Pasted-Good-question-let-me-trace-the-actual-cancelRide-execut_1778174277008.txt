@@ -1,0 +1,34 @@
+Good question — let me trace the actual cancelRide execution path in RideContext.tsx to see what happens when willRefund is true:
+
+
+2 actions
+I can see cancelRide checks paidByCard before calling updateWallet. Let me read the full function to see exactly how paidByCard is defined:
+
+
+2 actions
+Found it. There's a follow-on bug right there. Line 997:
+
+const paidByCard = activeRide.payment === "card" || activeRide.payment === "wallet";
+
+"gift_card" is not in paidByCard. So the flow for a gift card cancellation in the grace window is:
+
+computeCancelPolicy → outcome "refund" ✓ (we just fixed that)
+policy.outcome === "refund" && paidByCard → false — falls into the else branch
+Passenger sees "Your booking has been cancelled." with no refund notification and no wallet credit issued
+The intended model is clearly Model 2 — wallet credit: updateWallet(activeRide.fare) is the refund mechanism. No SA portal work is needed. The gift card itself is a consumed voucher (one-time use), so the refund goes to wallet credit, same as a card payment. I'm fixing paidByCard now:
+
+
+4 actions
+Clean. Here's the definitive answer to §115-OPEN:
+
+Model 2 — Wallet credit. No SA portal work needed.
+
+The full execution path for a gift card cancellation within the grace window is now:
+
+computeCancelPolicy → outcome: "refund" ✓ (fixed in the previous round)
+paidByCard check in cancelRide → now includes "gift_card" ✓ (fixed just now)
+updateWallet(activeRide.fare) is called → fare credited to passenger's in-app wallet balance in Firebase
+Passenger sees the "Fare Refunded — $X.XX has been added to your wallet." notification
+The gift card itself is treated as consumed/spent (one-time use voucher). The refund does not restore the gift card balance — it goes to wallet credit, which is the same behaviour as a card payment cancellation. SA portal does not need to be involved in this flow at all, and does not need a refund UI for this case.
+
+The bug that was there before this fix: computeCancelPolicy was returning "refund" (correct intent), but cancelRide was silently falling into the else branch and showing a plain "Your booking has been cancelled" with zero money movement — the passenger's fare just disappeared.

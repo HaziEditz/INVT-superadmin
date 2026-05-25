@@ -1,0 +1,246 @@
+No building. Here is the complete agreed flow — everything discussed, every team, every connection, in one document.
+
+BookaWaka — Full Platform Flow & Developer Responsibilities
+The Platform in One Picture
+SUPER ADMIN PANEL
+  └── Creates companies, manages subscriptions, platform settings
+         │
+         ▼
+OWNER / MANAGER PANEL  (per company)
+  └── Manages: drivers, vehicles, tariffs, zones
+  └── Manages: Business Accounts + ACC Clients + PO records
+  └── Runs reports, billing, invoices to ACC
+         │
+         ▼
+DISPATCHER CONSOLE  (per company)
+  └── Creates jobs, assigns drivers
+  └── Searches ACC/Account/Passenger records (read-only lookup)
+  └── Monitors live map, job board
+         │
+         ▼
+DRIVER APP  (mobile, per driver)
+  └── Receives jobs, navigates, completes trips
+  └── Reports status back in real time
+         │
+         ▼
+PASSENGER APP / WEBSITE
+  └── Self-books rides
+  └── Tracks driver
+  └── Pays or uses account credit
+
+1. Super Admin Panel — What This Dev Builds
+Audience: The platform owner (you / BookaWaka team). Not individual taxi companies.
+
+Responsibilities:
+
+Create and manage Companies (multi-tenant — each taxi company is a tenant)
+Assign a Company ID to each tenant
+Set which modules each company has access to (ACC module, Accounts module, Passenger App module, etc.)
+Set subscription plans and billing for each company
+Platform-wide settings: maps API, Firebase config, SMS gateway
+Can view/support any company's data for support purposes
+Does NOT touch: Individual jobs, drivers, ACC records, accounts — those belong to each company
+
+Key rule for this dev: Every database table must have a company_id column. All queries filter by it. No company ever sees another company's data.
+
+2. Owner / Manager Panel — What This Dev Builds
+Audience: The taxi company owner or office manager (e.g. Invercargill Taxis Ltd)
+
+Responsibilities (existing + to build):
+
+Drivers & Vehicles (likely already exists)
+Add/edit drivers, vehicles, zones, tariffs
+Business Accounts tab (to build)
+Create a corporate account: company name, contact, email, payment terms
+System assigns an Account ID
+Can deactivate accounts
+Dispatcher searches this and attaches to jobs
+ACC Clients tab (to build — the main new work)
+ACC Client record (permanent — one per injured person):
+
+Full name, phone number
+Claim number ← permanent, never changes
+Service code (PACS2, PACT1, etc.)
+Wheelchair required (yes/no)
+General notes
+Purchase Orders — linked to that client:
+Each time ACC sends a new approval letter/email, owner adds a new PO row:
+
+PO number
+Date from → Date to
+Qty approved (total trips or trips per week)
+Max price per trip (if specified)
+Approved pickup address
+Approved dropoff address
+Manager name (Jan Legg, Barbara C, John Carter, etc.)
+Manager email
+Manager phone + extension
+Branch / city (Invercargill, Hamilton, Dunedin, Taupo, Remote, etc.)
+Status: Active / Expired / Upcoming (auto-calculated from dates)
+Rules this dev must enforce:
+
+Only one PO per client can be Active at a time (by date range)
+When a renewal comes in — add new PO, old one auto-expires
+Client address can change per renewal — store address on the PO, not the client record
+Trips used auto-decrements when a job is completed against that PO
+Reporting & Billing tab (to build)
+End of month: select date range → system groups all completed ACC jobs by claim number → finds the active PO for each job date → generates invoice per PO
+Invoice contains: client name, claim #, PO #, each trip (date / pickup / dropoff / amount), total
+Send button → emails invoice to the manager email address stored on that PO
+For Business Accounts: same flow but invoice goes to the company billing contact
+3. Dispatcher Console — What This Dev Builds (that's me — current work)
+Audience: The dispatcher on duty, watching the live board, creating jobs
+
+How ACC and Accounts connect to the dispatcher:
+
+The Customer Search box in the Create Job form searches three things at once:
+
+ACC records → returns matching clients by claim number, name, or phone
+Business Accounts → returns matching accounts by name, ID, or phone
+Past passengers → returns anyone who has ridden before, by name, phone, or address
+When dispatcher picks an ACC result:
+
+Claim #, Remain (trips left), client name, phone fill in automatically — read-only
+System finds the active PO for today — checks it's not expired, trips remain
+If expired or no trips: error shown, cannot proceed
+Approved addresses can optionally pre-fill pickup/dropoff (to build)
+When dispatcher picks a Business Account:
+
+Account ID, name, phone, email fill in — displayed so dispatcher can confirm
+When dispatcher picks a Past Passenger:
+
+Name, phone, email fill in — no claim, no account
+Current known bug (to fix when ready):
+
+Account ID, Claim #, Remain fields use value= not ng-model in AngularJS — display doesn't update reactively. Data saves correctly but dispatcher can't see it. Simple fix — swap to ng-model.
+Dispatcher does NOT:
+
+Create ACC clients or POs (that's Owner Panel)
+Edit claim numbers or trip counts (read-only)
+Manage accounts (that's Owner Panel)
+4. Driver App — What This Dev Builds
+Audience: The driver on their phone
+
+Responsibilities:
+
+Receive job offer (accept / reject)
+See job details: pickup address, dropoff, passenger name, phone
+Navigate (Google Maps hand-off)
+Update job status: On Way → Arrived → Passenger On Board → Completed
+If job is ACC-funded: driver sees it is ACC but does not see claim numbers or PO details
+If job requires wheelchair: app flags it clearly on the job card
+End of shift: summary of completed trips
+Key connection:
+
+When driver marks Completed → system decrements the trips remaining on the active PO (if ACC job)
+Status updates fire back to dispatcher console in real time via Firebase
+Does NOT handle: billing, account management, passenger registration
+
+5. Passenger App & Website — What This Dev Builds
+Audience: The end passenger booking their own ride
+
+Responsibilities:
+
+Register with name, phone, email, address
+Book a ride: pickup, dropoff, now or later
+Track driver on map
+Pay by card (Stripe) or use credit
+View booking history
+If they are an ACC client: they book normally — the taxi company links their booking to the ACC claim on the back end (passenger doesn't manage their own claim)
+Key connection:
+
+When a passenger self-books, the job appears in the Dispatcher Console as an unassigned job — dispatcher (or auto-dispatch) picks it up
+Passenger record is searchable from the dispatcher's Customer Search — so dispatcher can pre-fill their details on manual bookings too
+Does NOT handle: ACC claims, corporate accounts — those are company-side records
+
+The Shared Database Rules (Every Dev Must Follow)
+All data must have a company_id — no exceptions. This is what keeps each taxi company's data separate.
+
+Table	Key fields	Owned by
+companies	id, name, modules, plan	Super Admin
+drivers	id, company_id, name, vehicle	Owner Panel
+vehicles	id, company_id, type, plate	Owner Panel
+tariffs	id, company_id, name, rate	Owner Panel
+business_accounts	id, company_id, name, email, billing	Owner Panel
+acc_clients	id, company_id, name, phone, claim_number, service_code, wheelchair	Owner Panel
+acc_purchase_orders	id, acc_client_id, company_id, po_number, date_from, date_to, qty, max_price, pickup_addr, dropoff_addr, manager_name, manager_email, manager_phone, branch, trips_used	Owner Panel
+passengers	id, company_id, name, phone, email, address	Passenger App
+jobs	id, company_id, acc_client_id, po_id, account_id, passenger_id, driver_id, pickup, dropoff, fare, status, date	Dispatcher/Driver
+Build Order (Once Agreed)
+Priority	What	Who
+1	ACC Client + PO data model in database	All devs align on schema first
+2	Owner Panel — ACC Clients tab (create, view, add POs)	Owner dev
+3	Owner Panel — Business Accounts tab	Owner dev
+4	Dispatcher — fix Account ID / Claim # display bug (ng-model)	Dispatcher dev (me)
+5	Dispatcher — approved addresses pre-fill from active PO	Dispatcher dev
+6	Driver App — wheelchair flag, ACC job indicator	Driver app dev
+7	Owner Panel — end of month billing / invoice send	Owner dev
+8	Passenger App — self-booking, history	Passenger dev
+9	Super Admin — company modules, subscriptions	Super Admin dev
+What to Share With Every Developer Right Now
+Before anyone writes a single line of code:
+
+The database schema above — especially the company_id rule and the acc_clients + acc_purchase_orders split
+The Claim vs PO distinction — claim number = person forever, PO = funded period, changes on renewal
+The job record must store both acc_client_id AND po_id so billing can always trace which approval period a trip fell under
+The vendor ID VEND-VAI714 — this is your ACC supplier ID, it goes on all invoices you send to ACC
+Read-only rule — dispatchers look up, owners manage, never the other way around
+When you're ready to share the ACC invoice email format (what you send to ACC), I can design the billing output to match it exactly. And once you say go, we start with the database schema and the Owner Panel ACC tab.
+
+BEFOE WE GO ADD NOT BUILDING YET .THERE IS ACC TAB ON TOP BAR OF THE DISPATCH HAVE LOOK FIRST IF ITS NO GOOD WE WILL DELATE IT AND THEN DO OUR ONE WE DECIDED IN?
+
+4 minutes ago
+
+Finding dispatcher console tab
+No building. Let me find and read the existing ACC tab before anything else.
+
+
+6 actions
+Let me read the remaining tabs — ACC Claim and Approvals — before giving you the full assessment.
+
+
+7 actions
+Good that you checked first. Here is exactly what is there, what's right, what's missing, and what's in the wrong place — no building.
+
+What's Already in the ACC Tab (4 sub-tabs)
+Tab 1 — Manager
+Creates an ACC Recovery Partner record:
+
+Manager name, address, phone, email, PO Box, registration date, branch code, country
+Tab 2 — Client
+Creates a client — but forces you to pick a Manager first, then enter:
+
+Client name, address, phone, registration date
+Tab 3 — ACC Claim
+Links a claim to a client — forces Manager → Client selection first, then:
+
+ACC ID, service code, route status (one-way / round trip), claim number, from date, qty approved
+(truncated — likely has a To date too)
+Tab 4 — Approvals
+View all approvals — reads from backend on click
+
+What's Good
+The idea of Manager → Client → Claim as a hierarchy is roughly right
+Manager has email, phone, branch — those are needed
+Client has name, address, phone — correct
+Claim has claim number, service code, qty, date range — correct bones
+The Approvals list view is genuinely useful for a dispatcher to look something up
+What's Wrong or Missing
+Problem	Detail
+Wrong location	Creating ACC records belongs in the Owner Panel, not the Dispatcher Console. A dispatcher should only search and pick — not create or manage.
+No Purchase Order concept	There's no distinction between the permanent Claim number and the PO number that changes on renewal. Right now it's all one record — so when a client renews you'd have no way to track history
+Manager is too rigid	Currently a manager is created once and then picked from a list. But the same client can have a different manager on each renewal. Manager details belong on the PO record, not as a separate master entity
+Missing fields from real ACC letters	No PO number, no max price per trip, no approved pickup address, no approved dropoff address, no wheelchair flag, no trips-used counter
+Branch code not city name	Has "branch code" — your real letters show city names (Invercargill, Hamilton, Dunedin, Taupo, Remote)
+No renewal tracking	No way to add a new period for the same client when their PO renews — would create a duplicate client each time
+No trips used counter	Qty approved is stored but there's no running total of trips used vs remaining
+No billing output	No connection to end-of-month invoice generation
+The Verdict
+Don't delete it yet — the data it has already stored (if any managers/clients/claims have been entered) needs to be preserved or migrated. But the structure needs to be rebuilt properly.
+
+The right move when you're ready to build:
+
+Move the create/manage screens (Manager, Client, Claim) to the Owner Panel — rebuilt with all the missing fields and the Claim vs PO distinction
+Keep the Approvals view tab in the Dispatcher Console — it's the right place for a dispatcher to look up an existing ACC record while creating a job
+The dispatcher search (Customer Search box already in the Create Job form) stays as the day-to-day tool — the ACC tab lookup is for when they need more detail
+Before we touch it: have any real ACC clients, managers or claims been entered into this tab already? If yes, we need to export that data first before restructuring. If it's empty/test data, we can rebuild freely.

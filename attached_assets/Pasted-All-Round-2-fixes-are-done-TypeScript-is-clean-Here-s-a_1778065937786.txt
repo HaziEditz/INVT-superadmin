@@ -1,0 +1,25 @@
+All Round 2 fixes are done. TypeScript is clean. Here's a full summary of everything that was implemented:
+
+BUG R4 — Chat double-messages ✅
+sendChatMessage now writes only to driverMsg/{companyId} + messages/{companyId} — both online and offline queued paths. All notification/ and chat/ writes have been removed. The backward-compat relay was copying notification/D002 → TAXI02, so every message was hitting dispatch twice.
+
+BUG R6 — Wrong error message when job server fails ✅
+requestCentralJobId now returns a rich JobIdResult type ({ ok: true, jobId } or { ok: false, networkError, serverError? }). The startHailTrip function shows three distinct alerts:
+
+Device offline → "Your device appears to be offline"
+SA portal returned an error → shows the actual server message
+Server timed out (device online) → "The booking server is not responding"
+BUG R7 — Meter stops when network drops ✅
+Confirmed the meter setInterval tick has zero network calls and cannot be affected by connectivity drops. Added comment to this effect. The only network dependency is trip completion, which is now covered by R8.
+
+BUG R8 — Completed trips lost offline ✅
+completeHailTrip now: (1) detects offline → enqueues all writes to AsyncStorage immediately; (2) if online, tries 3× with 1.5s backoff; (3) falls back to queue + alert on persistent failure. Queue flushes automatically on reconnect via the existing flushQueue mechanism.
+
+BUG R9 — Food job type in hail ✅
+Already fixed in Round 1 — no action needed. openHailModal always resets hailBookingType = 'taxi' and the type selector has been removed from the UI.
+
+BUG R10 — TM tariff carries to next trip ✅
+completeHailTrip now resets activeTariffRef.current + the tariff state to the first non-TM tariff immediately after stopMeter(), so every hail trip opens with a clean tariff regardless of what the previous trip used.
+
+BUG R11 — Card payments fail (wrong Stripe keys) ✅
+stripeServer.js now has a GET /api/payment-config?cid endpoint that reads stripeConfig/{cid} from Firebase RTDB and returns the company's publishable key. The POST /api/stripe/charge handler prefers company-specific Stripe keys (from Firebase) over the Replit connector, falling back gracefully. PaymentCapture fetches the config when card payment is selected and shows an amber warning if Stripe isn't configured for the company. chargeCard now passes companyId through to the server.

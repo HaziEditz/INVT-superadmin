@@ -1,0 +1,24 @@
+✅ Already working — no changes needed:
+
+Item	Finding
+All booking types in queue	buildJobListResponse has no type filter — taxi, food, freight, TM all appear. UI already has colour badges (food=green, freight=orange, TM=purple) and the correct icon per type.
+TM jobs flagged in UI	TM badge on every queue card when PaymentType==='total_mobility'. Purple left border on the job card. Full TM detail panel in the job popup: voucher number, passenger name, card expiry, subsidy, passenger-pays amount, hoist fields.
+Assignment fields match driver app	writeJobDetailsToFirebase is called on every assignment path and writes: pickup, dropoff, phone, name, bags, passengers, vehicleType, serviceType, bookingSource, status, u_id. Also writes rideStatus/{cid}/{jobId} with driverId, vehicleId, updatedAt. Field names match driver app expectations.
+Recall status written to rideStatus	rideStatus/{cid}/{jobId} gets .update({ RecallStatus:'Recalled', recalledAt, message }) — uses .update() not .set() so existing fields (driverId, status) are preserved. Path is correct.
+🔴 Gaps fixed:
+
+1. Food/freight orders appeared in queue without service type badge
+
+_normFbJob (the Firebase→jobStore normaliser) was dropping serviceType and bookingType entirely. Fixed — it now reads serviceType, ServiceType, bookingType, BookingType from the Firebase record with alias mapping (delivery→freight, restaurant→food). Both the Scheduled and Waiting ingest paths now store serviceType and bookingType on the job, so queue cards render the correct colour badge immediately.
+
+2. Tow alert never reached the dispatcher
+
+There was no towRequests listener anywhere in the codebase. Fixed — added a towRequests/{companyId} Firebase listener. When a new tow request arrives:
+
+A red banner alert appears at the top of the dispatch screen with: 🚨 Tow alert from {driver} (vehicle X) — {location} — {note} at {time}
+The new-job sound plays
+Banner stays visible for 30 seconds
+Firebase node gets _dispatcherAlerted: true so a reconnect doesn't re-fire the same alert
+One item needing driver app field confirmation:
+
+The assignment write includes serviceType from the job record. Confirm the driver app reads serviceType (lowercase) from jobDetails/{cid}/{bookingId} — if it reads ServiceType (capital S) or bookingType, we need a one-line alias on the write side.

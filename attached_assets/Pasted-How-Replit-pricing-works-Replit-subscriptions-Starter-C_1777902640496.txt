@@ -1,0 +1,83 @@
+How Replit pricing works
+Replit subscriptions (Starter, Core, or Pro) determine your base access and monthly credit allowance.
+
+‍
+
+Once you run out of credits, you can either purchase a credit pack or you'll be charged for additional usage at pay-as-you-go rates.
+
+‍
+
+That means your real cost depends heavily on how often you call the Agent and the amount of traffic your app gets.
+
+Replit pricing plans breakdown
+Replit has three pricing plans:
+
+Starter is great for testing out Replit and publishing your first project.
+Core is the natural entry point if you want full agent access.
+Pro makes sense for small groups that need collaboration features and centralized billing.‍
+In the breakdown below, I’ll walk through what’s included in every plan, who it’s best for, and its pros and cons.
+
+Starter plan: $0
+Best for: Building and publishing your first app in Replit.
+
+What’s included:
+Access to the Replit IDE in the browser.
+Daily credits for agent usage up to a monthly cap
+1 free published app
+Access to build and design mode
+Pros:
+You can experiment with the Agent.
+You can publish your app once you finish building.
+Cons:
+Links to published apps automatically go down after 30 days.
+No autonomous mode, so agent can’t work independently/
+Core plan: $17/month billed annually
+Best for: Solo developers or hobbyists who want autonomous agent mode for hands-off development and the option to publish unlimited apps.
+
+What’s included:
+Autonomous long builds
+Up to 5 collaborators
+Unlimited workspaces
+Option to remove Made with Replit badge
+Pros:
+Option to pay as you go once you run out of credits
+Unlimited published apps
+Access to third-party connectors to connect with external services like Stripe
+Ability to convert designs into apps
+Cons:
+Costs can add up quickly with heavy Agent or storage use.
+Pro plan: $95/month (up to 15 builders), billed annually
+Best for: Small teams that want to collaborate on projects and enjoy shared billing
+
+What’s included:
+Everything in Core
+100 monthly credits
+Up to 15 collaborators
+Private deployments
+Up to 28 days of data retention
+Credit rollovers for one month
+Pros:
+Pooled credits from the admin’s account.
+Option to choose Economy or Power modes to optimize for cost or capability.
+Collaborative workspaces where you can organize apps and track usage per workspace.
+Cons:
+It doesn't include Single Sign-On (SSO), which some teams may require.
+Heavy usage triggers overage charges if credits run out.
+Enterprise: Custom pricing
+Replit removed its public-facing enterprise plan from the pricing page. You will have to contact their sales team for more information.
+
+‍
+
+See how Appsmith pricing compares.
+
+Which Replit plan should your enterprise choose?
+The core plan is the best starting plan for individuals. Teams and orgs should pick either the Pro or Enterprise plans.
+
+‍
+
+We recommend you:
+
+Choose Starter if you only want to publish one app and don’t mind the daily cap on your agent usage.
+Choose Core for serious development with the option to publish as many apps as you want.
+Choose Pro if you are a small team and want to create collaborative workspaces and enjoy better per-developer with pooled credits and credit rollovers.
+Choose Enterprise if you are a large organization that requires compliance features and dedicated support.

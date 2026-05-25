@@ -1,0 +1,22 @@
+Owner portal position — do both, Option B is already live:
+
+Option B is already the portal's current behaviour, not a change that needs to be made. The filter at both report pages works like this:
+
+hail job has bookingType: "food"  →  appears in Food Delivery report  ✅
+hail job has bookingType: "freight"  →  appears in Freight report  ✅
+hail job has no bookingType, description has no food/freight keywords  →  excluded from food/freight reports, visible in Closed Jobs  ✅ (Option B default)
+hail job has no bookingType, but description contains "food" / "meal" / "restaurant" / "deliver" / "freight" / "parcel" / "cargo"  →  classified by description text as partial fallback
+
+The "no bookingType = taxi" rule is already enforced. Nothing is miscategorised. Under-reporting is the only impact — hail food/freight trips with no keywords in the description will not appear in the food/freight pages. That's known and acceptable under Option B.
+
+When the driver app ships Option A, the portal picks it up automatically. No owner portal change will be needed — bookingType is already the first field the filter reads.
+
+Recommended reply to send back:
+
+Owner portal: Option B is already the portal's live default — no code change needed on our side. Hail jobs with no bookingType and no matching description text are excluded from the food/freight report pages and appear only in the general Closed Jobs report. Nothing is miscategorised; some hail food/freight trips are just not counted in the specialist pages until Option A lands.
+
+When the driver app ships Option A, the portal will pick up bookingType automatically from completedJobs — no further owner portal work required.
+
+Recommendation: ship Option B as the current state (already done), and treat Option A as a driver app sprint item. Once it's live, hail food/freight reporting becomes accurate with no additional portal changes.
+
+Audit item 6 can be marked ✅ for the owner portal side. The remaining open item is solely the driver app shipping Option A.

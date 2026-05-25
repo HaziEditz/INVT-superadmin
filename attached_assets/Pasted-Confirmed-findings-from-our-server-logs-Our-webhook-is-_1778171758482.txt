@@ -1,0 +1,27 @@
+Confirmed findings from our server logs:
+
+Our webhook is receiving calls from Stripe but returning 503 on every hit. Here's the exact sequence from a real test payment that just ran:
+
+15:17:40 — Booking created (bookingId: 6206112605076, companyId: 620611)
+15:17:41 — Stripe Checkout session created ✓
+15:18:38 — Stripe POSTs to our webhook → 503 returned
+15:18:55→15:19:35 — Success page polls /payment-status 15 times
+           → paymentStatus never changed from "pending"
+           → Booking was never dispatched to pendingjobs
+
+The reason our webhook is returning 503: The code checks if (!stripeKey || !webhookSecret) and returns 503 if either is missing. STRIPE_SECRET_KEY is working (the checkout session was created successfully). STRIPE_WEBHOOK_SECRET is not set in the environment — that's why every webhook call fails.
+
+Bottom line for the SA team:
+
+Our webhook is NOT currently writing to Firebase — it rejects every call with a 503 before any database work happens
+The SA portal's webhook is currently the only active handler — if card payments are completing and appearing in dispatch at all, that's entirely the SA side
+There is no race condition right now — but there would be the moment we set STRIPE_WEBHOOK_SECRET, because both webhooks would then write to allbookings and pendingjobs on the same event
+Recommended resolution:
+
+We set STRIPE_WEBHOOK_SECRET in our environment (needed before going live)
+The SA portal filters out booking_payment events from their webhook handling — specifically, skip any event where session.metadata.type === "booking_payment" — those are exclusively ours
+Alternatively, in Stripe Dashboard, the SA portal's webhook endpoint can be configured to only receive event types that don't include the web booking events
+The webhook URL Stripe is currently calling on our side is:
+https://a31693bc-c232-4bb6-9fbc-15a66bef8840-00-mgk4upn2qqfv.picard.replit.dev/api/stripe/webhook
+
+Note this is the development URL — it will be different once the app is deployed to production. The production webhook URL will need to be registered in Stripe Dashboard separately.

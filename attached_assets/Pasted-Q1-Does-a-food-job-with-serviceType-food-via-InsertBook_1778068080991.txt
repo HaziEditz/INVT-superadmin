@@ -1,0 +1,15 @@
+Q1: Does a food job with serviceType: "food" via InsertBookingv4 appear in the food delivery panel?
+
+Was: ❌ No. Now: ✅ Fixed.
+
+There was a bug in the server — the delivery panel's data query ([deviUnAssignedJobsv2]) only matched jobs where BookingType === 'Delivery' or BookingSource === 'Delivery App'. A job created via InsertBookingv4 with serviceType: 'food' never set either of those, so it silently landed in the main Unassigned tab and never appeared in the food delivery panel. Fixed — the filter now also matches serviceType === 'food' (and 'freight').
+
+Q2: Does smartAutoDispatch pick up food jobs from Firebase paths or SQL?
+
+SQL only — always. Specifically AutoDispatchVehiclesallride, polled every 10 seconds. Firebase is ingest-only, not a dispatch source.
+
+But while checking this, a second bug was found and fixed: AutoDispatchVehiclesallride was returning job objects that stripped serviceType entirely. So on the client, job.serviceType always fell back to 'taxi', meaning the _bwCanDriverDoService gate that should restrict food jobs to food-capable drivers was silently bypassed — food jobs were being offered to taxi drivers. Fixed — serviceType, BookingSource, paymentStatus, DispatchTimebefore, and BookingDateTime are now all included in the returned job objects. This also fully activates the BUG 2 (dispatch window) and BUG 7 (payment gate) client-side filters from the previous round.
+
+Does the web booking site's Firebase-based pendingjobs flow work for food?
+
+Yes — end-to-end. If the site writes to pendingjobs/{cid}/{key} with serviceType: 'food', the dispatcher's Firebase listener fires, calls [IngestPassengerJob], _normFbJob() preserves serviceType: 'food' (it even maps 'restaurant' → 'food'), the SQL job record is created, AutoDispatchVehiclesallride picks it up within 10s, and smartAutoDispatch now correctly gates it to food-capable drivers only. The web site does not need a separate InsertBookingv4 call if it uses the pendingjobs path. Both paths now work correctly end-to-end.

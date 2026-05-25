@@ -1,0 +1,39 @@
+Timezone fixes — what was done (two commits):
+
+All the patterns you listed are now fixed across the owner panel. Summary of every change made:
+
+Bug	Location	Fix
+Intl.DateTimeFormat().resolvedOptions().timeZone (browser TZ, not company TZ)	5 × var NZ_TZ declarations across all pages	Now reads window.COMPANY_TZ loaded from companySettings/{cid}/timezone
+new Date().toISOString().slice(0,10) for today's calendar date	PO status check, ACC billing date filter, promo expiry, segmented promo expiry	window._tzTodayStr() → toLocaleDateString('en-CA', {timeZone: NZ_TZ})
+new Date().setHours(0,0,0,0) for midnight	Driver licence expiry alerts, doc viewer expiry badge, expiryBadge()	window._tzTodayStart(NZ_TZ)
+d.getFullYear() / d.getMonth() for "YYYY-MM" month keys	TM Trips month filter grouping, TM Batches month labels	toLocaleDateString('en-CA', {timeZone: NZ_TZ}).slice(0,7) via new _tmMonthKey(ms) helper
+UTC getMonth()/getDate() for "is today" check	srIsToday() (scheduled rides)	Compare toLocaleDateString('en-CA', {tz}) strings
+UTC date components for date-filter in job history	Job replay date filter	toLocaleDateString('en-CA', {timeZone: NZ_TZ})
+UTC getMonth() for default date range	ACC Billing default month, tariff schedule date inputs	toLocaleDateString('en-CA', {timeZone: NZ_TZ})
+fmt(d) / todayStr() using UTC components	Schedule page week navigation	toLocaleDateString('en-CA', {timeZone: COMPANY_TZ})
+Formatters with no timeZone option	11 × toLocaleDateString('en-NZ', {...}) calls across BA, ACC, TM pages	All now pass timeZone: NZ_TZ
+Server-side setHours(0,0,0,0)	Driver login expiry enforcement (Node.js)	toLocaleDateString('en-CA', {timeZone: 'Pacific/Auckland'}) + UTC midnight anchor
+Global helpers now available on every page (injected via commonScripts):
+
+window.COMPANY_TZ — synced from companySettings/{cid}/timezone (Firebase)
+window._tzTodayStr(tz) — "YYYY-MM-DD" in company TZ
+window._tzTodayStart(tz) — Unix-ms for 00:00:00 in company TZ
+Firebase paths — confirmed:
+
+Data	Path	Notes
+Completed taxi trips (company-scoped)	completedJobs/{cid}	Primary. Fields: fare, completedAt_ISO (UTC), paymentType, driverId, vehicleId
+Legacy job log (global, not company-scoped)	joback	Flat, mixed-company. Owner portal reads limitToLast:500 and merges — completedJobs entries win on conflict
+Food orders	None	No separate path exists. Food jobs go through the same completedJobs/{cid} with a serviceType or paymentType field
+Freight orders	None	Same as food — no dedicated path found in Firebase for company 620611
+TM (Total Mobility) trips	completedJobs/{cid} where paymentType === 'total_mobility'	Also mirrored to tmBatches/{councilId}/{cid}/{yearMonth} for claim batches
+Critical driver-app field bug (flagged for the driver app team):
+
+The completedAt field being written to completedJobs/{cid} is a local formatted string — e.g. "01/05/2026, 10:15:46 pm" — not a UTC ISO string and not a Unix timestamp. This is unparseable reliably. The correct field completedAt_ISO is being written alongside it as "2026-05-01T10:15:46.291Z" (correct UTC ISO).
+
+The owner panel has been fixed to always prefer completedAt_ISO and only fall back to the numeric form of completedAt if that field is a number. The malformed local string is now skipped entirely. Tell the driver app team: completedAt should either be removed or stored as new Date().toISOString().
+
+Revenue totals — owner portal vs SA portal:
+
+The owner portal reads completedJobs/{cid} (company-scoped) for all revenue totals. The SA portal's watchdog keeps the global joback node in server memory. These are different data sources. For company 620611 specifically, joback/620611 is empty — all trips are in completedJobs/620611. The revenue fare field used is fare (primary) with fallbacks to totalFare, amount, fareAmount. Both portals should produce the same totals as long as they both read from completedJobs/{cid} — confirm the SA portal does the same.
+
+Driver payouts: There is no separate payout calculation in the owner panel — the fare figures come directly from the fare field on each completed job record. No deduction logic is applied in the owner portal. If you need to compare payout vs gross fare (e.g. to subtract card processing fees), that information is in companySettings/{cid}/cardSettings but is not currently factored into any report totals.

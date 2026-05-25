@@ -1,0 +1,129 @@
+📋 Customer-cancel + 70% rule — Option A spec (single source of truth on dispatch backend)
+
+Goal: one endpoint computes the rule, decides the outcome, and writes the canonical state. Customer (SA portal), dispatcher console, and driver app all call it. Three callers, one implementation, zero drift.
+
+1. Endpoint
+POST /api/cancel
+Headers:
+  X-Admin-Key: <BW_ADMIN_KEY>   ← required for source='customer'|'dispatcher'
+  Content-Type: application/json
+Body:
+{
+  "bookingId":    "6112605181",          // required
+  "companyId":    "620611",              // required
+  "serviceType":  "taxi" | "freight" | "food",
+  "source":       "customer" | "dispatcher" | "driver",
+  "actorId":      "<customerId | dispatcherId | driverId>",
+  "reason":       "string (free text, optional)"
+}
+
+Response (200):
+
+{
+  "ok": true,
+  "bookingId": "6112605181",
+  "outcome": "free_cancel" | "paid_cancel" | "rejected",
+  "progressPercent": 0..100,
+  "thresholdPercent": 70,
+  "driverPayout":   { "amount": 0, "currency": "NZD", "writtenTo": "driverEarnings/taxi/620611/D002" },
+  "customerRefund": { "amount": 0, "method": "wallet" | "stripe" | "none", "writtenTo": "walletCredits/<customerId>" | "stripe:<chargeId>" },
+  "newBookingStatus": "Cancelled" | "Completed"
+}
+
+Errors:
+
+400 — missing/invalid fields
+401 — bad admin key (when source ≠ driver)
+404 — bookingId not found
+409 — already terminal (Completed/Cancelled) — idempotent no-op, returns existing record
+422 — food service + cancel attempt (food has no cancel — see §5)
+2. The 70% rule
+Definition (proposed — pick one before build):
+
+progressPercent = (1 − distanceRemainingToPickup / originalDistanceToPickup) × 100
+
+originalDistanceToPickup = haversine distance from online/{cid}/{vid}/current at the moment driver pressed Accept (AcceptedAt) to PickLatLng. Stored on the job once, never recomputed.
+distanceRemainingToPickup = haversine distance from the driver's current online/{cid}/{vid}/current to PickLatLng, taken at cancel time.
+If originalDistanceToPickup < 200 m (driver was practically already there at accept), treat as 100% immediately to avoid divide-by-noise.
+For Picking state (driver has tapped "Arrived at pickup" but no passenger onboard yet): always treat as ≥70%.
+For Active state (passenger onboard, en route to drop): always treat as 100% (no free cancel after pickup).
+Threshold: THRESHOLD_PERCENT = 70 (single constant in server.js, easy to tune).
+
+Why haversine, not Maps Directions: zero API cost, no key dependency, deterministic, reproducible from stored points. We don't need road-accurate distance — we need a fair threshold.
+
+3. Outcome matrix
+BookingStatus at cancel	progress%	source=customer	source=dispatcher	source=driver
+Pending / No One / Unreached	n/a	free_cancel, refund full	same	n/a (driver has no job)
+Offered	n/a	free_cancel, refund full	same	(driver decline — existing path, unchanged)
+Assigned (driver accepted, en route to pickup)	< 70%	free_cancel, refund full	same	(driver recall — existing path, unchanged)
+Assigned	≥ 70%	paid_cancel: driver paid base fare, customer wallet credit = stripe paid − base fare (≥ 0)	same	same
+Picking (driver arrived at pickup)	always	paid_cancel: driver paid full estimated fare, customer wallet credit = stripe paid − full fare (≥ 0)	same	(driver no-show cancel — closes as Cancelled w/ CancelledBy='Driver', existing path)
+Active (passenger onboard)	always	rejected (must complete trip)	rejected	(driver completes via existing flow)
+Completed / Cancelled	terminal	409 idempotent	409	409
+"Base fare on 70% cancel" = FlagFall + DistanceTravelledKm × PerKmRate for the driver's GPS trail from accept→cancel-point. If we don't trust the trail (gaps/noise), fall back to min(estimatedFare × 0.5, estimatedFare) — design choice, let's lock it.
+
+4. Firebase schema for the wallet (new — does not exist today)
+walletCredits/
+  {customerId}/
+    balance:         <number>          // NZD, two decimals
+    currency:        "NZD"
+    updatedAt:       <ISO>
+    history/
+      {pushId}/
+        type:        "credit" | "debit"
+        amount:      <number>
+        bookingId:   "6112605181"
+        reason:      "70% cancel — driver paid base fare"
+        source:      "customer-cancel" | "dispatcher-cancel" | "driver-cancel"
+        createdAt:   <ISO>
+
+Spend rules: wallet auto-applies on next booking checkout in priority order: wallet → Stripe top-up. Negative balance impossible; if a refund exceeds remaining unpaid fare, the surplus stays as positive balance.
+
+5. Refund vs wallet credit (Stripe pre-pay case)
+When the cancelled booking was paid by Stripe up-front:
+
+Outcome	Stripe action	Wallet action
+free_cancel (< 70% or earlier states)	Refund full charge via paymentIntents.cancel or refunds.create	none
+paid_cancel (≥ 70% or Picking)	No Stripe refund — driver keeps base/full fare, surplus to wallet	credit = stripePaid − driverPayout
+Reasoning: Stripe refunds cost the company merchant fees (~3%); wallet credit costs nothing and locks the customer to come back. Free-cancel = no driver involvement, full refund is fair. Paid-cancel = driver worked, take fare from Stripe payment, refund only the excess to wallet.
+
+Cash bookings: no money was paid, so no refund/credit logic — record customerRefund.amount = 0, method='none'.
+
+6. Service-type specifics
+Service	Cancel allowed?	70% rule	Notes
+taxi	yes	yes	Standard flow
+freight	yes	yes — two legs	Leg 1: driver → sender pickup, threshold = 70% of original distance. Leg 2: sender → recipient (after pickup loaded = Active), no free cancel (cargo already loaded). Same outcome matrix as taxi.
+food	no	n/a	Endpoint returns 422 for source=customer. Restaurant/dispatcher may still close as Cancelled via the existing internal path — no customer cancel.
+7. Atomic Firebase writes (server-side)
+On paid_cancel, all four writes happen in a single Firebase batch via the server token:
+
+closedjobs/{cid}/{bookingId} ← full job record with BookingStatus='Cancelled', CancelledBy=<source>, CancelReason, progressPercent, driverPayout, customerRefund
+allbookings/{cid}/{bookingId}/Status = 'Cancelled' + cancel fields
+driverEarnings/taxi|freight/{cid}/{driverId} ← increment by driverPayout.amount (with a cancelPayout=true marker so reports can separate it from real trips)
+walletCredits/{customerId}/balance ← increment by customerRefund.amount + push to walletCredits/{customerId}/history/
+If any write fails, the cancel is rolled back (in-memory job stays in its prior state, server returns 500). No partial state.
+
+8. Dispatcher console + driver app — what changes for them
+Dispatcher console: the existing [CancelJobStatusFromJobList] and [QuickSetNoOne] paths get re-pointed to call /api/cancel internally with source='dispatcher'. UI doesn't change. Behaviour: dispatcher cancels on a far-along Assigned job now correctly pays the driver their share. Today it just closes the job and pays nothing.
+
+Driver app: existing driver-side cancel paths (changeriddestatusforoffer with Driver Rejected, DriverStatusChanged → Available while Picking) call /api/cancel with source='driver'. Same Firebase footprint, same outcome.
+
+SA portal (customer-facing): calls /api/cancel with source='customer' and the Admin-Key from secrets. New endpoint, no other changes.
+
+9. What I need from SA portal before build
+Confirm the threshold — 70% is the assumption. Lock it (or pick a different number) before code.
+Confirm refund vs wallet policy in §5 — specifically for the Stripe free-cancel case. Some operators want wallet-only (never refund Stripe). State the call.
+Customer ID source — what's the canonical customerId? Firebase auth UID, phone number, or a separate customers/{id} record? SA portal owns this — confirm and I'll match.
+Wallet UI — SA portal owns wallet display + redemption-on-checkout. Confirm that's in scope on your side. Server just stores balance and history.
+Cancel reason taxonomy — free-text only, or do you want a controlled list (changed_plans, driver_late, wrong_address, etc)? Free-text is easier; controlled list gives better reporting.
+10. Build sequencing
+SA confirms §9 questions → 1 day.
+I build /api/cancel + wallet schema + outcome matrix + atomic writes → ~2 days.
+Re-point dispatcher console + driver-app cancel paths to the new endpoint → 1 day.
+SA portal wires up its customer cancel button → ~1 day on your side.
+Joint end-to-end test (taxi free, taxi paid-cancel, freight leg1, freight leg2 rejection, Stripe refund, wallet credit, dispatcher cancel, driver cancel) → 1 day.
+Total: ~6 working days end-to-end, gated on §9.
+
+Reply with your answers to §9 and I'll start.
+
+That's it — let me know when you want me to actually build it (after the SA gives his answers). I haven't touched any code; this is spec only.

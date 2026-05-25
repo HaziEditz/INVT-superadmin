@@ -1,0 +1,54 @@
+Here are the two files they're asking about:
+
+
+3 actions
+Here's what to pass along to the other team:
+
+File 1 — Job ID generation: lib/jobApi.ts
+
+Endpoint: POST https://bookawaka.replit.app/api/job/create
+Request body:
+{
+  "companyId": "...",
+  "source": "passenger",
+  "passenger": { "name": "...", "phone": "..." },
+  "pickup": { "address": "...", "lat": 0.0, "lng": 0.0 },
+  "dropoff": { "address": "...", "lat": 0.0, "lng": 0.0 },
+  "tariffId": "Sedan",
+  "notes": ""
+}
+
+Expected response: { ok: true, jobId: "..." }
+Retry logic: 3 attempts, 2s apart, 8s timeout each. Falls back to a locally generated ID in the format {last3ofCompanyId}{YY}{MM}{DD}{seq} if the API is offline.
+File 2 — Booking creation: context/RideContext.tsx → startRide()
+
+RTDB writes (fire-and-forget, non-blocking):
+
+Path	What it is
+pendingjobs/{companyId}/{jobId}	Primary dispatcher inbox
+allbookings/{companyId}/{jobId}	Dispatcher mirror / full record
+Passengerjobs/{passengerUid}/{jobId}	Passenger-keyed copy
+Firestore write (background, non-blocking):
+
+Path	What it is
+allbookings/{companyId}/rides/{jobId}	Canonical booking document
+Key fields written (both PascalCase and camelCase on RTDB for dispatcher compat):
+
+Field	Notes
+Status / status	Scheduled, PendingPayment (card), or Waiting (all others)
+PaymentMethod / paymentMethod	card, wallet, account, business_account, acc, gift_card
+PaymentType / paymentType	Alias — same value as payment method
+EstimatedFare / estimatedFare	Numeric
+PickupAddress, PickupLat, PickupLng + camelCase	Plus nested pickupLocation: {address, lat, lng}
+DropoffAddress, DropoffLat, DropoffLng + camelCase	Plus nested dropoffLocation: {address, lat, lng}
+PassengerName, PhoneNo, passengerId	
+VehicleType	e.g. "Sedan", "Wheelchair"
+RequestedAt / requestedAt	UTC ISO string
+ScheduledAt / scheduledAt	UTC ISO string, only if scheduled
+businessAccountId, businessAccountName, purchaseOrderId, purchaseOrderNumber	Only when payment === "business_account"
+AccClaimNumber, AccClientId, AccClientName + camelCase	Only when payment === "acc"
+GiftCardCode, GiftCardId + camelCase	Only when payment === "gift_card"
+TmPassengers, TmVoucherNumbers, TmCouncilIds + camelCase	Only when TM passengers present
+TmHoistFeeTotal	Only when hoist lifts were needed
+Source	Always "PassengerApp"
+trackingToken	Random token for live tracking link

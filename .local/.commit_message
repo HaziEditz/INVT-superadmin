@@ -1,0 +1,49 @@
+SA Portal: passenger wallet admin (proxy + UI) + auth hardening
+
+Original task: build SA Portal side of the passenger-wallet admin feature
+(proxy + UI + nav + replit.md gotcha) once CUSTOMER_WEB_URL secret is set.
+
+Shipped:
+- src/routes/sa-wallet.ts — proxy for /api/sa-wallet/{lookup, balance,
+  ledger, reconciliation, adjust} that forwards to ${CUSTOMER_WEB_URL}
+  /api/admin/wallet/* with X-Admin-Key server-side (browser never sees
+  the secret). Plus /_health probe (no auth, booleans only).
+- src/app.ts — mounted saWalletRouter.
+- taxitime.co.nz/superadmin360taxi/SA-Wallet.aspx — admin UI with three
+  panels: lookup (balance + last-50 ledger), manual adjustment (controlled
+  reason list, mandatory note), reconciliation (date range, byReason
+  table, integrity check closing-opening === credits-debits, CSV export).
+- replit.md — added wallet gotcha documenting ownership split, env vars,
+  identifier resolver, audit recovery via auditTxId, integrity identity,
+  adjust reason codes, Bearer-token auth, and /api/fb blocklist.
+
+Drift from plan (after code review):
+- Original plan used ?saUid= query-param auth (matching legacy SA-portal
+  pattern). Architect flagged this as a critical auth bypass because
+  /api/fb was unauthenticated and let anyone enumerate superAdmins/* to
+  steal a UID, then pose as that admin against the wallet endpoints —
+  a financial-impact bypass on a brand-new endpoint.
+- Hardened to Firebase ID-token auth (Authorization: Bearer …):
+  server verifies via verifyFirebaseToken(), checks isSuperAdmin() on
+  the resolved uid, ignores caller-supplied saUid entirely, and stamps
+  the verified uid into upstream calls as X-Admin-Uid header +
+  adminUid body field for tamper-proof audit.
+- Locked down /api/fb (GET + POST) with a small blocklist for paths
+  starting with superAdmins, passengerWallet, walletAdminAudit
+  (case-insensitive). Backward-safe: no SA frontend page reads these
+  paths via /api/fb — confirmed by grep. Normal admin paths
+  (e.g. superClients) still return 200.
+- Fixed XSS in SA-Wallet.aspx ledger note rendering — `note` is now
+  escaped via esc() before insertHTML, plus auditTxId fragment.
+  esc() also extended to handle apostrophes.
+
+Sidebar nav: each SA-*.aspx page has its own inline nav rather than a
+shared include, so no global nav file to update. The wallet page links
+back via SA-Dashboard / SA-Clients / SA-Drivers in its own top nav.
+User can add a "Passenger Wallet" link inside any SA-*.aspx side menu
+they want; pointed it out in chat as a separate small follow-up.
+
+Smoke tests passing: /_health reports both envs present; no-token,
+bad-token, and legacy saUid-only requests all return 401; /api/fb
+blocks all 3 sensitive paths (403) but normal admin paths unchanged (200).
+Architect re-review: Pass on all three previously flagged issues.

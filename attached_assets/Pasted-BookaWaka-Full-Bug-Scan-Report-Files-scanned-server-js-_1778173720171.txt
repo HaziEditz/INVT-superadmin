@@ -1,0 +1,131 @@
+BookaWaka — Full Bug Scan Report
+Files scanned: server.js (7,075 lines, 100%) · Default.aspx (14,627 lines, 100%)
+
+🔴 CRITICAL
+BUG 1 — Rental jobs permanently invisible to all dispatchers
+server.js line ~751 (rental job creation)
+
+Every rental job is created with companyId: ''. The companyJobs() filter (line ~3295) uses a strict === comparison against sessionCompanyId, which is always a real ID like '620611'. Empty string never matches. Rental jobs are therefore returned by zero dispatchers in the Unassigned, Assigned, or Active tabs — for any company, ever.
+
+🟠 HIGH
+BUG 2 — Plaintext password stored under a misleading field name
+server.js line ~1913
+
+The registration handler sets passwordHash: reqPass — the raw plaintext password from the request. The field is named passwordHash, strongly implying it is hashed, but it is not. This password is used later to sign a Firebase user in for provisioning. If .data/registrationRequests.json is ever read by an unintended party (backup, logs, API leak), all passwords are exposed in cleartext.
+
+BUG 3 — [GetSuspendedDrivers] leaks all companies' suspensions
+server.js line 5497–5499 (/DataSelector path)
+
+objectD(res, { dt1: SUSPENDED_DRIVERS, dt2: [], ... });
+
+The /DataProcessor path correctly calls companySuspended(SUSPENDED_DRIVERS) which filters by sessionCompanyId. The /DataSelector path returns the raw global SUSPENDED_DRIVERS array with no filter. Any dispatcher can see suspended drivers from every other company on the platform.
+
+BUG 4 — [DriverStatusChanged] DS path missing crash-reconnect guard → jobs incorrectly cancelled
+server.js line ~6221 (/DataSelector → [DriverStatusChanged])
+
+The /DataProcessor copy of [DriverStatusChanged] (line 4892) calls consumeDriverReconnectPending(driverId) before deciding whether a driver's Available signal is a genuine cancel or a post-crash reconnect. The /DataSelector copy omits this check entirely. Drivers who crash and reconnect through the DS path will have their Assigned jobs cancelled and returned to Pending as if the driver recalled them — incorrect behaviour.
+
+BUG 5 — Trip completions via DS path don't update Firebase allbookings
+server.js line ~6443 (/DataSelector → [DriverStatusChanged], job completion branch)
+
+The /DataProcessor path fires the §108d _patchAllbookingsCompletion IIFE when a job is completed, ensuring the SA portal's allbookings/{cid}/{jobId} node gets Status: 'Completed', the correct paymentMethod, and completedAt. The /DataSelector path calls only _patchRentalComplete(job) and skips the allbookings patch. Any trip completed via the DS path will show the wrong status / payment method in the SA portal earnings view.
+
+Additionally, the DS path response (line 6554) omits the completedJob: field that the client reads to write Firebase trip records — client-side completion handling silently no-ops.
+
+BUG 6 — Firebase Emergency path fires PERMISSION_DENIED on every page load
+Default.aspx (ref44 listener)
+
+ref44 monitors the Emergency Firebase path, which requires auth != null per database.rules.json. The listener is attached inside onAuthStateChanged(user => { if (user) ... }), so anonymous auth should be active before it fires. The persistent PERMISSION_DENIED error on every page load indicates either:
+
+Anonymous auth is disabled in the Firebase project console (most likely), or
+The Firebase app config (API key / project ID) does not match the project that has the Emergency path rules deployed.
+No Emergency alerts will ever be received until this is resolved.
+
+BUG 7 — length != [] / length == [] anti-pattern (37 occurrences)
+Default.aspx — 37 instances throughout
+
+Every instance of if (x.length != []) and if (x.length == []) relies on JavaScript coercing [] to 0 during a non-strict comparison. These work today but are semantic bugs: != [] should be > 0 and == [] should be === 0. The most structurally confusing instance is at line 12858:
+
+// Line 12851 – outer condition
+if ($res.length != [] && $res[0].AutoDispatch == '1') { ... }
+else {
+    // Line 12858 – inner split on empty vs non-empty without AutoDispatch
+    if ($res.length == []) {   // means: if $res is empty
+        // show placeholder
+    } else {
+        // iterate non-empty results (AutoDispatch !== '1')
+    }
+}
+
+The logic accidentally produces correct results, but any future refactor or linter auto-fix could silently invert behaviour in these branches.
+
+🟡 MEDIUM
+BUG 8 — saveJsonStore silently swallows all I/O errors
+server.js line ~138
+
+function saveJsonStore(file, data) {
+  try { fs.writeFileSync(file, ...); }
+  catch(e) {}   // ← silent
+}
+
+Every persistent store — ACC clients, managers, approvals, business accounts, passengers, Stripe payments, zone assignments — uses this function. A disk-full event, permissions failure, or path error produces no log, no retry, and no error response to the caller. Data loss is invisible.
+
+BUG 9 — [QuickSetNoOne] and [CancelJobStatusFromJobList] registered on two paths simultaneously
+server.js lines ~5007/5041 (/DataProcessor) and ~5388/5423 (/DataSelectorLess)
+
+Both are state-mutating actions (job status change, driver release) that appear in /DataSelectorLess — a path semantically intended for reads. If both endpoints are reachable and a client hits both (e.g. Angular's $http making two requests, or a routing quirk), the driver gets released twice: calcRestoredQueue fires twice, the job is spliced out of jobStore twice (the second splice(-1, 1) removes an unrelated job), and saveClosedJobStore writes in a double state.
+
+BUG 10 — [IngestPassengerJob] removes Cancelled jobs without checking current status
+server.js line ~6677–6685
+
+When a passenger cancels via the app, the handler does jobStore.findIndex(j => j._fbKey === _ipjFbKey) and splices unconditionally. If the job has already progressed to Assigned or Active (dispatcher picked it up between the passenger booking and cancelling), the in-progress job is silently deleted from jobStore — the driver's active trip vanishes from the dispatch board with no notification.
+
+BUG 11 — [changeriddestatusforoffer] in DS path drops string driver IDs
+server.js line ~6102
+
+const incomingDriverId2 = parseInt(param('driverid') || '0') || 0;
+
+Compared to the DP path's type-aware parse (parseInt(_rawDriverId) > 0 ? ... : (_rawDriverId || 0)), the DS version converts any string ID like 'D001' or 'T201' to 0. The double-offer guard at line 6103 then compares job.DriverId !== 0 which is always true — so the guard becomes unreliable for string-ID drivers, allowing duplicate offers.
+
+BUG 12 — [Editjobv4] silently returns the wrong job when ID not found
+server.js line ~5510
+
+let job = jobStore.find(j => j.Id === jobId);
+if (!job) job = jobStore[0];   // ← wrong fallback
+
+If a dispatcher opens the edit form for a job that has just been moved to closedJobStore (e.g. race with completion), jobStore.find returns undefined, and the form populates with the first entry in jobStore — a completely different job. The dispatcher could inadvertently edit and save over it.
+
+🔵 LOW / MAINTENANCE
+BUG 13 — closedJobStore grows without bound
+server.js — no size cap anywhere
+
+Every completed, cancelled, or force-completed job is pushed to closedJobStore and written to .data/closedjobstore.json. There is no rotation, pagination, or archival. On a busy fleet (50+ trips/day) this file will reach tens of thousands of entries within months, causing slow startup deserialization, increasing memory pressure on every request that touches the closed list, and eventual disk saturation.
+
+BUG 14 — DriverStatusChanged DS path completedJob absent from response
+server.js line ~6554
+
+The DP response includes completedJob: _dscCompletedJob || null. The DS response does not. Client JavaScript that checks if (r.completedJob) to write Firebase trip records (earning totals, job history) silently no-ops on DS-path completions. Affected data: fare, paymentType, distanceKm written to Firebase trips/{cid}.
+
+BUG 15 — Stale-offer watchdog clears DriverId/VehicleId to null not 0
+server.js line ~5545–5548 (inside AutoDispatchVehiclesallride) and line ~6955–6957 (independent setInterval)
+
+The inline watchdog inside AutoDispatchVehiclesallride sets j.DriverId = null and j.VehicleId = null. The independent setInterval watchdog (line 6955) sets them to 0. The rest of the codebase guards hasNoDriver using !job.DriverId || job.DriverId === 0 — null passes this guard correctly. However the /DataSelector [changeriddestatusforoffer] guard (line 6115) uses !job.DriverId || job.DriverId === 0, which also treats null as no driver. While both currently work, the inconsistency (null vs 0) is a future maintenance hazard.
+
+Summary Table
+#	Severity	Location	Description
+1	🔴 Critical	server.js ~751	Rental jobs always invisible — companyId: ''
+2	🟠 High	server.js ~1913	Plaintext password stored as passwordHash
+3	🟠 High	server.js 5497	Suspended drivers list leaks across all companies (DS path)
+4	🟠 High	server.js ~6221	DS [DriverStatusChanged] missing crash-reconnect guard → jobs wrongly cancelled
+5	🟠 High	server.js ~6443	DS path trip completions don't patch Firebase allbookings
+6	🟠 High	Default.aspx ref44	Firebase Emergency path: PERMISSION_DENIED on every load
+7	🟠 High	Default.aspx ×37	length != [] / == [] coercion anti-pattern (37 instances)
+8	🟡 Medium	server.js ~138	saveJsonStore silently swallows all disk errors
+9	🟡 Medium	server.js 5388/5423	Mutating actions registered on read-only /DataSelectorLess path
+10	🟡 Medium	server.js ~6677	Passenger cancel removes Assigned/Active jobs without status check
+11	🟡 Medium	server.js ~6102	DS [changeriddestatusforoffer] drops string driver IDs via parseInt
+12	🟡 Medium	server.js ~5510	[Editjobv4] returns wrong job when ID not found
+13	🔵 Low	server.js	closedJobStore unbounded growth — no archival or size cap
+14	🔵 Low	server.js ~6554	DS [DriverStatusChanged] omits completedJob from response
+15	🔵 Low	server.js 5545 / 6955	Stale-offer watchdog inconsistency: null vs 0 for cleared DriverId
+That is the complete scan. No fixes have been made — this is the report only. Let me know which bugs you'd like addressed first and I'll get started.

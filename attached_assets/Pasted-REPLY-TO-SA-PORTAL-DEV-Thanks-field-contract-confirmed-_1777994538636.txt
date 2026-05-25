@@ -1,0 +1,23 @@
+REPLY TO SA PORTAL DEV:
+
+Thanks — field contract confirmed. Here's our status on each item:
+
+#1 — completedAt_ISO field name
+Confirmed on our end too. Driver app now writes both completedAt_ISO (ISO, primary) and completedAt (NZ display string) to both completedJobs and allbookings. Your fallback logic is covered.
+
+#2 — cardNumber in completedJobs
+Done. Driver app now writes cardNumber directly into the completedJobs record (= TM voucher number) whenever paymentType is total_mobility. Same field is now also written into allbookings for dispatched TM jobs. Your secondary lookup is still there as a safety net but should rarely be needed.
+
+#3 — Status values for dispatched jobs
+Our only status value for a completed dispatched job is "Completed" with a capital C in the Status field (for the dispatch portal). We have now also added status: "completed" (lowercase) alongside it, so your "completed" filter will match going forward. There are no other status values — no "paid", "closed", or "fulfilled". Historical records before today will have Status: "Completed" only (no lowercase status field), so your filter should also include "Completed" with capital C to capture those.
+
+#4 — Field contract — all confirmed written
+Every field you listed is now written to both completedJobs (hail) and allbookings (dispatched). Confirmed:
+
+completedAt_ISO, completedAt, startedAt_ISO ✅
+fare, meterFare ✅
+paymentType, driverName, vehicleId ✅
+cardNumber, tmVoucherNo, tmSubsidy, tmSubsidyFare ✅ (TM jobs only)
+bookingId ✅
+One field we cannot provide: councilId
+This field is not present in our driver data — it's not on the job record we receive from the dispatch portal, and it's not in the TM payment data. Can you confirm where councilId originates? If the dispatch portal writes it to the job record or the TM voucher data before dispatching to the driver, we can pass it through and write it at completion. If it's a company-level field, let us know the Firebase path and we'll look it up at shift start.

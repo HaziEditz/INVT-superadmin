@@ -1,0 +1,31 @@
+Dispatcher self-audit — answers from code, not from the dev
+
+Q1 — allbookings vs completedJobs reads
+
+The dispatcher does not read either path for job lists. All active job lists (data1, data2, data3, tstst) are populated from SQL API calls (getjobs, ActiveJobsdata, AssignedJobs). Firebase is only used for real-time overlays.
+
+allbookings/{cid} — read once as a recall-notification fallback only (when bookings/{cid}/{jobId} is empty). Never used to populate a job list.
+completedJobs/{cid} — written by the dispatcher on completion. Never read back by the dispatcher.
+Consequence: the SA master report reads only completedJobs — dispatched trips that live in allbookings/{cid} are not counted. Platform-wide revenue and trip totals are understated. Already parked in the checklist.
+
+Q2 — sessionRevoke listener
+
+✅ Implemented and correct. Path is superClients/{cid}/sessionRevoke (integer timestamp). Compared against localStorage.bw_loginTime set at login. On match: signs out of Firebase auth, clears all localStorage keys, redirects to DispatcherLogin.aspx?reason=session_revoked.
+
+One thing to flag to all other teams: the path is superClients/{cid}/sessionRevoke, not companies/{cid}/sessionRevoke. Any team writing to the wrong path will get zero sign-outs.
+
+Q3 — GPS path
+
+✅ Fixed in the last session. The child_changed map handler now extracts:
+
+_gpsLat = driverData.lat || (driverData.current && driverData.current.lat) || 0
+
+Top-level lat is tried first (backward compat with any older driver app build that writes directly), then falls through to .current.lat. The presence listener was already correct before the fix.
+
+Q4 — Job IDs via /api/job/create
+
+✅ Correct and no local fallback. Both booking create paths (single booking and repeated-ride loop) call POST /api/job/create first, inject the returned jobId as ExternalJobId, then call InsertBookingv4. If the API call fails, myError fires and the booking does not proceed — intentionally correct.
+
+One edge case: if /api/job/create succeeds but returns no jobId (e.g. server returned {}), the code proceeds to InsertBookingv4 without ExternalJobId. SQL then generates its own ID. That is acceptable but means the external ID is missing — worth checking in server.js that /api/job/create always returns a jobId.
+
+The checklist (PLATFORM-INTEGRATION-CHECKLIST.md) covers all five teams and is ready to send. Eight sections: Firebase path contract, job offer payload (every field), GPS contract, job ID contract, TM field mapping table, service type canonical values, session revocation, and the open gaps list. Each team self-certifies their column with ✅ / ❌ / ⬜.

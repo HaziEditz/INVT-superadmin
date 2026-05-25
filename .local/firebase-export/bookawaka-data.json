@@ -1,0 +1,17 @@
+{
+  "superClients": null,
+  "superPackages": {"pkg_free_trail_1777311707781":{"active":true,"createdAt":"2026-04-27T17:41:47.781Z","dateFrom":"2026-04-28","description":"Big fleet pay Less","modules":{"food":true,"freight":true,"taxi":true},"name":"Free Trail","pricePerCar":15,"sortOrder":1777311707781,"trialDays":30},"pkg_premium":{"active":true,"annualPrice":2990,"createdAt":"2026-04-27T17:32:10.835Z","description":"Full platform — Taxi, Food Delivery and Freight/Parcel delivery. Maximum earning potential.","modules":{"food":true,"freight":true,"taxi":true},"monthlyPrice":299,"name":"Premium","sortOrder":3}},
+  "superBilling": null,
+  "companyBilling": null,
+  "superAuditLog": null,
+  "adminAccess": null,
+  "taxiConfig": null,
+  "companyPayouts": null,
+  "driverEarnings": null,
+  "onboardRequests": null,
+  "packages": null,
+  "superAdmins": {"eBHvJU3yhCYBhGmaju431kXCgwB2":true},
+  "users": null,
+  "tmCouncilAccess": {"invercargill_city_council":{"active":true,"createdAt":1777224515052,"email":"council@icc.govt.nz","lastLogin":1777308941958,"passwordHash":"dc7aa1cd3fc964fa25bb20f277a72ae7d3c6b043546846b74d64711945b3f3d7"}},
+  "foodRestaurantAccess": null
+}

@@ -1,0 +1,41 @@
+I checked what the Super Admin can currently do versus what it probably should be able to do. The Super Admin is a separate Replit that calls /admin/* endpoints on this server (auth: X-Admin-Key: BW_ADMIN_KEY). Here's the gap.
+
+✅ What Super Admin already has
+Endpoint	Purpose
+GET /admin/registrations	List signup requests (filter by status)
+GET /admin/registrations/:id	Single request detail
+POST /admin/registrations/:id/approve	Approve → start trial, provision Firebase user
+POST /admin/registrations/:id/reject	Reject with note
+POST /admin/registrations/:id/activate	Grace → Active (paid)
+POST /admin/registrations/:id/deactivate	Disable account
+GET /admin/accounts	List all approved companies with job stats
+GET /admin/jobs/:companyId	Full job history per company
+❌ What's missing (prioritised)
+High value — operational gaps you'll hit weekly
+Edit company details — name, email, phone, contact person, fleet size. Right now once a registration is approved, the details are frozen.
+Change plan / extend trial — bump trialEnd, switch plan (free_trial / starter / pro), update planPrice. No way to give a customer an extra week, or upgrade them.
+Re-activate a deactivated account — deactivate exists, but no reactivate. If you deactivate by mistake, you're stuck.
+Reset / resend owner password — currently nothing. Customer forgets login → you have no way to help.
+List drivers per company — see who's online, suspended, last seen. Today you can only see jobs, not drivers.
+List dispatchers per company — who has dispatch console access, last login, can you revoke.
+Medium value — billing & support
+Stripe payments view per company — payments table already exists (closedjobstore carries Stripe data), but no /admin/payments/:companyId endpoint to read it.
+Subscription billing history — when did they pay, what's next bill date, failed-charge flags.
+Suspend a single driver across companies (Super Admin level, overrides company dispatch).
+Send broadcast notice to a company (e.g. "your card failed, please update") — push to dispatch console as a toast.
+Lower value — nice to have
+Per-company feature flags from Super Admin — toggle autoDispatch / zoneQueue / cardBooking / accEnabled / businessAccounts / tmEnabled per tenant. Flags exist in code but only writable via Firebase or default config.
+Audit log — who approved/rejected/deactivated what, when. Today the logs are only in stdout.
+CSV/PDF exports — accounts list, jobs list, payments list per company.
+Hard delete — purge a test account (currently only soft-deactivate).
+Force logout all sessions for a company (rotate session cookie secret per company, useful after a stolen-login scare).
+My recommendation
+If you want me to ship a batch, I'd do these six first — they cover 80% of real support tickets:
+
+PATCH /admin/registrations/:id — edit name/email/phone/fleet/plan/planPrice/trialEnd
+POST /admin/registrations/:id/reactivate — undo deactivate
+POST /admin/registrations/:id/extend-trial — bump trialEnd by N days
+POST /admin/registrations/:id/reset-password — Firebase password reset email
+GET /admin/drivers/:companyId — list drivers (online + suspended + zone)
+GET /admin/payments/:companyId — Stripe payment history
+Want me to ship those six now, or pick a different subset

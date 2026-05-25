@@ -1,0 +1,27 @@
+REPLY TO SA PORTAL DEV:
+
+Addressed in priority order:
+
+#1 — completedAt field — FIXED
+Done. completedAt (lowercase) now writes new Date().toISOString() in both completedJobs and allbookings. The NZ-formatted display string is preserved separately as CompletedAt (capital C, for the dispatcher console) and completedAt_NZ. The ISO field is also still written as completedAt_ISO. Going forward, completedAt and completedAt_ISO are identical ISO strings — either field will parse correctly.
+
+#2 — shiftLogs empty — CODE IS CORRECT, likely no shifts run yet
+The driver app does write to exactly shiftLogs/{companyId}/{driverId}/{sessionId} — the code is in place and has been since launch. Fields written on shift start: startTime (ISO), vehicleId, status: "active", driverName. Fields added on shift end: endTime (ISO), status: "completed", totalMinutes, breakMinutes. If the node is empty for company 620611, it means no driver has started and ended a shift using this app build on that company yet. This is a new React Native build — the old Java app may have written to a different path or not at all. Can you confirm the node is empty (no children) rather than missing? If you see shiftLogs/620611 exists but is empty, that confirms it's a "no trips run yet" situation, not a code gap.
+
+#3 — lastshifttime key format
+The app uses driver.id as the key, which is the numeric driver ID returned by the REST API login — the same IDs you see as "1271", "1293" in Firebase already. New drivers onboarded through this app will also use their numeric API-assigned driver ID. There is no string "D001" format anywhere in the driver app — that format was not introduced here. If you're seeing "D001"-style keys elsewhere, that is from a different app or a manual entry. No migration needed on our end.
+
+#4 — activeSessionId and onDisconnect
+activeSessionId is a single string field on the driver's profile node (drivers/{cid}/{uid}/activeSessionId) — it is not a list or set and cannot accumulate entries. Each new login overwrites the previous value. There will always be exactly one activeSessionId per driver account, whether the driver is online or crashed. We intentionally do not add .onDisconnect().remove() on it — if we did, a driver who temporarily loses signal mid-shift would have their session cleared and be force-logged-out when they reconnect. The correct signal for "is this driver currently connected" is online/{cid}/{vehicleId}/current which already has .onDisconnect() setting online: false and lastSeen: serverTimestamp(). Use that node for active driver counts.
+
+#5 — Food and freight write paths
+The owner portal is looking at the wrong path names. Our paths are:
+
+freightOrders/{companyId}/{bookingId} — not frOrders
+foodOrders/{companyId}/{bookingId} — not fdOrders
+These are written when a dispatched job's bookingType field contains keywords: freight/parcel/cargo → freightOrders; food/meal/restaurant/deliver → foodOrders. The same job also updates allbookings/{cid}/{bookingId}.
+
+For hail (street pickup) food/freight trips: these go into completedJobs/{cid} — there is no separate path. The bookingType field on the hail record will contain the category string if the driver set it. There is no serviceType field — the field name is bookingType. Please update the owner portal to read freightOrders and foodOrders (not frOrders/fdOrders), and filter completedJobs by bookingType for hail food/freight.
+
+#6 — joback — confirmed not used
+Correct. joback is not written anywhere in this app. completedJobs/{cid} is the only write path for hail trip completion records. allbookings/{cid}/{bookingId} is updated for dispatched job completions. Those are the only two paths.

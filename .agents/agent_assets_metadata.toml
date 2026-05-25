@@ -1,0 +1,55 @@
+uploads = []
+
+[[generated]]
+id = "NIrFUJ9Km_77O0ZWLHNgs"
+uri = "file://taxitime.co.nz/superadmin360taxi/assets/img/bw-logo.png"
+type = "image"
+title = "BookaWaka arrow logo"
+
+[[outputs]]
+id = "Rdu0KXXs-rEAq9BqwD6D1"
+uri = "file://PLATFORM-INTEGRATION-CHECKLIST.md"
+type = "text"
+title = "Platform Integration & Feature Checklist — share with all dev teams"
+
+[[outputs]]
+id = "w88MsEzZ2xTozyRd5O5kF"
+uri = "file://SOLO-E2E-TEST.md"
+type = "text"
+title = "Solo E2E Test Script — BookaWaka"
+
+[[outputs]]
+id = "O7JFvIqPn2mvKhMVQZrYK"
+uri = "file://bug-reports/BUG-REPORT-driver-app.md"
+type = "text"
+title = "Bug Report — Driver App (10 bugs)"
+
+[[outputs]]
+id = "RYUHwmmAvwm20WBbIQOC2"
+uri = "file://bug-reports/BUG-REPORT-dispatch-app.md"
+type = "text"
+title = "Bug Report — Dispatch App (7 bugs)"
+
+[[outputs]]
+id = "W0y0Ij7mUzt2eZp-g9Yk7"
+uri = "file://bug-reports/BUG-REPORT-owner-portal.md"
+type = "text"
+title = "Bug Report — Owner Portal (6 bugs)"
+
+[[outputs]]
+id = "0pDZTZ2Wa38zG1lQno4JP"
+uri = "file://bug-reports/BUG-REPORT-web-booking.md"
+type = "text"
+title = "Bug Report — Web Booking Site (6 bugs)"
+
+[[outputs]]
+id = "kHlwKDyxBxfraujD6Ahu4"
+uri = "file://bug-reports/BUG-REPORT-passenger-app.md"
+type = "text"
+title = "Bug Report — Passenger App (1 bug + test account needed)"
+
+[[outputs]]
+id = "eivqKGnlBgTr92C6Cj1Fh"
+uri = "file://bug-reports/BUG-REPORT-driver-app-round2.md"
+type = "text"
+title = "Driver App — Round 2 Bug Report (6 bugs)"

@@ -1,0 +1,54 @@
+Let me check the current centralJobId.ts to see what URL it's calling:
+
+
+2 actions
+The path /api/job/create is correct — the problem must be in what getServerUrl() returns. Let me check that immediately:
+
+
+4 actions
+Found it. The browser console log from startup showed [RemoteConfig] serverUrl: https://bookawaka.replit.app — that's the wrong server. Firebase is returning that URL from bwConfig/appSettings, and it needs to point to the SA portal. Two problems to fix simultaneously:
+
+Wrong server URL — fallback and Firebase value both point to bookawaka.replit.app instead of the SA portal
+Missing payload fields — the SA portal requires driverId and vehicleId in the body; the current CreateJobPayload doesn't include them
+Let me check how requestCentralJobId is called in DriverContext:
+
+
+5 actions
+Clear picture now. Two fixes needed:
+
+Wrong base URL — FALLBACK_SERVER points to bookawaka.replit.app; SA portal is 66b82de1...spock.replit.dev
+Missing payload fields — hail call is missing driverId, vehicleId, tariffId
+Let me check the startHailTrip signature for what tariff info is in scope:
+
+
+2 actions
+Everything I need is in scope: tariff.id, d.id (driverId), d.vehicleId. Making all three fixes in parallel now:
+
+
+7 actions
+The logs reveal a second problem: Firebase is returning serverUrl: "https://bookawaka.replit.app" from bwConfig/appSettings, which overrides the new fallback I just set. So the 404s continue. The SA portal team needs to update that Firebase value, but for the live test right now I need the correct URL to win. The fix: tell remoteConfig.ts to ignore the stale bookawaka.replit.app value from Firebase and use the fallback instead:
+
+
+6 actions
+The browser console confirms it's working:
+
+[RemoteConfig] Ignoring stale serverUrl from Firebase — using SA portal fallback: https://66b82de1...spock.replit.dev
+
+Three changes were made to fix the hail trip 404:
+
+1. Wrong base URL (lib/remoteConfig.ts)
+FALLBACK_SERVER updated from bookawaka.replit.app to the correct SA portal URL. Firebase was returning the old URL and overriding the fallback, so the code now detects and ignores the stale bookawaka.replit.app value from Firebase — the SA portal URL wins until the SA portal team updates bwConfig/appSettings.serverUrl in Firebase to their new URL (at which point it will be picked up automatically).
+
+2. Missing payload fields (lib/centralJobId.ts + context/DriverContext.tsx)
+driverId, vehicleId and tariffId added to CreateJobPayload. The hail trip call now sends:
+
+{
+  "companyId": "620611",
+  "source": "hail",
+  "driverId": "D002",
+  "vehicleId": "TAXI02",
+  "tariffId": "1",
+  ...
+}
+
+The app is live and pointing at the SA portal. Try starting a hail trip now — the request should appear in the SA portal's request logger immediately.

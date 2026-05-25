@@ -1,0 +1,34 @@
+GPS path confirmed and fixed. Your map listener was reading the wrong sub-node.
+
+What the code actually does:
+
+The dispatch map listener is on online/{cid}/{vid} — correct path, correct company isolation. No path change needed there.
+
+The problem was one level deeper. When the driver app writes GPS to online/{cid}/{vid}/current, the child_changed event fires with the full node. The map code was then reading childsnapshot.val().lat — which is undefined because lat/lng live under current, not at the top level.
+
+Fix deployed:
+
+// Before the LatLng call:
+var _gpsLat = driverData.lat || (driverData.current && driverData.current.lat) || 0;
+var _gpsLng = driverData.lng || (driverData.current && driverData.current.lng) || 0;
+
+Both the map marker position (google.maps.LatLng) and the distance-moved check (which decides whether to redraw the car) now use _gpsLat/_gpsLng. Top-level lat/lng is tried first so older driver app versions that write directly to the node still work.
+
+Before this fix: every driver GPS update fired the child_changed event (so Firebase was working), but the map parsed parseFloat(undefined) = NaN and the car marker stayed frozen at (0, 0) or its last known position. All drivers appeared stationary.
+
+After this fix: car markers move in real time as the driver app writes to online/{cid}/{vid}/current.
+
+Answers to your three confirmations:
+
+All booking types visible in queue — ✅ Confirmed. Queue has no type filter. Food=green, freight=orange, TM=purple badges already render when serviceType is present. Food and freight serviceType was previously being dropped on ingest — that was also fixed in the last session.
+
+Job assignment writes correct fields — ✅ Confirmed. writeJobDetailsToFirebase writes to jobDetails/{cid}/{bookingId}: pickup, dropoff, phone, name, bags, passengers, vehicleType, serviceType, bookingSource, status. Notification is written to notification/{driverId} (flat path). Confirm driver app reads serviceType lowercase — if it uses ServiceType (capital S) flag us and we'll alias it.
+
+TM trips flagged in UI — ✅ Confirmed. TM badge shows on every card when PaymentType==='total_mobility'. Purple left border, wheelchair icon, and a full TM detail panel (voucher, subsidy, passenger-pays, hoist, card expiry) in the job popup.
+
+Three new paths noted — no changes needed on dispatch side:
+
+Path	Dispatch action
+driverRatings/{cid}/{bookingId}	Dispatch console does not write ratings — driver/passenger app flow only. No change needed.
+freightOrders/{cid}/{bookingId}	Freight jobs arrive via pendingjobs/{cid} → standard queue. No separate read of freightOrders.
+allbookings/{cid}/{bookingId}/driverRating	Used in recall fallback lookup only — read path already handles both pendingjobs and allbookings. No change

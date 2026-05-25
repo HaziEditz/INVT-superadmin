@@ -1,0 +1,25 @@
+All audit items confirmed fixed. Here's what changed and when:
+
+Commit: b8dec66 (today)
+
+1. TM card numbers — now written
+tmPassengers (full objects with cardNumber, cardholderName, expiryDate, needsHoist) is now written to all three RTDB paths and Firestore. There's also a flat tmVoucherNumbers array on each booking if you just need to scan card numbers quickly. Both camelCase and PascalCase keys are there.
+
+2. requestedAt — now written
+Every new booking gets requestedAt (and RequestedAt) as a proper UTC ISO string, e.g. "2026-05-05T09:30:00.000Z". The old CreatedAt ms number is still there for anything that reads it. Use requestedAt + the company's timezone from companyProfiles/{cid}/timezone to display correctly.
+
+3. Field aliases — now written
+pickupLocation, dropoffLocation, and paymentType (and PascalCase equivalents) are now on every booking alongside the existing pickup, destination, and paymentMethod fields. Same data, extra keys so every integration can find what it expects.
+
+4. Timezone display — fixed throughout the passenger app
+All toLocaleDateString / toLocaleTimeString calls now pass timeZone explicitly. The scheduled rides screen computes today/tomorrow in the company timezone, not the device timezone. History cards and home screen recent rides also fixed.
+
+5. toISOString().slice(0,10) — removed
+The rental API's toDateStr() now uses Intl.DateTimeFormat("en-CA", { timeZone: tz }) — returns the local date string in the correct timezone, not UTC midnight.
+
+6. Bonus — passenger name source fixed
+Booking writes now pull the name from the RTDB user profile (users/{uid}/name) rather than fbUser.displayName, which could be the email address in some cases.
+
+Note on historical data: Bookings before this commit won't have requestedAt, tmPassengers, pickupLocation, dropoffLocation, or paymentType. If your reports rely on those fields, you'll need to treat records before today as potentially incomplete and fall back to CreatedAt + pickup/destination/paymentMethod for older entries.
+
+Let me know if you need the exact field names on a specific RTDB path — I've got the full schema documented.

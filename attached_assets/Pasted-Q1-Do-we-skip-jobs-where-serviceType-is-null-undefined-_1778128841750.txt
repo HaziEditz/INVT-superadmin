@@ -1,0 +1,36 @@
+Q1 — Do we skip jobs where serviceType is null/undefined?
+
+No. In _normFbJob (server.js line 808–810):
+
+const _rawSvc = (job.serviceType || job.ServiceType || job.bookingType || '').toLowerCase().trim();
+const _svcMap = { taxi:'taxi', food:'food', freight:'freight', tm:'tm', ... };
+const serviceType = _svcMap[_rawSvc] || (_rawSvc || 'taxi');
+
+Null/missing → defaults to 'taxi'. No skip, no patch needed. D002 is taxi-enabled so it will receive offers.
+
+Q2 — Do you process Status: "Scheduled" jobs, or only Status: "Pending"?
+
+We handle both, and we just fixed a third status gap:
+
+Status	Before today	After fix
+Scheduled	✅ Ingested → Unassigned immediately	✅ unchanged
+Waiting	✅ Ingested → Unassigned immediately	✅ unchanged
+Pending	❌ silently dropped	✅ fixed — treated same as Waiting
+Cancelled	✅ Removed from queue	✅ unchanged
+Two of the three Firebase jobs in pendingjobs/620611 had Status: "Pending" and were being silently dropped by both the client listener and the server handler. Both are now fixed.
+
+A note on Scheduled: we do not hold it — it goes straight into the Unassigned queue the moment it arrives, with a 📅 Sched badge on the card. The DispatchTimebefore timer controls when auto-dispatch starts offering it to drivers.
+
+Q3 — After a trip ends, do you re-scan the entire pendingjobs/{cid} path, or only listen for new child_added events?
+
+Previously: new events only — pre-existing Firebase jobs were silently skipped every time the dispatch console restarted. This is now fixed. On page load, once('value') fires a full re-scan of all existing jobs in pendingjobs/{cid} after setting the init flag, so nothing already in Firebase is missed:
+
+[pendingjobs] initial scan complete — 3 job(s) processed  ← confirmed in last session's logs
+
+If their dispatch app has the same child_added + init-flag pattern, they almost certainly have the same bug. The tell: "jobs written before the app restarted never show up."
+
+Q4 — Are you reading D002 as Available?
+
+Yes. Firebase online/620611/TAXI02 is readable (.read: true in rules) and D002 dispatched successfully this session — job #6112605074 → D002 Offered → status: Assigned confirmed in logs.
+
+The [bw-drivers] PERMISSION_DENIED error they may have seen in the console is not for online/ — it's for driverRegistrations/{cid} (driver self-registration listener), which is a non-critical path. We've added that rule to database.rules.json now too — your team can deploy it along with the other rule changes.

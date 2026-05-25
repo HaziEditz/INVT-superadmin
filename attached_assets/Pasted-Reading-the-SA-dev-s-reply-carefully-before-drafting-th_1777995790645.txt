@@ -1,0 +1,23 @@
+Reading the SA dev's reply carefully before drafting the response — one thing needs to be flagged and one thing needs clarifying:
+
+
+3 actions
+Good thorough reply from them. Before responding, two things stand out that need to be flagged back:
+
+pickupLocation shape — they say they treat it as a string with a typeof guard. We write it as an object {address, lat, lng}. Their guard is correct, but they should know the address string is at pickupLocation.address, not pickupLocation itself. pickupAddress is the flat string if they want to avoid the typeof check.
+
+Path notation — they said bookings/{cid} in the closing note. That path doesn't exist. The real paths are allbookings/{cid}/{jobId} (RTDB) and allbookings/{cid}/rides/{jobId} (Firestore). Worth confirming which one SA-Company.aspx actually reads from.
+
+TM multi-passenger — they read tmPassengers[0] by index. A booking can have 2+ TM passengers (a group of supported passengers each with their own card). Index 0 only works for single-passenger TM rides.
+
+Here's your reply:
+
+Thanks for the thorough rundown — all makes sense. Three small things to flag back:
+
+pickupLocation shape: On our end it's an object {address, lat, lng}, not a string — so your typeof guard is the right call. Just note that if you need the address string, pickupLocation.address is the property, or use pickupAddress which is always a flat string with no collision risk.
+
+Path check — bookings/{cid}: Your closing note mentions bookings/{cid}. The paths we write to are allbookings/{cid}/{jobId} (RTDB) and allbookings/{cid}/rides/{jobId} (Firestore). bookings/{cid} on its own doesn't exist — can you confirm which path SA-Company.aspx is actually querying? Want to make sure nothing is silently reading from a path that doesn't get written.
+
+TM multi-passenger: Your code reads tmPassengers[0].cardholderName. A booking can have 2+ TM passengers (e.g., two supported people in the same trip, each with their own card). tmVoucherNumbers is also an array for the same reason. If the SA portal only surfaces the first passenger's card, any subsequent ones won't appear in reports — worth deciding whether you want to show all of them or just the lead.
+
+Everything else looks solid. Good close on the audit.

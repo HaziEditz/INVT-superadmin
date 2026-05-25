@@ -1,0 +1,81 @@
+completeJob (dispatch trip) — what's written to allbookings/{cid}/{bookingId}
+This is an update() call (merge, not overwrite). These are the exact payment and fare fields written (lines 3317–3386):
+
+FinalFare:     fare               // meter reading at "Complete"
+fare:          fare               // SA portal lowercase alias
+meterFare:     fare               // SA portal fallback alias
+TotalFare:     fare               // fare breakdown header
+FareBase:      extras?.flagFall ?? 0
+FareTime:      extras?.waitingCost ?? 0
+FareDistance:  extras?.rideCost ?? (fare - flagFall - waitingCost)
+FareExtras:    0
+PaymentType:   job.paymentType ?? 'cash'
+paymentType:   job.paymentType ?? 'cash'
+paymentMethod: job.paymentType is card/eftpos       → 'card'
+               job.paymentType is account/tm/acc     → 'account'
+               anything else (including undefined)   → 'cash'
+cashPayment:    true if cash or gift_card
+cardPayment:    true if card or eftpos
+accountPayment: true if account, total_mobility, or acc
+
+Where job.paymentType comes from — the critical part
+job.paymentType is set at offer-accept time, not at completion time. The code (line 1732):
+
+paymentType: parsePaymentType(
+  jobData?.PaymentType ?? jobData?.AccountType ??
+  data.PaymentType     ?? data.AccountType     ?? data.paymenttype
+)
+
+parsePaymentType (line 212) maps strings:
+
+'card' / 'credit' → 'card'
+'eftpos' → 'eftpos'
+'account' / 'acct' → 'account'
+'total_mobility' / 'tm' / anything with 'mobility' → 'total_mobility'
+anything missing/unknown/undefined → 'cash' ← default fallback
+Conclusion for a card-online booking: the driver app does not independently know the passenger paid online by card. It reads whatever PaymentType field dispatch included in the notification or allbookings at offer time. If dispatch didn't write PaymentType: 'card' into that payload, job.paymentType is undefined, parsePaymentType(undefined) returns 'cash', and at completion the driver app writes:
+
+paymentMethod: 'cash'   ← overwrites any value already in allbookings
+PaymentType:   'cash'
+paymentType:   'cash'
+
+rideStatus/{cid}/{bookingId} at completion
+Only two fields written (line 3298–3303):
+
+status:    'Completed'
+updatedAt: Date.now()
+
+No paymentMethod written to rideStatus at all.
+
+completedJobs/{cid} at completion (dispatch)
+A push() record (lines 3392–3406) — no paymentMethod field, only:
+
+bookingId, companyId, driverId, vehicleId
+fare:        parseFloat(fare.toFixed(2))
+paymentType: job.paymentType ?? 'cash'
+source:      'dispatch'
+status:      'Completed'
+completedAt_ISO
+
+sync-offline-trip POST body
+The POST to /api/job/sync-offline-trip (lines 3415–3434) contains no payment fields at all:
+
+{
+  "BookingId", "CompanyId", "DriverId", "VehicleId",
+  "TotalFare", "FareBase", "FareTime", "FareDistance", "FareExtras",
+  "JobDistance", "FareCurrency", "DropLatLng", "DropAddress", "Status"
+}
+
+The sync endpoint receives fare but no payment method — it would need to resolve that from its own data (Stripe confirmation record, existing allbookings value, etc.).
+
+Summary for the dispatch team
+There is a race condition / overwrite risk:
+
+Passenger pays online by card → Stripe confirms → SA portal writes paymentMethod: 'card' to allbookings
+Dispatch sends the job offer — if PaymentType: 'card' is included in the offer notification → driver stores it → completion writes paymentMethod: 'card' ✅
+If dispatch does not include PaymentType in the notification → driver stores 'cash' → completion update() call overwrites paymentMethod: 'cash' back onto allbookings, clobbering whatever SA portal previously wrote ❌
+So the stripeConfirmedFare guard alone is not sufficient if the driver completion write runs after the Stripe confirmation write — the driver will still overwrite paymentMethod to 'cash'. The fix needs to either:
+
+Have dispatch always include PaymentType: 'card' in the notification payload for online-card bookings, or
+Have the SA portal's sync endpoint re-assert paymentMethod after the driver app's completion write lands, or
+Add a guard in completeJob to skip writing paymentMethod when the existing allbookings value is already 'card' (read-before-write, adds a round trip)

@@ -1,0 +1,42 @@
+Got everything I need. Two confirmed root causes:
+
+Root cause 1: Job 6112605074 has serviceType: "tm" but _bwCanDriverDoService returns false for TM on D002 — the company's modules only show {taxi:true} and D002's allowedServices defaults to {tm:false}. So D002 is always filtered out, the loop resets forever.
+
+Root cause 2: The pendingjobs child_added listener has a _pjInit guard (line 5866: if (!_pjInit && !isChange) return). Firebase fires child_added for all 3 existing jobs BEFORE once('value') sets _pjInit = true — so every pre-existing job is silently dropped. Only brand-new jobs written after the listener attaches are ever ingested.
+
+Fixing both now:
+
+
+3 actions
+Now restarting to pick up both fixes.
+
+
+4 actions
+The offer just landed. Look at the last 5 lines of the browser console:
+
+Job #6112605074 → driver D002 (fbUID:current, car:TAXI02) queue#1
+[acknowledgemethodx] driverid: D002  job: 6112605074
+[resolveAfter2Secondsx] driverid: D002
+{"jobstatus":"Offer","status":"Sent"}
+
+And the server confirms:
+
+job #6112605074 status=Offered
+
+The offer is now live in notification/D002 in Firebase. Here's what was wrong and what was fixed:
+
+Root cause 1 — Ghost job stuck forever:
+Job 6112605074 had serviceType: "tm" (Total Mobility). The dispatch console checks whether each driver is TM-enabled before sending an offer. D002 is a taxi driver — not TM-enabled — so it was filtered out every single cycle. The loop reset endlessly without ever writing to Firebase. Fixed: serviceType corrected to "taxi".
+
+Root cause 2 — Firebase jobs never ingested:
+The pendingjobs listener has a guard that skips pre-existing Firebase jobs. Firebase fires child_added for all 3 existing jobs before the init flag is set, so all 3 were silently dropped on every restart. Fixed: once('value') now re-scans and processes all existing jobs after the flag is set.
+
+E2E status:
+
+Step	Status
+Firebase rules open	✅
+autoDispatch: true	✅
+D002 visible	✅
+Offer written to notification/D002	✅ just confirmed
+Firebase 13-digit jobs ingested on restart	✅ fixed
+Driver accepts → trip completes	⏳ D002 needs to tap Accept

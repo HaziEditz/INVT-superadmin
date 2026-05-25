@@ -1,0 +1,26 @@
+ — I've now read all key screens. Here's a complete picture of the bugs found:
+
+#	File	Bug
+1	food.tsx + freight.tsx	Default payment is "cash" which is no longer in PaymentSelector — nothing appears selected on first load
+2	ride-complete/index.tsx	Payment method mapping maps "account", "business_account", "acc", "gift_card" all to "card" in history
+3	RideContext.tsx	computeCancelPolicy doesn't include "gift_card" in willRefund — a gift card cancellation within grace period wrongly gets "free" instead of "refund"
+Fixing all three in parallel now:
+
+
+5 actions
+Now let me run typecheck to confirm everything is clean, and also check if there are any other issues I might have missed in the booking screen's payment section and the profile wallet top-up:
+
+
+4 actions
+Typecheck is clean across the board. All three bugs are fixed. Here's a summary of what was found and corrected:
+
+Bug 1 — Food & Freight screens: no payment option appeared selected on load
+Both screens initialised payment as "cash", which is no longer shown in the PaymentSelector. The first render would display four options with none highlighted. Fixed by defaulting to "card".
+
+Bug 2 — Ride-complete screen: payment method lost in history for new types
+When writing a completed trip to Firestore history, the code only branched on "wallet" and "cash", mapping every other method — including "account", "business_account", "acc", and "gift_card" — to "card". History records for those payment types were silently misclassified. Fixed with a full mapping: business-account variants → "account", gift card → "gift_card", everything else → "card".
+
+Bug 3 — Cancel policy: gift card bookings got wrong cancellation outcome
+computeCancelPolicy only included "card" and "wallet" in willRefund. A gift card booking cancelled within the grace window would get outcome "free" (no refund) instead of "refund" (credit returned to wallet), which is wrong — the passenger paid real value. Fixed by adding "gift_card" to the refundable set.
+
+No other runtime bugs were found — auth, active-ride tracking, scheduled rides, towing, rental, SOS, and the chat modal all look structurally sound. The typecheck remains clean.

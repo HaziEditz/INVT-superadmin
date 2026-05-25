@@ -1,0 +1,23 @@
+Here's a clear summary of what to tell your Super Admin about how Stripe card payments work in the system:
+
+Card Payment Flow — how it works end to end:
+
+Passenger clicks "Pay by Card" → a Stripe Checkout session is created. The booking is written to allbookings immediately with Status: "PaymentPending" — but it is not added to pendingjobs, so the dispatcher does not see it yet.
+
+Passenger completes payment on Stripe's checkout page → Stripe fires a webhook to the BookaWaka server. The server then updates the booking to Status: "Pending" / paymentStatus: "paid" and only then writes to pendingjobs to trigger dispatch. This is the same as a normal cash job from the dispatcher's perspective.
+
+If the passenger abandons payment → the booking stays in allbookings as PaymentPending. It never reaches dispatch. The passenger can cancel it themselves from My Rides. Stripe sessions expire automatically after 24 hours.
+
+What the SA team needs to know / do:
+
+Stripe Dashboard access — someone on the SA side should have login access to the Stripe dashboard to monitor payments, issue refunds, and view disputes. Refunds are handled manually through Stripe — the platform does not have a refund button yet.
+
+Webhook must be active — the Stripe webhook pointing to /api/stripe/webhook must remain registered. If it goes down, card payments will never complete dispatch. The SA team can monitor webhook delivery failures in the Stripe Dashboard under Developers → Webhooks.
+
+STRIPE_WEBHOOK_SECRET env var — this secret must stay set in the environment. If it's ever rotated in Stripe, the new value needs to be updated here too.
+
+SA Portal — the portal reads allbookings, so they'll see all statuses: PaymentPending (incomplete), Pending (paid, awaiting driver), Completed, Cancelled. The paymentMethod field will be "card" and paymentStatus will be "pending" or "paid".
+
+No partial payments or split payments — each booking is one full Stripe transaction. There is no tip or surcharge handling built in yet.
+
+The key message is: a card booking only reaches the dispatcher after Stripe confirms the payment. PaymentPending bookings are invisible to drivers and the dispatch queue — they're just a placeholder until money clears.

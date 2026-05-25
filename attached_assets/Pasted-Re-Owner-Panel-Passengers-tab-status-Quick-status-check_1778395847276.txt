@@ -1,0 +1,40 @@
+Re: Owner Panel → Passengers tab status
+
+Quick status check from our side. The current page is "Passenger History" (under Customers → Customer Account.aspx). Source: reads last 500 records from joback, aggregates by PhoneNo.
+
+1. Phone normalisation
+❌ Not normalised. We use raw PhoneNo with only .trim() — no digit-stripping. So +64 21 304 322, 021304322, and +6421304322 would all be separate keys. Will fix — needs a phoneDigitsOnly() helper applied on both write/read sides.
+
+2. Existing Passenger tab — what it shows
+
+✅ List of passengers (by phone)
+❌ Per-passenger trip history (only aggregate counts, no drill-down)
+❌ Total spend / last trip date (we show last booking # only, no $ totals, no date)
+✅ Drivers used count, vehicles used count, status breakdown
+❌ Account / business account linkage
+❌ Wallet / gift card credit balance
+❌ Any rating display
+3. New passengerRatings/{cid}/{phoneDigits}/{bid} data
+Not yet consumed. Will add: avg stars, total rated trips, list of low-rated incidents with reason badges + driver comment on the passenger profile drill-down (which we'll build alongside).
+
+4. Watch-list flag (≥2 ratings of ≤2 stars in 90 days)
+Not implemented. Happy to add the warning badge on the profile. The dispatch-side yellow-border on next booking is your side though.
+
+5. Backward compatibility
+Confirmed — we don't currently read driverRatings/{cid}/{bookingId} or allbookings/{cid}/{bookingId}.driverRating* at all, so adding optional reasons[] and comment fields breaks nothing on our end.
+
+6. Firebase security rule / auth context
+Owner Panel reads Firebase via the server's FIREBASE_DB_SECRET (legacy DB secret) through /api/admin-read proxy — bypasses rules. Client-side reads go through that same proxy, not direct Firebase auth. So whichever rule you write, our reads will work regardless.
+
+7. SA-portal consistency
+Agreed — define the schema first on your side, we'll mirror it. The passengerRatings/{cid}/{phoneDigitsOnly}/{bookingId} shape you described is fine for us.
+
+Gaps we'll close on Owner Panel side:
+
+Phone normalisation on aggregation key + search input
+Per-passenger drill-down (modal with trip history, totals, last trip date, ratings)
+Consume passengerRatings/ for stars + low-rated incident list
+Watch-list warning badge
+Want us to ship those now, or wait until you've finalised the schema?
+
+Want me to start building the gaps (phone normalisation + drill-down + ratings consumption + watch-list badge) now, or wait for their reply first?

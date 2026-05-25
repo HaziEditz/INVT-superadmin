@@ -1,0 +1,33 @@
+Here's a clear picture of what's next, in order of priority:
+
+Right now — waiting on others
+Firebase deploy — someone with CLI access to taxilatest runs firebase deploy --only database. Until this happens, some client-side reads (driver app, passenger app) are silently blocked on 30 paths. Chase whoever has that access.
+
+Dispatcher smoke test — once the deploy is done, they re-run GET /dev/smoketest and confirm 27/27. No action from you until they report back.
+
+Next — schedule the E2E test session
+Get all 6 dev teams on a call at the same time (30–45 min). The test script is already written in Sections 2–8 of PLATFORM-INTEGRATION-CHECKLIST.md. You run through:
+
+Driver goes online → GPS on map
+Passenger books → dispatcher assigns → driver completes → revenue shows in owner portal and SA report
+Website booking → same flow
+TM trip end to end
+Food delivery end to end
+Freight with POD columns
+Session revoke
+Every team marks their column ✅ or ❌ as they go. Any ❌ becomes a bug fix before launch.
+
+SA portal — things you can build while waiting
+These are SA portal features that don't depend on the E2E test or the Firebase deploy:
+
+Feature	What it is	Effort
+contactInquiries reader	Simple page to view and mark-read website contact form submissions — website already writes them	Small
+Driver payout report improvements	Currently shows gross fare — when net payout feature is agreed with owner portal, both sides build together	Medium (joint)
+Freight POD photo/signature columns	Future — once field names are agreed across all teams	Small (once agreed)
+Operator onboarding UX	SA-Onboard.aspx and SA-Registrations.aspx are separate pages — could be merged into one workflow	Medium
+After the E2E test passes — launch checklist
+Firebase security rules tightened (currently auth != null on everything — production would benefit from company-scoped rules)
+Push notification credentials confirmed across environments
+Error monitoring set up (currently console.error only)
+Backup / restore plan for Firebase data
+What do you want to tackle first — chase the Firebase deploy, prep for the E2E session, or start on one of the SA portal features?

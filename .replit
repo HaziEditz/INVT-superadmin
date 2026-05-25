@@ -1,0 +1,47 @@
+modules = ["web", "nodejs-20", "python-3.11", "postgresql-16"]
+[agent]
+expertMode = true
+stack = "BEST_EFFORT_FALLBACK"
+integrations = ["resend:1.0.0"]
+
+[nix]
+channel = "stable-25_05"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "npx ts-node src/app.ts"
+waitForPort = 5000
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[deployment]
+deploymentTarget = "autoscale"
+run = ["npx", "ts-node", "src/app.ts"]
+
+[userenv]
+
+[userenv.shared]
+FIREBASE_WEB_API_KEY = "AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA"
+RESEND_API_KEY = "re_HzEaXGAc_LNTDvTSQZPw65BVcehF2LWZi"
+STRIPE_WEBHOOK_SECRET = "whsec_8tDgxwZs9uwXrrzImFeMwBbjgFTXpim6"

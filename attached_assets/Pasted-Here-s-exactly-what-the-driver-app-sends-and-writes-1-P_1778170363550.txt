@@ -1,0 +1,60 @@
+Here's exactly what the driver app sends and writes:
+
+1 — POST /api/job/sync-offline-trip payload
+Called twice — once for dispatch trips (completeJob) and once for hail trips (completeHailTrip). Both share the same shape:
+
+Dispatch trip (DriverContext.tsx ~line 3415):
+
+{
+  "BookingId":    "12345",
+  "CompanyId":    "620611",
+  "DriverId":     "D002",
+  "VehicleId":    "TAXI02",
+  "TotalFare":    18.50,
+  "FareBase":     3.50,
+  "FareTime":     2.10,
+  "FareDistance": 12.90,
+  "FareExtras":   0,
+  "JobDistance":  8.432,
+  "FareCurrency": "NZD",
+  "DropLatLng":   "-36.848461,174.763336",
+  "DropAddress":  "14 Queen St, Auckland",
+  "Status":       "Completed"
+}
+
+Note: no Source field on dispatch trips; FareDistance is calculated as max(0, TotalFare − FareTime − FareBase) when extras.rideCost is absent.
+
+Hail trip (DriverContext.tsx ~line 5507) — identical fields plus one extra:
+
+{
+  ...same fields...,
+  "Source": "hail"
+}
+
+Field mapping:
+
+JSON field	Source
+BookingId	job.bookingId / hailBookingId
+TotalFare	raw fare float (pre-toFixed) for dispatch; parseFloat(fare.toFixed(2)) for hail
+FareBase	extras.flagFall → tariff flagFall
+FareTime	extras.waitingCost → meterWaitingCost snapshot
+FareDistance	extras.rideCost = fare − waitingCost − flagFall
+JobDistance	extras.distanceKm → meterDistance snapshot (km, 3dp)
+DropLatLng	"lat,lng" string or empty string if no GPS
+DropAddress	entered by driver at completion
+No PaymentMethod field is sent to this endpoint — payment is written separately to Firebase (allbookings, completedJobs) and to rideStatus.
+
+2 — Writes to online/{cid}/{vid}
+All writes are in context/DriverContext.tsx. The paths and triggers:
+
+Trigger	Path	Fields written
+Shift start / vehicle change	online/{cid}/{vid}/current	driverid, drivername, vehiclenumber, VehicleId, vehiclestatus, pushToken, lat, lng, hasGps, time, … (full set via writeOnlinePresence)
+GPS tick (every 15 s, throttled to 10 s min)	online/{cid}/{vid}/current	lat, lng, hasGps: true, time
+App foreground resume	online/{cid}/{vid}/current	vehiclestatus (current), time — then a second write with fresh GPS lat/lng
+acceptJob	online/{cid}/{vid}/current	full job fields: vehiclestatus:'Assigned', joboffer:1, jobCount:1, JobphoneNo, jobpickup, jobdropoff, currentJobId
+acceptJob (top-level)	online/{cid}/{vid}/vehiclestatus	'Assigned' — separate top-level field so dispatch page-reload sees it
+startHailTrip	online/{cid}/{vid}/current	joboffer:0, jobCount:1 (after writeOnlinePresence('Busy'))
+completeHailTrip	online/{cid}/{vid}/current	joboffer:0, jobCount:0, JobphoneNo:'', jobpickup:'', jobdropoff:'', currentJobId:null (after writeOnlinePresence('Available'))
+startMeter	via writeOnlinePresence('Busy', vid)	full presence record with vehiclestatus:'Busy'
+_freeDriver / completeJob	online/{cid}/{vid}/vehiclestatus (top-level)	'Available' or 'Declined'/'Cancelled'
+writeOnlinePresence(status, vehicleId) always writes to online/{cid}/{vid}/current — it never touches the top-level vehiclestatus field. The top-level field is patched separately in acceptJob and _freeDriver/completeJob to keep dispatch page-reload correct.

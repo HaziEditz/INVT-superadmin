@@ -1,0 +1,25 @@
+Here's the full response to all your questions, plus what was just fixed:
+
+Timezone fixes applied (this session):
+
+"Today's jobs" filter — there is no midnight-anchored filter on the live dispatch queue. The queue shows all non-terminal jobs regardless of date (no cutoff). The only date-filtered endpoint is the closed-jobs/reports search, which already uses _tzTodayStr(getCompanyTZ(companyId)) — correct. No setHours(0,0,0,0) exists anywhere in the codebase.
+
+_tzTodayStart(tz) was broken — the previous implementation called getTimezoneOffset() which returns 0 on a UTC server, so it produced UTC midnight instead of NZ midnight. Fixed: now uses an Intl probe to compute the true UTC-offset for the IANA timezone before calculating midnight, server-TZ-agnostic.
+
+All stored timestamps — done in the previous session: all 34 nowNZ() storage calls replaced with new Date().toISOString(). Storage is now UTC ISO throughout.
+
+All display timestamps — _tzDisplay(ts, tz) helper is live on both server and client. The two suspension message displays that had hardcoded 'Pacific/Auckland' are now getCompanyTZ(sessionCompanyId).
+
+Your specific questions:
+
+Which Firebase path is updated when a driver is assigned?
+The core job store is SQL-backed (in-memory proxy to taxitime.co.nz MSSQL). Firebase is only written for Rental jobs specifically: rentalTaxiRequests/{rentalRequestId} is PATCHed with { status: 'confirmed', assignedDriverId, assignedAt: new Date().toISOString(), jobId }.
+
+Does the assignment write driverId, driverName, vehicleId, assignedAt?
+On the job record: DriverId, VehicleId, VehicleNo, CallSign, UserFName, UserLName are set. There is no assignedAt field on the core job — it only appears in the Rental Firebase write. The driver record gets vehiclestatus = 'Picking'. If you need assignedAt on all job types, I can add it.
+
+Do ALL booking types appear in dispatch?
+Yes — the pending/assigned tabs show all non-terminal jobs regardless of service type. The accepted serviceType values are taxi, food, freight, tm. Hail and passenger-app bookings also flow through the same pipeline. Delivery jobs are the one exception — they appear in a separate DY tab, not the main queue.
+
+When a job is completed via dispatch, does completedAt get written?
+Yes, but the field is JobCompleteTime (not completedAt) — written as new Date().toISOString() across all completion paths (force-complete, driver-complete, station-complete). completedAtMs (epoch ms) is also set. The report/closed-jobs endpoint exposes this as completedAt in its response shape. If the driver app expects a field literally named completedAt, let me know and I'll add an alias.

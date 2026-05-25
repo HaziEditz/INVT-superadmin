@@ -1,0 +1,201 @@
+Here are all four answers, straight from the source:
+
+1. _normFbJob() — field normalisation for pendingjobs ingestion
+File: server.js:822 — called by [IngestPassengerJob] whenever the client's Firebase pendingjobs listener relays a passenger/web booking to the server.
+
+It reads from Firebase with dual-case fallback on every field:
+
+function _normFbJob(job) {
+  // Location: nested object OR flat fields
+  const _pLoc = job.pickupLocation  || job.PickupLocation  || {};
+  const _dLoc = job.dropoffLocation || job.DropoffLocation || {};
+  const pickLat = job.PickupLat || job.pickupLat || job.PickLat || job.pickLat || _pLoc.lat || 0;
+  const pickLng = job.PickupLng || job.pickupLng || job.PickLng || job.pickLng || _pLoc.lng || 0;
+  const dropLat = job.DropoffLat || job.dropoffLat || job.DropLat || job.dropLat || _dLoc.lat || 0;
+  const dropLng = job.DropoffLng || job.dropoffLng || job.DropLng || job.dropLng || _dLoc.lng || 0;
+  return {
+    name:          job.PassengerName  || job.passengerName  || job.name          || '',
+    phone:         job.PhoneNo        || job.phoneNo        || job.phone          || '',
+    pickAddress:   job.PickupAddress  || job.pickupAddress  || job.PickAddress    || job.pickAddress  || '',
+    pickLatLng:    (job.pickLatLng || job.PickLatLng) || (pickLat && pickLng ? `${pickLat},${pickLng}` : '0,0'),
+    dropAddress:   job.DropoffAddress || job.dropoffAddress || job.DropAddress    || job.dropAddress  || '',
+    dropLatLng:    (job.dropLatLng || job.DropLatLng) || (dropLat && dropLng ? `${dropLat},${dropLng}` : '0,0'),
+    vehicleType:   job.VehicleType    || job.vehicleType    || '',
+    paymentMethod: job.PaymentMethod  || job.paymentMethod  || 'cash',   // ← always present; default 'cash'
+    estimatedFare: parseFloat(job.EstimatedFare || job.estimatedFare || 0),
+    notes:         job.notes || job.Notes || '',
+    passengers:    parseInt(job.passengers || job.Passengers || '1') || 1,
+    serviceType:   // normalised: 'taxi'|'food'|'freight'|'tm'
+    paymentStatus: (job.paymentStatus || job.PaymentStatus || '').toLowerCase(),
+    paymentType:   job.paymentType    || job.PaymentType   || '',
+    // Scheduled pickup — three-tier parse (ScheduledForMs → ISO string → parseInt):
+    scheduledFor:  job.ScheduledForMs (number) || new Date(job.ScheduledFor).getTime() || parseInt(job.ScheduledFor),
+    // TM fields:
+    tmVoucherNo, tmPassengerName, tmCardExpiry, tmSubsidy, tmSubsidyHoist,
+    tmPassengerPays, tmHoistRequired, tmHoistCount, tmPaymentMethod, councilId
+  };
+}
+
+Key implication for SA portal: when writing to pendingjobs, use either case — the server accepts both. However, the server normalises paymentMethod to lowercase and defaults to 'cash' if absent. paymentStatus is always lowercased.
+
+2. allbookings write at Completion
+File: server.js:4845 ([DriverStatusChanged], _patchAllbookingsCompletion IIFE — §108d)
+
+This fires server-side using getFirebaseServerToken(), so it runs even without a client auth session.
+
+// Fields written to: allbookings/{cid}/{bookingId}
+{
+  Status:        'Completed',
+  paymentMethod: pm,       // resolved: job.PaymentType || job.paymentType ||
+  PaymentMethod: pm,       //           job.PaymentMethod || job.paymentMethod || 'cash'
+  completedAt:   job.JobCompleteTime || new Date().toISOString(),
+  // Conditionally — only if present on the job:
+  paymentStatus: job.paymentStatus || job.PaymentStatus,   // e.g. 'paid' for web/Stripe jobs
+  PaymentStatus: same,
+  stripeChargeId: job.stripeChargeId || job.StripeChargeId // only for Stripe-charged jobs
+}
+
+Does it always set paymentMethod? Yes — pm is resolved from a four-way chain before this fires, and the IIFE won't run unless tok && cid && job.Id are all truthy. The only scenario where allbookings would have the wrong (or missing) paymentMethod is if the record was created by a pre-§108d path and the server failed to get a Firebase token at completion time.
+
+3. allbookings write at Assignment
+File: Default.aspx:8807 (_bwWriteAssignmentToFirebase() — client-side, called from _resolveAcceptance() and manual dispatch)
+
+// Fields written to: allbookings/{cid}/{bookingId}
+// Uses .update() — merges, does NOT wipe existing fields
+{
+  Status:         'Assigned',
+  AssignedDriver: String(driverId),   // SQL driverid
+  AssignedAt:     new Date().toISOString()
+}
+
+Also written at the same moment to:
+
+Path	Fields
+pendingjobs/{cid}/{bookingId}	Same three fields above
+online/{cid}/{vehicleId}	{ vehiclestatus: 'Assigned' }
+online/{cid}/{vehicleId}/current	{ jobId, currentJobId, vehiclestatus: 'Assigned' }
+jobs/{cid}/{bookingId}	{ status:'assigned', driverId, vehicleId, AssignedAt }
+Note: The initial job record in allbookings is written by InsertBookingv4 on creation (server.js:3567) — that record contains the full booking payload (BookingId, Name, PhoneNo, PickAddress, DropAddress, PickLatLng, DropLatLng, BookingDateTime, VehicleType, BookingSource, ServiceType, ScheduledFor, createdAt). The assignment .update() above only adds/overwrites the three assignment fields.
+
+4. driverEarnings write — path, structure, and dedup logic
+File: Default.aspx:12019 — runs inside the [DriverStatusChanged] response handler, triggered when completedJob is present in the server response.
+
+Path: driverEarnings/taxi/{companyId}/{sqlDriverId}
+
+Dedup logic (double-count guard):
+
+// Query completedJobs for this booking from ALL writers
+firebase.database()
+  .ref('completedJobs/' + cid)
+  .orderByChild('bookingId').equalTo(bookingId)  // requires .indexOn ["bookingId"] in rules
+  .once('value')
+  .then(function(existSnap) {
+    var count = 0;
+    existSnap.forEach(function() { count++; });
+    if (count > 1) {
+      // Driver app already wrote a push-key completedJobs record for this booking
+      // AND incremented earnings — we skip to prevent double-count.
+      return;
+    }
+    // Only our record → safe to increment
+    _deRef.set({
+      driverName:    _cj.driverName || existing.driverName || '',
+      totalEarned:   (existing.totalEarned   || 0) + fare,
+      pendingAmount: (existing.pendingAmount  || 0) + fare,
+      tripCount:     (existing.tripCount      || 0) + 1,
+      lastPaidAt:    existing.lastPaidAt,    // preserved exactly, even if 0
+      updatedAt:     Date.now(),
+    });
+  });
+
+Critical Firebase rule required for the dedup query to work:
+
+"completedJobs": {
+  "$companyId": {
+    ".indexOn": ["bookingId"]
+  }
+}
+
+Without this index, the orderByChild('bookingId') query still works but Firebase warns and does a full table scan — fine at low volume, degrades at scale.
+
+The lastPaidAt field is deliberately preserved using hasOwnProperty rather than falsy-check, because 0 is a valid stored value (driver has never been paid — timestamp of zero).
+
+
+Worked for 1 minute
+till need from dispatch dev:
+The summary of DISPATCH-FLOW-COMPLETE.md mentions a "paymentMethod resolution chain" in the completion flow. We need the actual code from that section — specifically what [DriverStatusChanged] writes to allbookings.paymentMethod at completion, because that's the root of §108d.
+
+2 minutes ago
+
+Deciding on payment method resolution
+Already have the exact lines from my earlier reads. Let me pull the full resolution chain in context:
+
+
+2 actions
+Here is the exact code, verbatim from server.js lines 4807–4872:
+
+Step 1 — resolve _cjPayMethod (line 4807–4814)
+// §108d — resolve paymentType correctly for web (card) bookings.
+// Web booking jobs carry paymentMethod:'card' + paymentStatus:'paid' but
+// do NOT have PaymentType/paymentType (those are TM-specific fields).
+// Priority: PaymentType > paymentType > paymentMethod > PaymentMethod > 'cash'
+const _cjPayMethod = (
+  job.PaymentType   || job.paymentType   ||
+  job.PaymentMethod || job.paymentMethod || 'cash'
+).toLowerCase();
+
+Four-field priority chain, always lowercased, hard-fallback to 'cash'.
+
+Job origin	Field that wins
+TM (Total Mobility)	job.PaymentType = 'total_mobility'
+Cash dispatcher job	job.paymentMethod = 'cash'
+Web booking (Stripe)	job.PaymentMethod = 'card' or job.paymentMethod = 'card'
+None of the above	'cash' (hardcoded default)
+Step 2 — _cjPayMethod stamped into _dscCompletedJob (lines 4825–4828)
+_dscCompletedJob = {
+  // ...
+  paymentType:    _cjPayMethod,    // same value, both fields always written
+  paymentMethod:  _cjPayMethod,
+  paymentStatus:  job.paymentStatus || job.PaymentStatus || '',
+  stripeChargeId: job.stripeChargeId || job.StripeChargeId || null,
+  // ...
+};
+
+This object is returned to the dispatch client in the AJAX response. The client then writes completedJobs/{cid}/{tripId} using it.
+
+Step 3 — server patches allbookings directly (lines 4848–4872, §108d IIFE)
+(function _patchAllbookingsCompletion(j, cid, pm) {
+  getFirebaseServerToken().then(function(tok) {
+    if (!tok || !cid || !j.Id) return;
+    const _abPatch = {
+      Status:        'Completed',
+      paymentMethod: pm,         // ← _cjPayMethod, lowercased
+      PaymentMethod: pm,         // ← both cases always written
+      completedAt:   j.JobCompleteTime || new Date().toISOString(),
+    };
+    // paymentStatus only written if present on the job
+    if (j.paymentStatus || j.PaymentStatus) {
+      _abPatch.paymentStatus = j.paymentStatus || j.PaymentStatus;
+      _abPatch.PaymentStatus = j.paymentStatus || j.PaymentStatus;
+    }
+    // stripeChargeId only written if present on the job
+    if (j.stripeChargeId || j.StripeChargeId) {
+      _abPatch.stripeChargeId = j.stripeChargeId || j.StripeChargeId;
+    }
+    firebaseDbPatch(`allbookings/${cid}/${j.Id}`, _abPatch, tok);
+  });
+})(job, sessionCompanyId, _cjPayMethod);
+
+What this means for the SA portal
+Field	Always written at completion?	Value
+Status	Yes	'Completed'
+paymentMethod	Yes	resolved chain above (lowercased)
+PaymentMethod	Yes	same value
+completedAt	Yes	ISO string
+paymentStatus	Only if non-empty on job	'paid' for Stripe/web jobs
+PaymentStatus	Only if non-empty on job	same
+stripeChargeId	Only if present on job	Stripe charge ID
+Root cause of §108d: before this fix, the completion path only wrote Status:'Completed' to allbookings and left paymentMethod as whatever was stored at booking-creation time — which for web bookings was whatever the Stripe webhook wrote (sometimes 'card', sometimes absent). The IIFE now always writes both cases of paymentMethod using the four-field resolution chain, server-side, using a service-account token so it fires even if the dispatcher's browser session has expired.
+
+
+Worked for 38 seconds

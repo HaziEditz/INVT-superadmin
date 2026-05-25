@@ -1,0 +1,354 @@
+🚗 Rental Cars on BookaWaka — Full Flow
+How it's different from taxi
+Taxi	Rental
+Driver	Assigned by platform	Customer drives themselves
+Duration	Trip (minutes)	Booking (hours/days/weeks)
+Pricing	Distance + time	Rate × duration
+Payment	On completion	Upfront + deposit
+Vehicle	Platform's problem	Rental company's fleet
+Availability	Real-time drivers	Calendar-based
+Two models — which one you should offer
+Model A — Self-pickup (Simpler)
+Customer books online → goes to rental company depot → picks up car → returns it.
+BookaWaka handles booking + payment. Rental company handles everything physical.
+
+Model B — Vehicle Delivery (Premium)
+Customer books → rental company driver delivers the car to the customer → customer drives it → driver collects it when done.
+This uses your existing driver app — same dispatch flow, source = rental.
+
+Start with Model A. Add Model B later when rental companies ask for it.
+
+Onboarding a Rental Company — Full Flow
+Step 1 — SA onboards them (same as taxi)
+
+SA portal → create company account
+Stripe Connect sub-account set up
+Commission % set by SA (e.g. 12% per booking)
+Modules enabled: rental: true in companySettings
+Step 2 — Rental company sets up their fleet (Owner Panel)
+
+Add vehicles: make, model, year, category (economy/SUV/van/luxury), photos
+Set pricing per vehicle: hourly rate / daily rate / weekly rate
+Set pickup location(s) / depot address
+Set mileage policy: unlimited or X km/day
+Set deposit amount per vehicle category
+Add-ons: GPS, child seat, insurance — each with a price
+Step 3 — Set availability (Owner Panel)
+
+Calendar per vehicle
+Block out dates for maintenance, existing bookings, seasonal closure
+Set pickup hours (e.g. Mon–Fri 8am–5pm)
+Step 4 — Go live
+
+Vehicles appear on passenger app and website
+Bookings start coming in
+Customer Booking Flow
+1. Open passenger app or website
+2. Tap "Rent a Car"
+3. Enter: pickup date + time, return date + time, pickup location
+4. Browse available vehicles (filtered by availability + location)
+5. Tap a vehicle → see full details (photos, specs, what's included)
+6. See price breakdown:
+      Daily rate × days
+      + Add-ons selected
+      + Platform fee
+      + Refundable deposit
+      = Total
+7. Pay:  Stripe charges full rental + holds deposit as authorisation
+8. Booking confirmed → Job ID generated (source = rental)
+9. Customer gets: confirmation, pickup address, rental company contact
+10. Customer picks up car at depot (shows booking ID)
+11. On return → rental company confirms return in Owner Panel
+12. Deposit released automatically via Stripe (or partially kept for damage)
+
+What Happens with the Deposit
+This is the tricky part — Stripe handles it cleanly:
+
+At booking:    Stripe authorises (holds) the deposit — money not taken yet
+At pickup:     Rental company confirms pickup in Owner Panel → deposit capture confirmed
+At return:     Rental company marks returned → deposit released (or damage amount kept)
+If damage:     Owner Panel → enter damage amount → Stripe captures that amount, releases rest
+
+This is called a Stripe Payment Intent with manual capture — it's already possible with your Stripe setup.
+
+What Needs to Be Built
+SA Portal additions:
+
+Rental company onboarding flag (modules/rental: true)
+Rental reservations view per company
+Rental commission reports
+Owner Panel (rental company side):
+
+Fleet management — add/edit/delete vehicles with photos
+Availability calendar per vehicle
+Reservation list — confirm pickup, confirm return, log damage
+Deposit management (release / partial capture)
+Vehicle categories + add-on prices
+Passenger App / Website:
+
+"Rent a Car" section (new tab/page)
+Date + location search
+Vehicle browse + filter (category, price, features)
+Vehicle detail page with photos
+Booking + payment flow
+Booking management (view, cancel)
+Firebase paths (new):
+
+rentalFleet/{companyId}/{vehicleId}/
+  make, model, year, category, photos[], pricing, deposit, addOns, status
+rentalAvailability/{companyId}/{vehicleId}/{YYYYMMDD}: true/false
+rentalReservations/{companyId}/{reservationId}/
+  customerId, vehicleId, startDate, endDate,
+  pickupLocation, totalPrice, deposit,
+  status: pending|confirmed|active|completed|cancelled
+  paymentIntentId (Stripe)
+
+Revenue for BookaWaka
+Source	How
+Commission per booking	% of rental value (e.g. 10–15%)
+Monthly subscription	Rental company pays flat fee to be listed
+Add-on commission	% of GPS/insurance add-ons
+Deposit float	While held by Stripe, interest stays with platform
+Best model: Monthly subscription + lower commission %. Rental companies are businesses — they prefer predictable costs.
+
+What Shares Existing Infrastructure
+Existing system	Used for rentals
+Stripe Connect	Same sub-accounts, same payout flow
+Job ID system	source = rental, same format
+Company onboarding	Same SA flow, just rental module enabled
+SA portal company page	Same company view, add rental tab
+Firebase rules	Same company-scoped pattern
+Driver app (Model B)	Vehicle delivery jobs, same dispatch
+Suggested Build Order (when ready)
+SA portal — enable rental module for a company
+Owner Panel — fleet management + availability calendar
+Website — search + browse + book (rentals convert better on web than app)
+Passenger app — add rentals tab
+Deposit/damage flow last (once basics are working)
+Big picture: about 60% of the infrastructure is already there. The new work is the availability calendar, vehicle photos/storage, and the deposit capture flow. Everything else slots into what BookaWaka already has.
+
+Want to think through any specific part in more detail before building?
+
+yes strip can hanlde that?not built yet full flow first
+
+5 hours ago
+
+1 message & 1 action
+not building we need to add this with what u said so far for onwer renalts compis base chagres like per day some time per hour if they keep the car for 25 hours they pay for full 2 days .. 2nd price depand on car type econmy suv /4w luxury etc car option and prices 3 extra fee insurnace damage .additinaol drievr fee young driever fee,gps child seat fuel chargs if not fild, 3 loaction based changes like airport renatl more expansive city suburb branch cheaper 5 millange distance changres included unlimeted km ,daily limit extra distance charges per km ?miles 6 time based penalites late retrtun hourly fee then full extra dayearly return sometime no refund 7 spical offers etc.adertise low daily price ,quck summary for per car per day final cost whats invole .8 basick inurance extra charges whaht they to sel excess reduction lower your rick from pay exseess .if they buy extra protecion so they will not pay the exsess etc this and .like package incurance .not building need flow withis for renatls and what u offer me included that .?then we will go from there .
+
+
+Show more
+3 minutes ago
+
+Planning rental car pricing flow (6 seconds)
+This is a serious pricing engine. Here's the complete flow covering all 8 areas:
+
+🚗 BookaWaka Rental — Complete Pricing Engine Flow
+1. BASE CHARGES — Time Billing
+How rental companies set it:
+
+Per vehicle, owner panel sets:
+  Hourly rate:  $15/hr  (for short rentals, e.g. under 24hrs)
+  Daily rate:   $80/day
+  Weekly rate:  $420/week (usually discounted vs daily × 7)
+  Monthly rate: $1,400/mo (optional)
+
+The 25-hour rule — how time rounds up:
+
+0–1 hr     → 1 hr charge (or minimum 3hrs)
+1–24 hrs   → 1 day charge
+25 hrs     → 2 days  ← your example — rounds to full next day
+48 hrs     → 2 days
+49 hrs     → 3 days
+Rule: ceil(total hours / 24) = days billed
+If hourly rate is offered: first 24hrs charged at daily rate, 
+  each hour after = hourly rate (up to next day threshold)
+
+Weekly/monthly breakpoints:
+
+If rental ≥ 7 days → weekly rate kicks in automatically (cheaper)
+If rental ≥ 28 days → monthly rate kicks in
+System shows customer: "Tip: adding 1 more day drops to weekly rate and saves $X"
+
+2. VEHICLE CATEGORY PRICING
+Categories owner sets (each with own price):
+
+Category	Example daily rate	Who uses it
+Economy	$45/day	Budget travellers, city use
+Compact	$55/day	Small families
+Standard/Mid-size	$70/day	Most common
+SUV / 4WD	$95/day	Families, outdoors, NZ rural
+People Mover / Van	$110/day	Groups, sports teams
+Luxury	$180/day	Business, special occasions
+Ute/Truck	$120/day	Tradespeople, moving
+Per-vehicle overrides:
+Even within a category, each specific car can have its own price. A brand new SUV costs more than an older one in the same category. Owner sets category default + per-vehicle adjustment.
+
+Displayed to customer as:
+
+Economy from $45/day  → click to see specific cars available
+SUV from $89/day      → click to see specific cars available
+
+The "from" price is the advertised anchor (Point 7 — advertising).
+
+3. EXTRA FEES (Add-ons)
+Owner panel sets which add-ons they offer and the price:
+
+Always-available extras:
+Additional Driver       $X/day or $X flat per rental
+Young Driver (under 25) $X/day surcharge  ← system detects DOB from booking
+GPS / Satnav            $X/day
+Child Seat (infant)     $X/day
+Booster Seat            $X/day
+Roof Rack               $X flat
+Snow Chains             $X flat (seasonal)
+
+Fuel charges:
+Policy options (rental company picks one):
+  A. Full-to-Full: Customer returns with full tank. If not:
+       Fuel shortfall fee = missing litres × pump rate + $X admin fee
+  B. Pre-purchase fuel: Customer pays for a full tank upfront.
+       No refund for unused fuel. Simple.
+  C. Fuel Inclusive: Price already includes fuel (owner sets this)
+
+Fuel shortfall at return → Owner Panel enters litres missing → Stripe captures from deposit
+
+How add-ons show in booking:
+Step 1: Choose car
+Step 2: Choose extras (each toggleable, price shown per day × rental days)
+Step 3: Price summary updates live as they add/remove
+Step 4: Confirm + pay
+
+4. LOCATION-BASED PRICING
+Rental company sets pickup locations, each with a location surcharge:
+
+Locations owner sets:
+  Airport (AKL)       + $35 flat surcharge  ← airport concession fee passed on
+  City Branch (CBD)   + $0   (base rate)
+  Suburb Branch       - $10  (cheaper, incentivise)
+  Hotel delivery      + $25 delivery fee
+  One-way (drop at different location) + $X one-way fee
+
+One-way rentals:
+Customer picks up at Airport, drops off at City. Owner sets the one-way fee. System shows it clearly before booking.
+
+Location surcharge logic:
+
+Base daily rate: $80
+Airport pickup:  $80 + $35/rental (not per day — flat fee)
+Customer sees:  "$80/day | Airport fee: $35 (one-time)"
+
+5. MILEAGE / DISTANCE
+Owner sets per vehicle or per category:
+
+Option A — Unlimited km:
+  No tracking. Price includes all km.
+  "Unlimited mileage included" badge shown.
+Option B — Daily km limit:
+  e.g. 150 km/day included
+  Extra km: $0.25/km (owner sets the rate)
+  System calculates: rental days × 150 = total included km
+  Customer told upfront: "150 km/day included, $0.25/km after"
+Option C — Total km limit:
+  e.g. 500 km total for the rental
+  Extra: $0.28/km
+Miles vs km: Owner sets which unit. System converts for display.
+
+How extra km is charged:
+
+On return: rental company enters odometer reading in Owner Panel
+System calculates: km used - km included = extra km
+Extra charge = extra km × rate per km
+Stripe captures this amount from deposit (or charges separately)
+
+6. TIME-BASED PENALTIES
+Late Return:
+Grace period: 30–59 minutes → no charge (owner sets grace)
+60–3 hrs late  → hourly rate charged per hour over
+3+ hrs late    → full extra day charged
+Owner panel sets:
+  Grace period (mins): 30
+  Late fee hourly rate: $20/hr
+  Full day threshold: 3hrs
+
+Early Return:
+Options (owner chooses per rental):
+  A. No refund for unused days (most rental companies)
+  B. Partial refund (credit for unused full days, not partial days)
+  C. Full refund (unlikely but owner can offer)
+  
+Owner panel default setting + customer sees policy at booking:
+"Early returns: no refund for unused days"
+
+No-show / Cancellation:
+Owner sets cancellation policy:
+  Free cancellation: up to X hours before pickup
+  Late cancellation (within X hrs): $X fee or % of rental
+  No-show: full first day charge
+  
+Stripe handles: if cancellation is chargeable, partial capture from deposit
+or new charge against saved card
+
+7. SPECIAL OFFERS & ADVERTISING
+This is where you beat the competition in how the price is displayed:
+
+Advertised "from" price:
+What shows on browse page:
+  [Car photo]
+  Toyota Corolla — Economy
+  ★★★★☆  12 reviews
+  
+  FROM $45/day*         ← lowest possible daily rate (unlimited km, own insurance)
+  
+  [Book Now]
+  
+*Price shown is base rate. Extras, insurance, location fees calculated at checkout.
+
+Quick Summary Card (per car, per booking):
+This is the key — show the FULL cost before they pay, not surprise them at checkout.
+
+╔══════════════════════════════════════╗
+║  YOUR RENTAL SUMMARY                 ║
+╠══════════════════════════════════════╣
+║  Toyota Corolla — Economy            ║
+║  3 days (Fri 9am → Mon 9am)         ║
+╠══════════════════════════════════════╣
+║  Base rate: $45/day × 3       $135  ║
+║  Airport pickup fee            $35  ║
+║  GPS add-on: $8/day × 3        $24  ║
+║  Young driver: $12/day × 3     $36  ║
+║  Basic insurance (included)     $0  ║
+╠══════════════════════════════════════╣
+║  SUBTOTAL                      $230 ║
+║  Platform fee (5%)             $11  ║
+╠══════════════════════════════════════╣
+║  TOTAL CHARGED NOW             $241 ║
+║  Deposit held (released on return)$300║
+╚══════════════════════════════════════╝
+
+Promotional offers owner can set:
+Weekend special: 2 days for price of 1.5
+Early bird: book 7+ days in advance = 10% off
+Long rental: 7+ days = weekly rate auto-applied
+Loyalty code: % discount (SA generates codes)
+Flash sale: specific dates at reduced rate
+
+8. INSURANCE PACKAGES
+This is the most important upsell in car rental — most margin is made here.
+
+How it works — 3 tiers:
+Tier 1 — Basic Cover (always included, no extra charge):
+
+What it covers:  Third party liability (legally required)
+Excess (what customer pays if damage):  $2,500–$4,000
+Theft excess:    $2,500
+Windscreen:      NOT covered (customer pays full replacement)
+Undercarriage:   NOT covered
+Tyres:           NOT covered
+
+Tier 2 — Standard Protection (mid-price add-on):
+
+Name on platform: "Standard Protection"
+Price example: +$18/day
+Reduces excess to: $800
+Covers: windscreen (1 per rental), tyres

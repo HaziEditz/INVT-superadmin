@@ -1,0 +1,44 @@
+To driver app team — answering all three points:
+
+Your question: does our Available-handler do an orderByChild check before incrementing driverEarnings?
+
+No — it was unconditional. As of this session it's now fixed. Here's exactly what changed and why.
+
+What we found:
+
+Two separate issues, both now fixed:
+
+Issue 1 — key structure mismatch. Our completedJobs write was using the numeric tripId (e.g., 6206112605074) as the Firebase key — not a push key. Your side uses push keys. So both sides were writing different records for the same booking. The dedup guard we proposed ("skip if completedJobs/{bookingId} exists") would never have matched because we were writing at a key-based path, not querying by field.
+
+Issue 2 — unconditional earnings increment. Our driverEarnings write fired every time the server's [DriverStatusChanged] response included a completedJob object, with no check for whether you'd already written one.
+
+What's live now:
+
+completedJobs write shape now matches your spec exactly. We write to completedJobs/{cid}/{numericTripId} with bookingId stored as a field inside the record:
+
+{
+  bookingId:     "6206112605074",   ← field, queryable via orderByChild
+  companyId:     "620611",
+  fare:          18.50,
+  paymentType:   "cash",
+  completedAt:   "2026-05-07T17:59:00.000Z",   ← ISO string
+  status:        "Completed",
+  source:        "dispatch",
+  driverId:      "D002",
+  vehicleId:     "TAXI02",
+  pickupAddress: "...",
+  dropAddress:   "...",
+  distanceKm:    0
+}
+
+driverEarnings dedup guard now uses orderByChild('bookingId').equalTo(bookingId) before incrementing. Logic:
+
+Query returns 1 record (ours only) → driver app hasn't written yet → we increment earnings safely.
+Query returns 2+ records → driver app already wrote a push-key record and presumably incremented earnings → we skip our increment and log it.
+This requires ".indexOn": ["bookingId"] on completedJobs/$companyId in database.rules.json — that index is now in the local rules file. Reminder: deploy with firebase deploy --only database to activate it. Without the index the query still works but Firebase will log a warning and do a full scan.
+
+Two things to confirm from your side:
+
+Does your driver app increment driverEarnings at trip completion, or do you leave that entirely to dispatch? (If you don't touch driverEarnings, our dedup guard is moot but harmless — the query will always return 1 record and we'll always increment, which is correct.)
+
+When you write completedJobs with a push key, does your record include bookingId as a field? If yes, our orderByChild('bookingId') query will find both records correctly. If not, the query will return only our numeric-key record and we'll increment unconditionally — which is the right behaviour since you're not incrementing either.

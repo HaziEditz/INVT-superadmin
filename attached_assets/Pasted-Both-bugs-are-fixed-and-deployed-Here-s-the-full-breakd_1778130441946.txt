@@ -1,0 +1,18 @@
+Both bugs are fixed and deployed. Here's the full breakdown for the team:
+
+Bug A — Coordinates 0,0 (geocoding failure)
+
+Root cause: coordinates are only populated client-side when a passenger selects a suggestion from the Nominatim autocomplete dropdown. Addresses that arrive any other way — typed manually, pasted in, or pre-filled via ?pickup= URL params (like "Book again" links from My Rides) — never triggered the geocoder, so pickLat/pickLng were never set and the API received 0,0.
+
+Fix: the API server now geocodes server-side as a fallback. Before writing to Firebase, it checks whether pickLat or dropLat is absent or 0, and if so fires a Nominatim lookup against the address string (NZ-scoped, both in parallel). The resolved coordinates are what get written to pickupLocation and dropoffLocation. Client-provided coordinates (from dropdown selection) still take priority — the server-side call only fires when they're missing.
+
+Bug B — ServiceType "food" on a taxi booking
+
+Root cause: the "Book again" deep link on My Rides embeds ?service={ServiceType} in the URL. When BookPage loaded with ?service=food, it accepted that value without checking whether the company actually offers food delivery, set selectedService = "food", and jumped straight to the booking details form (step 2) — bypassing the service selection UI entirely. The passenger probably changed their mind about the service type in the form but the state was already locked.
+
+Fix: the URL param is now validated against company.services before being applied. Three cases:
+
+Valid service in URL → apply it; if it's food, route to the restaurant selection step (1.5) first, not step 2
+Single-service company → ignore the URL param and use the company's only service
+Multi-service company with an invalid/missing param → drop to the service selection step so the passenger picks explicitly
+The ?pickup= address is also no longer pre-filled for food bookings (that field is the restaurant address, which must come from restaurant selection).

@@ -1,0 +1,145 @@
+ — HTML: Services checkboxes (driver form, Services tab)
+Lines 5394–5446 in server.js:
+
+<!-- SERVICES TAB -->
+<div id="drv-panel-services" style="display:none">
+  <div class="section-title">Services This Driver Can Provide</div>
+  <div style="font-size:12px;color:#757575;margin-bottom:16px">
+    Tick each service this driver is allowed to accept on their app.
+    Unticked services will not be offered to them.
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+    <label style="display:flex;align-items:center;gap:10px;padding:11px 14px;border:1.5px solid #e0e0e0;border-radius:7px;cursor:pointer">
+      <input type="checkbox" id="d-svc-taxi" style="width:18px;height:18px;cursor:pointer;accent-color:#00897B;flex-shrink:0"/>
+      <span style="font-size:13px;font-weight:500">Taxi / Passenger Transport</span>
+    </label>
+    <label style="display:flex;align-items:center;gap:10px;padding:11px 14px;border:1.5px solid #e0e0e0;border-radius:7px;cursor:pointer">
+      <input type="checkbox" id="d-svc-food" .../>
+      <span>Food Delivery</span>
+    </label>
+    <label ...>
+      <input type="checkbox" id="d-svc-freight" .../>
+      <span>Freight / Cargo</span>
+    </label>
+    <label ...><input type="checkbox" id="d-svc-courier" .../><span>Courier / Parcels</span></label>
+    <label ...><input type="checkbox" id="d-svc-airport" .../><span>Airport Transfers</span></label>
+    <label ...><input type="checkbox" id="d-svc-corporate" .../><span>Corporate Transport</span></label>
+    <label ...><input type="checkbox" id="d-svc-school" .../><span>School Runs</span></label>
+    <label ...><input type="checkbox" id="d-svc-disability" .../><span>Disability / WAV Transport</span></label>
+    <label ...><input type="checkbox" id="d-svc-medical" .../><span>Medical Transport</span></label>
+    <label ...><input type="checkbox" id="d-svc-event" .../><span>Event &amp; Tours</span></label>
+    <!-- TM — conditionally shown/hidden by _applyTmVisibility() -->
+    <label id="d-svc-tm-wrap" style="display:flex;align-items:center;gap:10px;padding:11px 14px;border:1.5px solid #e0e0e0;border-radius:7px;cursor:pointer">
+      <input type="checkbox" id="d-svc-tm" .../>
+      <span>Transport Management (TM)</span>
+    </label>
+  </div>
+  <div style="margin-top:16px;padding:10px 14px;background:#E3F2FD;border-left:3px solid #1565C0;font-size:11px;color:#0D47A1">
+    <strong>Taxi, Food, Freight, TM</strong> are also written to
+    <code>drivers/{uid}/allowedServices</code> as boolean flags for the Dispatch App.
+  </div>
+</div>
+
+2 — JS: TM conditional visibility
+var _tmEnabled = false;
+function _applyTmVisibility() {
+  var wrap = document.getElementById('d-svc-tm-wrap');
+  if (!wrap) return;
+  wrap.style.display = _tmEnabled ? '' : 'none';
+  if (!_tmEnabled) {
+    var tmChk = document.getElementById('d-svc-tm');
+    if (tmChk) tmChk.checked = false;
+  }
+}
+// Called on Firebase login — reads company feature flags
+window._fbOnLogin = function(user) {
+  // ... loadDrivers, loadVehicles, loadDispatchers ...
+  window.adminRead('companySettings/' + COMPANY_ID + '/features').then(function(f) {
+    _tmEnabled = !!(f && (f.tmEnabled || f.totalMobility));  // supports both flag names
+  }).catch(function() { _tmEnabled = false; });
+};
+
+3 — JS: Reading saved services when opening Edit Driver
+// Supports both old single string and new comma-separated format
+(function() {
+  var saved = d.foodDelivery || '';
+  var vals  = saved ? saved.split(',') : [];
+  // Legacy value mapping (old food delivery enum → new service keys)
+  var legacyMap = {
+    'all':      'taxi',
+    'ubereats': 'food',
+    'doordash': 'food',
+    'menulog':  'food',
+    'custom':   'food',
+    'none':     ''
+  };
+  vals = vals.map(function(v) {
+    return legacyMap.hasOwnProperty(v) ? legacyMap[v] : v;
+  }).filter(Boolean);
+  // Set checkboxes from old foodDelivery string
+  ['taxi','food','freight','courier','airport','corporate',
+   'school','disability','medical','event','tm'].forEach(function(k) {
+    var el = document.getElementById('d-svc-' + k);
+    if (el) el.checked = vals.indexOf(k) !== -1;
+  });
+  // Overlay with allowedServices boolean map if present (written by newer saves — takes priority)
+  var as = d.allowedServices;
+  if (as && typeof as === 'object' && !Array.isArray(as)) {
+    ['taxi','food','freight','tm'].forEach(function(k) {
+      var el = document.getElementById('d-svc-' + k);
+      if (el && as.hasOwnProperty(k)) el.checked = !!as[k];
+    });
+  }
+})();
+
+4 — JS: Add Driver defaults (all clear, taxi on)
+// Clear all service checkboxes
+['taxi','food','freight','courier','airport','corporate',
+ 'school','disability','medical','event','tm'].forEach(function(k) {
+  var el = document.getElementById('d-svc-' + k);
+  if (el) el.checked = false;
+});
+// Default: taxi only
+var taxiEl = document.getElementById('d-svc-taxi');
+if (taxiEl) taxiEl.checked = true;
+
+5 — JS: Reading checkboxes on Save
+var _svcKeys = ['taxi','food','freight','courier','airport','corporate',
+                'school','disability','medical','event','tm'];
+// Comma-separated string stored in legacy foodDelivery field (backward compat)
+var foodDel = _svcKeys
+  .filter(function(k) {
+    var el = document.getElementById('d-svc-' + k);
+    return el && el.checked;
+  })
+  .join(',');
+
+6 — JS: Writing allowedServices to Firebase on Save
+// Build boolean map for the 4 canonical dispatch-gate services
+var _svcList = (profile.foodDelivery || '').split(',').filter(Boolean);
+var allowedServicesMap = {
+  taxi:    _svcList.indexOf('taxi')    !== -1,
+  food:    _svcList.indexOf('food')    !== -1,
+  freight: _svcList.indexOf('freight') !== -1,
+  tm:      _svcList.indexOf('tm')      !== -1
+};
+// PATCH to drivers/{cid}/{uid}
+adminWrite('drivers/' + cId + '/' + uid, 'PATCH', {
+  vehicleId:        (profile.allocatedTaxi || '').toUpperCase(),
+  assignedVehicles: vehArray.map(function(v) { return v.toUpperCase(); }),
+  id:               profile.dispatcherId || '',
+  allowedServices:  allowedServicesMap   // ← dispatch gate reads this
+});
+
+Firebase data written per driver
+// drivers/{cid}/{uid}/allowedServices
+{
+  "taxi":    true,
+  "food":    false,
+  "freight": true,
+  "tm":      false
+}
+// drivers/{uid}/foodDelivery  (legacy backward compat string)
+"taxi,freight"
+
+The dispatch app's _bwCanDriverDoService(driver, jobType) gate reads allowedServices.{jobType}. If the field is missing entirely, the driver defaults to taxi: true only — they won't silently receive all job types.

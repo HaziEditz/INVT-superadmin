@@ -1,0 +1,53 @@
+No — foodOrders/{cid}/{bookingId} is not wired to the dispatcher inbox.
+
+Here's exactly what I found:
+
+What exists:
+
+foodOrders has a valid Firebase rule (auth read/write per companyId) — the path is real and writable
+The dispatcher has a full food delivery UI: deliveryjobs scope, food-icon badges, green bw-svc-food card styling, and a delivery job count badge
+What's missing:
+
+There is zero Firebase listener on foodOrders/{cid}/* anywhere in the dispatcher (checked Default.aspx, ChatRoom.js, BwMessaging.js)
+deliveryjobs is populated exclusively from SQL via a periodic DataSelector → [UnAssignedJobsv3] poll. It never reads Firebase for that
+What this means in practice:
+
+If a food ordering app writes directly to foodOrders/{cid}/{bookingId} in Firebase, nothing happens on the dispatcher side — the job is silently lost. The dispatcher will never see it.
+
+The correct contract for food orders to appear in the dispatcher inbox:
+
+The food ordering app must go through the same API path as every other job source:
+
+POST /api/job/create   → gets a platform jobId
+POST DataManager/Data.aspx/DataSelectorRide
+     action: InsertBookingv4
+     params: { serviceType: 'food', BookingSource: 'Website', ExternalJobId: <jobId>, ... }
+
+That SQL record then surfaces in the deliveryjobs list on the next poll cycle (≤10s). The foodOrders Firebase path can optionally be written for passenger-facing order tracking, but it is not the ingest path for dispatch.
+
+Verdict: ❌ Not working via foodOrders Firebase path. Food ordering app must use the SQL API (InsertBookingv4) to create jobs — same as web bookings.
+
+I'll add this finding to the checklist:
+
+
+4 actions
+Confirmed — ❌ No, food orders via foodOrders/{cid}/{bookingId} do NOT appear in the dispatcher inbox.
+
+Here's the full picture:
+
+Why it doesn't work:
+The dispatcher has no Firebase listener on that path at all. deliveryjobs is populated entirely from SQL via a periodic poll — Firebase is never consulted for delivery jobs. Any write directly to foodOrders/{cid}/{bookingId} is silently ignored by the dispatcher.
+
+What the food app needs to do instead (same flow as every other booking source):
+
+1. POST /api/job/create
+   → returns { jobId: 12345 }
+2. POST DataManager/Data.aspx/DataSelectorRide
+   action: InsertBookingv4
+   params include: serviceType: 'food', ExternalJobId: '12345'
+
+Once that SQL record exists, it shows up in the dispatcher's delivery jobs panel on the next poll cycle (≤10 seconds), with the green food icon and correct styling — the UI is already fully built for it.
+
+foodOrders in Firebase can optionally still be written for passenger-facing order tracking (status, ETA), but it's not the ingest path for dispatch.
+
+No dispatcher code changes needed — the SQL pipeline already handles serviceType: 'food' correctly. This is purely a food-app-side fix. Documented as Section 24 in the checklist.

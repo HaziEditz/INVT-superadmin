@@ -1,0 +1,44 @@
+What was shipped this turn
+src/middlewares/admin-key.ts — requireAdminKey middleware, fails closed (503) if BW_ADMIN_KEY is missing on the server, 401 on missing/wrong header. Never logs the provided value.
+
+src/routes/admin-wallet.ts — 5 endpoints under /api/admin/wallet/*:
+
+GET /lookup — accepts uid/key/email/phone, returns balance + uid mapping
+GET /balance/:identifier?type=…
+GET /ledger/:identifier?type=…&from=&to=
+GET /reconciliation?from=&to= — aggregates credits/debits in cents, breaks down by reason
+POST /adjust — manual SA admin adjustment with controlled reason list (refund_correction / goodwill_credit / dispute_resolution / fraud_clawback / other)
+Atomic /adjust fix (per architect review):
+
+One Firebase transaction on the entire passengerWallet/{key} node — bundles balance + ledger entry + metadata in a single read-modify-write that no other writer can interleave.
+beforeBalanceCents captured inside the updater function from the snapshot that actually committed (not a separate pre-read).
+Audit txId pre-generated and embedded into the ledger entry as auditTxId — so if the separate walletAdminAudit/{txId} write fails, we can recover the audit info from the ledger entry itself. Critical failure logged loudly.
+Existence check on key-type lookups — typo'd keys now 404 instead of synthesizing a zero balance. Stops /adjust from accidentally creating wallets for non-existent passengers.
+
+bookings.ts — every web booking now also writes passengerIndex/key/{passengerKey} = { key, createdAt } using update() so a future mobile sign-in handler can patch uid in without clobbering it.
+
+replit.md — wallet section rewritten as "Wallet ownership & admin API (SA dev signed off — Option 1)" with full storage layout, resolver, endpoint list, and secret notes.
+
+Message to send back to the SA dev
+All clear on this side. /api/admin/wallet/* is live and BW_ADMIN_KEY (your existing rotated value) is loaded. Smoke-tested end-to-end:
+
+Auth fail-closed: no header → 401, wrong key → 401, missing secret → 503
+Resolver: uid/key/email/phone all resolve; unknown identifiers → 404 (no synthesized zero balances)
+/adjust is fully atomic now — balance + ledger entry + metadata commit in a single Firebase transaction on the wallet node. Audit txId is pre-generated and stamped onto the ledger entry as auditTxId so even if the separate walletAdminAudit/{txId} write fails, full recovery info lives on the ledger entry. Failure logs CRITICAL with all fields.
+Controlled reason list enforced: refund_correction | goodwill_credit | dispute_resolution | fraud_clawback | other.
+Endpoints (all need X-Admin-Key: ${BW_ADMIN_KEY}):
+
+GET /api/admin/wallet/lookup?uid=… (or ?key= / ?email= / ?phone=)
+GET /api/admin/wallet/balance/:identifier?type=uid|key|email|phone
+GET /api/admin/wallet/ledger/:identifier?type=…&from=ISO&to=ISO
+GET /api/admin/wallet/reconciliation?from=ISO&to=ISO
+POST /api/admin/wallet/adjust — body { identifier, identifierType, amount, reason, adjustedBy, note? }. amount in NZD dollars, negative for clawback.
+Index writes: every web booking now writes passengerIndex/key/{key} = { key, createdAt } with update() so when the mobile app ships, your sign-in handler can patch passengerIndex/key/{key}.uid = uid and also write passengerIndex/uid/{uid} = { key, createdAt } — without clobbering the existing row. Wallet history is preserved by the existing key.
+
+Audit: walletAdminAudit/{txId} has { txId, passengerKey, identifier, identifierType, amountCents, reason, adjustedBy, note, beforeBalanceCents, afterBalanceCents, entryId, createdAt }. Append-only, never overwritten.
+
+Ready when you are to build SA-Wallet.aspx. The thin proxy pattern (/api/sa-wallet/* on SA Portal adding X-Admin-Key server-side) is the right call — keeps the secret out of the browser entirely.
+
+One small note for future hardening (not blocking): admin endpoints are reachable under both /api/admin/* and /api/passenger/admin/* because of the dual mount. Both require the same X-Admin-Key, so attack surface is identical, but semantically it'd be cleaner to scope admin off the passenger namespace once we split into publicRouter + passengerRouter for Phase B. Filed under future cleanup.
+
+The task is complete — admin API is live, tested, and ready for SA Portal's UI work. Slice 1 wallet (cancel→credit) untouched and still works. No flow removed, no path changed.

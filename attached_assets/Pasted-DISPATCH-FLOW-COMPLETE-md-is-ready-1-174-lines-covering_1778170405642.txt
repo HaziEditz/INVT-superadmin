@@ -1,0 +1,20 @@
+DISPATCH-FLOW-COMPLETE.md is ready — 1,174 lines covering every step of the dispatch flow end-to-end. Here's what the SA portal developer will find inside:
+
+16 sections:
+
+Architecture overview — component diagram showing browser ↔ server.js ↔ Firebase ↔ driver app
+Job state machine — all states (Scheduled → Pending → Offered → Assigned → Active → Completed, plus Queued/Unreached/No One/Cancelled) with transitions
+Firebase path contract — full table of every path, who writes, who reads, and the exact notification/acceptance payload schemas
+Server-side API reference — every server action with params, guards, logic, and response shape: AutoDispatchVehiclesallride, [changeriddestatusforoffer] (all 10 server guards), [AssignJobStatusFromJobList], [DriverStatusChanged] (including the §108d completion + allbookings patch), [QueueJob], [RecallQueuedJob], [BwForceDriver]
+Frontend function reference — every client function with its exact flow: smartAutoDispatch, acknowledgemethodx, resolveAfter2Secondsx, _resolveAcceptance, _watchBusyDriverAcceptance, writeJobDetailsToFirebase, _bwWriteAssignmentToFirebase, getSqlDriverId, convertstatus/convertstatus1, _immediateJobPending, FnCancelRide
+Auto-dispatch loop A→Z — 20-step annotated trace from timer tick to lock release
+Manual dispatch flow A→Z — dispatcher drag → Firebase write-back
+Accept / reject / 27s timeout flows — race conditions and guard logic called out explicitly
+Busy driver pre-queue flow — full lifecycle including kill-switch, queued-recall watcher
+Job completion flow — server → client → Firebase write, earnings dedup guard, paymentMethod resolution chain
+Cancellation & recall flows — three separate paths (unassigned cancel, dispatcher recall, driver post-accept cancel)
+Driver status heartbeat flow — every branch on Available/Busy/Picking transitions
+Dedup & lock system — all 14 locks with set/clear lifecycle in one table
+Queue position system — calcRestoredQueue logic + client-side GPS zone detection
+Web booking payment gate — BUG-7 path from booking → Stripe webhook → auto-dispatch unlock
+Quick reference table — every UI action mapped to client function → server action

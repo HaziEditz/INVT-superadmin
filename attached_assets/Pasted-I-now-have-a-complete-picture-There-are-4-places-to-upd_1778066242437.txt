@@ -1,0 +1,35 @@
+I now have a complete picture. There are 4 places to update:
+
+Jobs path deleted (line 2307) — no data, need async lookup in allbookings
+Jobs path Status: Cancelled (line 2356) — can check data.CancelledBy + allbookings
+Passengerjobs path (line 2530) — explicit passengercancel already correct; generic cancel/cancelled needs allbookings lookup
+Allbookings listener (line 2546) — needs to also handle Status: Cancelled written directly by passenger app
+Let me verify get is already imported, then make all 4 edits:
+
+
+2 actions
+get is already imported. Making all 4 edits in parallel:
+
+
+8 actions
+TypeScript clean, app running. Updating replit.md to record the fix:
+
+
+2 actions
+Done. Here's exactly what was changed and why, for each of the four cancellation paths:
+
+Path 1 — Jobs path deleted (dispatch or passenger app removes the jobs node entirely)
+Previously: generic "This booking has been cancelled." always
+Now: captures the current job's bookingId before clearing state, then does an async get() on allbookings/{cid}/{bookingId} and reads CancelledBy — shows the right message as soon as the lookup resolves (typically under 200ms on a good connection)
+
+Path 2 — Jobs path Status: Cancelled (explicit cancelled write on the jobs node)
+Previously: generic message always
+Now: checks data.CancelledBy in the snapshot first (fastest path), and if missing falls back to the same allbookings lookup
+
+Path 3 — Passengerjobs/{deviceUid} path (passenger-app cancellation signal)
+Previously: passengercancel → correct message; cancel/cancelled → generic
+Now: passengercancel still handled immediately and correctly. For cancel/cancelled it looks up allbookings for CancelledBy before showing the alert
+
+Path 4 — allbookings/{cid}/{bookingId} listener (new — direct passenger app write)
+Previously: this listener only reacted to field updates (pickup, drop, fare); it ignored any status-only write
+Now: detects Status: Cancelled first, reads CancelledBy directly from the same document (no extra round-trip needed since the field is right there), tears down the trip cleanly, and shows the correct message — this is the fastest path for passenger-app cancellations since the passenger app team writes CancelledBy alongside Status in a single write

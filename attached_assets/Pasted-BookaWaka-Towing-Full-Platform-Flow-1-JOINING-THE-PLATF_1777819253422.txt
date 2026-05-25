@@ -1,0 +1,221 @@
+BookaWaka Towing — Full Platform Flow
+1. JOINING THE PLATFORM
+Towing company finds BookaWaka:
+
+Sees it on bookawaka.co.nz → clicks "Join as a Towing Operator"
+Fills in: company name, contact name, email, phone, city, fleet size, truck types, operating hours, after-hours yes/no
+Selects service type: Towing
+Submits → lands in SA portal as a pending registration
+SA Admin (you) reviews it:
+
+See it in SA-Onboard.aspx
+Approve → system auto-creates their Company ID + login credentials
+They get a welcome email with their Owner Portal login link
+2. OWNER PANEL SETUP
+Towing company logs into their Owner Portal. First time they set everything up:
+
+Company Profile:
+
+Logo, trading name, address, phone, email
+Operating hours (Mon–Sun, open/close times)
+After-hours toggle — yes/no
+On-call driver for after hours (they nominate which driver)
+Fleet Setup:
+
+Add each truck: name/plate, type (flatbed / wheel-lift / heavy recovery / multi-car), capacity (how many vehicles it can carry at once), year, photo
+Mark as active/inactive
+Pricing Setup:
+
+Base callout fee (e.g. $95)
+Per km rate (e.g. $3.50/km)
+Surcharges: motorcycle (+$20), SUV (+$30), heavy vehicle (+$80)
+After-hours surcharge (e.g. +$50)
+Public holiday surcharge
+All shown to customer as a price estimate before they book
+Service Area:
+
+Set the areas/suburbs they cover
+Maximum job distance they'll accept
+Payment Settings:
+
+Stripe connected (BookaWaka takes commission %)
+Insurance jobs toggle — yes they accept insurance
+Cash jobs toggle
+Drivers:
+
+Add drivers: name, phone, licence, truck assigned
+Each driver gets app login credentials
+Notifications:
+
+Email + SMS for new jobs
+Who gets notified (dispatcher email, on-call driver phone)
+3. CUSTOMER BOOKS A TOW
+Via Passenger App or Website:
+
+Customer taps "Request a Tow" (or selects Towing on website)
+Enters:
+Current location (GPS or typed)
+Vehicle: make, model, year, colour, registration
+Problem: broke down / accident / flat tyre / locked out / other
+Drop-off: home address / nearest garage / towing yard / other
+Payment: Insurance (enter company + policy number) or Pay now via Stripe
+Optional: schedule for later or right now
+System shows: estimated price, estimated wait time, towing company name + rating
+Customer confirms → booking created
+Payment happens here:
+
+If paying by Stripe → charged immediately, truck dispatched
+If insurance → no charge, towing company handles insurer invoice separately
+4. DISPATCH
+During business hours:
+
+Job appears in towing company's dispatch portal instantly
+Dispatcher sees: customer name, phone, location on map, vehicle details, drop-off, payment type
+Dispatcher picks a truck (system shows which trucks are free vs on a job)
+Assigns → driver gets notification on their app immediately
+Dispatcher can call customer if needed
+After hours (no dispatcher):
+
+Job goes directly to on-call driver's app as a push notification + SMS
+Driver has 5 minutes to accept
+If accepted → job begins, customer sees live tracking
+If no response → customer gets notification: "Driver will call you shortly" + driver's direct number shown
+No trucks available:
+
+Customer sees: "All trucks are currently busy — estimated wait X mins" OR "No availability right now"
+Option: Leave your number, we'll call you
+Dispatcher calls customer manually with update
+5. DRIVER APP EXPERIENCE
+Driver gets notified → opens app → sees:
+
+Customer name + phone number
+Pickup location (map + address)
+Vehicle: make, model, colour, rego
+Problem description
+Drop-off address
+Payment: Paid via Stripe / Insurance (don't collect) / Cash (collect $X)
+Any notes from dispatcher
+Driver actions:
+
+Accept job
+En Route (tracking starts — customer sees live map)
+Arrived at scene
+Loading vehicle
+En Route to drop-off
+Completed
+At completion driver can optionally add:
+
+Photo of vehicle (damage record)
+Actual km travelled (if different from estimate — adjusts final price)
+Extra charges (e.g. winching fee, after-hours callout)
+Mark as cash collected / insurance job / Stripe paid
+Driver sees only towing jobs — not taxi, food, freight.
+
+6. PASSENGER EXPERIENCE DURING THE JOB
+After booking confirmed:
+
+Live map showing truck location + ETA (updates every 30 seconds)
+Status bar: Assigned → En Route → Arrived → Loading → Completed
+Driver name + photo + truck plate shown
+One-tap call to driver
+Estimated final price shown (updates if extra charges added)
+When job is completed:
+
+Receipt sent via email + in-app
+Rating prompt (rate the driver/service)
+Cross-sell appears immediately (see section 7)
+7. TAXI CROSS-SELL (THE CLEVER BIT)
+This is the same Ride-to-Rental idea applied to towing.
+
+After the tow is confirmed (truck is coming), the customer is stranded. They need to get somewhere. Immediately in the app:
+
+"Need a ride while your car is being towed?"
+
+BookaWaka automatically books them a taxi from their current location
+Destination: wherever they want to go (home, work, garage, wherever the car is going)
+They get a discount code — e.g. 15% off their taxi ride because they're a towing customer
+One tap → taxi is booked
+This means:
+
+Customer doesn't wait stranded — they go with the taxi while the truck handles the car
+BookaWaka earns the towing commission AND the taxi fare
+Taxi company gets a guaranteed booking
+Everyone wins
+The promo code flow is already built (same as Ride-to-Rental for rentals). This just reuses that system with a different trigger.
+
+8. JOB COMPLETE — MONEY FLOW
+Stripe payment → BookaWaka collects full amount → pays towing company (minus commission %) at payout cycle
+Insurance job → towing company invoices insurer directly → BookaWaka records the job for reporting but doesn't process money
+Cash job → driver collects cash → towing company reports it → BookaWaka records for commission invoicing
+9. SA PORTAL SIDE (what you manage)
+SA-Towing.aspx — all towing companies, all jobs, revenue, commission
+Commission rate per company (can override default)
+Feature flag: towingEnabled per company
+All jobs table: filterable by company, status, payment type, date
+Payouts: what BookaWaka owes each towing company
+Taxi cross-sell stats: how many taxi rides were generated from towing jobs
+SUMMARY — what makes this unique on BookaWaka:
+Feature	Benefit
+Insurance job flag	Towing companies get paid by insurers — platform records it
+On-call driver mode	No dispatcher needed after hours
+Live map tracking	Customer isn't anxious waiting on the roadside
+Taxi cross-sell	Stranded customer gets a ride, platform earns double revenue
+Same driver app	No extra app for towing drivers
+Stripe upfront for non-insurance	No chasing payment
+That's the complete flow. When you're ready to start building, we start with SA-Towing.aspx and the owner panel — same pattern as rental. Keep this document and share it with your team.
+
+on more qusition how we will work out the insurrance side comission from towing comapny becuse we dont know how insurance apying them .because that will paid to them stright away .also what happens if the car was invold in accident and drive A was not is fult and driver b insurance how we will handle the other inurance driver will pay for driver A.incase driver b dont give inurnace name so how we will do this from our driver app .etc ?
+
+14 minutes ago
+
+Planning insurance commission strategy (13 seconds)
+Really good questions — and these are genuinely tricky. Let me be straight with you on both:
+
+Question 1: Commission on insurance jobs
+
+The problem is exactly what you said — you don't know what the insurer pays the towing company. They deal directly. You can't take a % of something you can't see.
+
+Solution: Flat fee per insurance job instead of %
+
+Instead of commission on the job value, BookaWaka charges the towing company a flat fee per insurance job processed through the platform. For example:
+
+Stripe job (customer pays) → BookaWaka takes 12% commission as normal
+Insurance job → BookaWaka charges towing company a flat $10–15 admin/referral fee per job
+The towing company self-reports the job was completed. BookaWaka invoices them monthly for all insurance jobs processed. Simple, fair, and you're not relying on knowing what the insurer paid.
+
+This also means towing companies are happy — they're not giving away % of a big insurance payout, just a small flat fee.
+
+Question 2: Accident — Driver B's insurance should pay for Driver A's tow
+
+This is a third-party claim situation and honestly, the platform cannot chase Driver B's insurer — that's a legal matter between the drivers. Here's how to handle it practically:
+
+On the passenger app when Driver A books:
+
+They see three payment options:
+
+My insurance — enter your own insurer + policy
+Third party insurance — enter the other driver's insurer + policy (if they gave it)
+Pay now, claim later — pay via Stripe upfront, then claim it back from Driver B's insurance yourself
+If Driver B didn't give insurance details:
+The app shows: "If you don't have the other driver's insurance details, we recommend paying now and claiming reimbursement later through your own insurer or police report."
+
+Driver A pays via Stripe. They get a receipt with all job details — time, location, vehicle, km, cost — which they use to make their insurance claim.
+
+On the driver app (tow truck driver on scene):
+
+Driver can record at scene:
+
+Photo of Driver A's vehicle (damage)
+Photo of Driver B's vehicle (if still there)
+Driver B's plate number
+Driver B's insurance company + policy if given
+Any police report number
+This creates a documented record in the system. The towing company can use it when dealing with insurers. BookaWaka stores it against the job record.
+
+The bottom line:
+
+Situation	Platform handles	Towing company handles
+Driver A has own insurance	Records insurer details, connects them	Bills insurer directly
+Driver B paying for Driver A	Records details if available, Driver A pays Stripe	Driver A claims back
+Driver B gives no details	Driver A pays Stripe, gets full receipt for claim	Nothing extra
+Insurance amount unknown	Flat fee per job, not %	Keeps full insurance payment
