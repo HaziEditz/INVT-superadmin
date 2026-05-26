@@ -21,6 +21,15 @@ const router = Router();
 const SA_VIEW_TTL = 4 * 60 * 60 * 1000;
 const DB_BASE = 'https://taxilatest.firebaseio.com';
 
+/** Grant owner panel + dispatcher access after company approval/onboarding. */
+async function grantOwnerFirebaseAccess(cid: string, uid: string, companyName: string): Promise<void> {
+  const name = String(companyName || '').trim() || ('Company ' + cid);
+  await fbWriteP('PUT', `adminAccess/${cid}/${uid}`, true);
+  await fbWriteP('PUT', `users/${uid}/companyId`, String(cid));
+  await fbWriteP('PUT', `users/${uid}/companyName`, name);
+  await fbWriteP('PUT', `users/${uid}/role`, 'owner');
+}
+
 // ── Firebase Proxy ────────────────────────────────────────────────────────────
 // Sensitive paths that must NEVER be read via the unauthenticated /api/fb
 // proxy. Any read/write whose path starts with one of these segments is
@@ -490,8 +499,7 @@ router.post('/api/admin/registrations/:id/approve', async (req, res) => {
       }
     }
     if (uid) {
-      await fbWriteP('PUT', 'adminAccess/' + cid + '/' + uid, true);
-      await fbWriteP('PUT', 'users/' + uid + '/companyId', cid);
+      await grantOwnerFirebaseAccess(cid, uid, companyName);
       if (autoCreated) fbWriteP('PATCH', 'onboardRequests/' + req.params.id, { uid }).catch(() => {});
       console.log('[approve] Access granted uid', uid, 'for company', cid);
     }
@@ -1457,12 +1465,7 @@ router.post('/api/admin/direct-onboard', async (req, res) => {
       }, (e) => e ? reject(new Error(String(e))) : resolve());
     });
     if (uid) {
-      await new Promise<void>((resolve, reject) => {
-        fbWrite('PUT', 'adminAccess/' + cid + '/' + uid!, true, (e) => e ? reject(new Error(String(e))) : resolve());
-      });
-      await new Promise<void>((resolve, reject) => {
-        fbWrite('PUT', 'users/' + uid! + '/companyId', cid, (e) => e ? reject(new Error(String(e))) : resolve());
-      });
+      await grantOwnerFirebaseAccess(cid, uid, name.trim());
     }
     console.log('[direct-onboard] Company', cid, '(' + name + ') onboarded successfully' + (needsManualAccess ? ' [access grant deferred]' : ''));
     logAudit('company_onboarded', `cid=${cid} | ${name} | email=${email} | plan=${plan || 'trial'}${autoCreated ? ' | account auto-created' : ''}${needsManualAccess ? ' | access grant deferred (existing account)' : ''}`, req.body._saEmail || 'sa-admin');
