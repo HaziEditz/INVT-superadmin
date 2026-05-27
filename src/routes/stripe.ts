@@ -1,8 +1,40 @@
 import { Router } from 'express';
 import { fbReadP, fbWriteP } from '../firebase';
 import { getStripe } from '../utils';
+import { syncConnectAccountFromStripe } from '../lib/stripeConnectCompany';
 
 const router = Router();
+
+/* ── Stripe Connect webhook (account.updated) — raw body ───────────────────── */
+router.post('/api/stripe/connect-webhook', (req, res) => {
+  let data = '';
+  req.on('data', chunk => data += chunk);
+  req.on('end', async () => {
+    const sig = req.headers['stripe-signature'] as string;
+    const webhookSecret = process.env.STRIPE_CONNECT_WEBHOOK_SECRET || process.env.STRIPE_WEBHOOK_SECRET;
+    let event: any;
+    try {
+      if (webhookSecret && sig) {
+        const stripe = getStripe();
+        event = stripe.webhooks.constructEvent(Buffer.from(data), sig, webhookSecret);
+      } else {
+        event = JSON.parse(data);
+      }
+    } catch (err: any) {
+      console.error('[stripe-connect-webhook] signature error:', err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    try {
+      if (event.type === 'account.updated') {
+        await syncConnectAccountFromStripe(event.data.object);
+      }
+    } catch (err: any) {
+      console.error('[stripe-connect-webhook] handler error:', err.message);
+    }
+    res.json({ received: true });
+  });
+});
 
 /* ── Stripe Webhook (must be raw body) ─────────────────────────────────────── */
 router.post('/api/stripe/webhook', (req, res, next) => {

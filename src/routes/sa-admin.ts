@@ -14,6 +14,7 @@ import {
   esc, logAudit, getResendClient, ADMIN_API_KEY, setCorsHeaders,
   sanitizeDriverPayload, isDriversFbPath
 } from '../utils';
+import { provisionCompanyStripeConnect } from '../lib/stripeConnectCompany';
 import { saViewSessions, genToken, persistSessionDirect, unpersistSessionDirect } from '../sessions';
 
 const router = Router();
@@ -502,6 +503,14 @@ router.post('/api/admin/registrations/:id/approve', async (req, res) => {
       await grantOwnerFirebaseAccess(cid, uid, companyName);
       if (autoCreated) fbWriteP('PATCH', 'onboardRequests/' + req.params.id, { uid }).catch(() => {});
       console.log('[approve] Access granted uid', uid, 'for company', cid);
+    }
+    if (email) {
+      provisionCompanyStripeConnect({ cid, email, companyName })
+        .then((r) => {
+          if (r.ok && !r.skipped) console.log('[approve] Stripe Connect provisioned for', cid);
+          else if (r.error) console.warn('[approve] Stripe Connect skipped:', r.error);
+        })
+        .catch(() => {});
     }
     logAudit('company_approved', `cid=${cid} | ${companyName} | uid=${uid || 'none'} | Approved${autoCreated ? '; account auto-created' : ''}`, _saEmail || email || 'sa-admin');
     if (email && autoCreated && tempPassword) {
@@ -1340,14 +1349,44 @@ router.get('/api/admin/stripe-config/:cid', async (req, res) => {
   if (!cid) return res.status(400).json({ error: 'cid required' });
   try {
     const data = (await fbReadP('stripeConfig/' + cid)) || {};
+    const connectStatus =
+      data.connectStatus === 'complete' || data.connectOnboardingComplete
+        ? 'complete'
+        : data.stripeAccountId
+        ? 'pending'
+        : 'not_started';
     res.json({
       ok: true,
       stripePublishableKey: data.stripePublishableKey || data.publishableKey || data.publishable_key || '',
       stripeSecretKey: data.stripeSecretKey || data.secretKey || data.secret_key || '',
       stripeWebhookSecret: data.stripeWebhookSecret || data.webhookSecret || data.webhook_secret || '',
+      stripeAccountId: data.stripeAccountId || data.stripeConnectId || '',
+      connectStatus,
+      connectOnboardingComplete: !!data.connectOnboardingComplete,
+      connectChargesEnabled: !!data.connectChargesEnabled,
+      connectOnboardingUrl: data.connectOnboardingUrl || '',
+      connectLinkSentAt: data.connectLinkSentAt || null,
       updatedAt: data.updatedAt || null,
       updatedBy: data.updatedBy || null,
     });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
+router.post('/api/admin/stripe-connect/resend/:cid', async (req, res) => {
+  const cid = String(req.params.cid || '').trim();
+  if (!cid) return res.status(400).json({ error: 'cid required' });
+  try {
+    const client = (await fbReadP('superClients/' + cid)) || {};
+    const config = (await fbReadP('stripeConfig/' + cid)) || {};
+    const email = String(req.body?.email || client.email || '').trim();
+    const companyName = String(client.name || req.body?.companyName || `Company ${cid}`).trim();
+    if (!email) return res.status(400).json({ error: 'Owner email required' });
+    const result = await provisionCompanyStripeConnect({ cid, email, companyName });
+    if (!result.ok) return res.status(500).json({ error: result.error || 'Could not create onboarding link' });
+    logAudit('stripe_connect_link_resent', `cid=${cid} | email=${email}`, req.body?._saEmail || 'sa-admin');
+    res.json({ ok: true, accountId: result.accountId, onboardingUrl: result.onboardingUrl, skipped: result.skipped });
   } catch (e: any) {
     res.status(500).json({ error: e.message || String(e) });
   }
@@ -1467,6 +1506,12 @@ router.post('/api/admin/direct-onboard', async (req, res) => {
     if (uid) {
       await grantOwnerFirebaseAccess(cid, uid, name.trim());
     }
+    provisionCompanyStripeConnect({ cid, email: email.trim(), companyName: name.trim() })
+      .then((r) => {
+        if (r.ok && !r.skipped) console.log('[direct-onboard] Stripe Connect provisioned for', cid);
+        else if (r.error) console.warn('[direct-onboard] Stripe Connect skipped:', r.error);
+      })
+      .catch(() => {});
     console.log('[direct-onboard] Company', cid, '(' + name + ') onboarded successfully' + (needsManualAccess ? ' [access grant deferred]' : ''));
     logAudit('company_onboarded', `cid=${cid} | ${name} | email=${email} | plan=${plan || 'trial'}${autoCreated ? ' | account auto-created' : ''}${needsManualAccess ? ' | access grant deferred (existing account)' : ''}`, req.body._saEmail || 'sa-admin');
     sendWelcomeEmail({ companyName: name, email, cid, tempPassword })

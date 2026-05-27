@@ -46,6 +46,10 @@
 .badge-trial{background:#E3F2FD;color:#1565C0;border:1px solid #BBDEFB}
 .badge-suspended{background:#FFEBEE;color:#C62828;border:1px solid #FFCDD2}
 .badge-grace{background:#FFF3E0;color:#E65100;border:1px solid #FFCC80}
+.connect-badge{display:inline-block;padding:4px 12px;border-radius:14px;font-size:12px;font-weight:700}
+.connect-not-started{background:#f5f5f5;color:#757575;border:1px solid #e0e0e0}
+.connect-pending{background:#FFF8E1;color:#F57F17;border:1px solid #FFE082}
+.connect-complete{background:#E8F5E9;color:#2E7D32;border:1px solid #A5D6A7}
 .quick-actions{display:flex;gap:8px;flex-wrap:wrap;padding:14px 18px;border-bottom:1px solid #f5f5f5;background:#FAFAFA}
 .user-row{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid #f8f8f8;font-size:13px;flex-wrap:wrap;gap:8px}
 .user-row:last-child{border-bottom:none}
@@ -313,15 +317,35 @@
   </div>
 </div>
 
-<!-- Stripe keys — per company -->
+<!-- Stripe Connect Express -->
+<div class="sa-card" id="stripe-connect-card">
+  <div class="sa-bar" style="background:#635BFF"><h3>&#128279; Stripe Connect</h3>
+    <span id="stripe-connect-badge" class="connect-badge connect-not-started">Not started</span>
+  </div>
+  <div style="padding:16px 18px">
+    <p style="font-size:12px;color:#888;margin:0 0 14px">
+      Express Connect onboarding for card payments on the passenger website. When a company is approved, an onboarding link is emailed to the owner automatically.
+    </p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:14px;font-size:13px">
+      <div><span style="color:#888">Account ID</span><br/><code id="stripe-connect-account-id" style="font-size:12px">—</code></div>
+      <div><span style="color:#888">Charges enabled</span><br/><span id="stripe-connect-charges">—</span></div>
+      <div><span style="color:#888">Link sent</span><br/><span id="stripe-connect-link-sent">—</span></div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button onclick="resendStripeConnectLink()" class="sa-btn" style="background:#635BFF;color:#fff;border:none">&#9993; Resend onboarding email</button>
+      <span id="stripe-connect-msg" style="font-size:12px;color:#888"></span>
+    </div>
+  </div>
+</div>
+
+<!-- Stripe keys — per company (legacy / optional) -->
 <div class="sa-card" id="stripe-config-card">
   <div class="sa-bar" style="background:#635BFF"><h3>&#128179; Stripe Configuration</h3>
     <span style="font-size:11px;opacity:.7">Saved to <code>stripeConfig/{companyId}</code></span>
   </div>
   <div style="padding:16px 18px">
     <p style="font-size:12px;color:#888;margin:0 0 14px">
-      Per-company Stripe keys used by the driver app, passenger website, and webhooks.
-      Each taxi company can use their own Stripe account. Keys are stored in Firebase and read at payment time.
+      Legacy per-company Stripe keys (optional). New companies should use Stripe Connect above. Connect account ID is used for passenger card payments when onboarding is complete.
     </p>
     <div class="edit-grid" style="padding:0">
       <div class="sa-ff edit-grid-wide">
@@ -1095,11 +1119,27 @@ function saveAccVendorId(){
 }
 
 /* ── Stripe Config ───────────────────────────────── */
+function renderStripeConnectStatus(data){
+  var status = data.connectStatus || 'not_started';
+  var badge = document.getElementById('stripe-connect-badge');
+  var acctEl = document.getElementById('stripe-connect-account-id');
+  var chargesEl = document.getElementById('stripe-connect-charges');
+  var sentEl = document.getElementById('stripe-connect-link-sent');
+  if(badge){
+    badge.className = 'connect-badge connect-' + (status === 'complete' ? 'complete' : status === 'pending' ? 'pending' : 'not-started');
+    badge.textContent = status === 'complete' ? 'Complete' : status === 'pending' ? 'Pending' : 'Not started';
+  }
+  if(acctEl) acctEl.textContent = data.stripeAccountId || '—';
+  if(chargesEl) chargesEl.textContent = data.connectChargesEnabled ? 'Yes' : (status === 'complete' ? 'Yes' : 'No');
+  if(sentEl) sentEl.textContent = data.connectLinkSentAt ? new Date(data.connectLinkSentAt).toLocaleString('en-NZ') : '—';
+}
+
 function loadStripeConfig(){
   fetch('/api/admin/stripe-config/'+encodeURIComponent(CID))
     .then(function(r){ return r.json(); })
     .then(function(data){
       if(!data || data.error){ return; }
+      renderStripeConnectStatus(data);
       var pubEl = document.getElementById('stripe-pub-key');
       var secEl = document.getElementById('stripe-secret-key');
       var whEl  = document.getElementById('stripe-webhook-secret');
@@ -1119,6 +1159,31 @@ function loadStripeConfig(){
         }
       }
     }).catch(function(){});
+}
+
+function resendStripeConnectLink(){
+  var msg = document.getElementById('stripe-connect-msg');
+  var email = (companyData && companyData.email) || (document.getElementById('f-email')||{}).value || '';
+  if(!email){
+    if(msg) msg.innerHTML = '<span style="color:#c00">No owner email on file.</span>';
+    return;
+  }
+  if(msg) msg.textContent = 'Sending…';
+  var saEmail = (firebase.auth().currentUser||{}).email || 'sa-admin';
+  fetch('/api/admin/stripe-connect/resend/'+encodeURIComponent(CID), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: email, companyName: (companyData&&companyData.name)||CID, _saEmail: saEmail })
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if(!d.ok){
+      if(msg) msg.innerHTML = '<span style="color:#c00">Error: '+esc(d.error||'Failed')+'</span>';
+      return;
+    }
+    if(msg) msg.innerHTML = '<span style="color:#2e7d32">&#10003; Onboarding email sent to '+esc(email)+'</span>';
+    loadStripeConfig();
+  }).catch(function(e){
+    if(msg) msg.innerHTML = '<span style="color:#c00">Error: '+esc(e.message||e)+'</span>';
+  });
 }
 
 function saveStripeConfig(){
