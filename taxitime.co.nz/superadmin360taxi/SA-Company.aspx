@@ -299,6 +299,39 @@
   </div>
 </div>
 
+<!-- TM Configuration — per company -->
+<div class="sa-card" id="tm-config-card">
+  <div class="sa-bar" style="background:#00695C"><h3>&#9855; Total Mobility (TM) Configuration</h3>
+    <span style="font-size:11px;opacity:.7">Written to <code>companySettings/{companyId}/tmConfig</code></span>
+  </div>
+  <div style="padding:16px 18px">
+    <p style="font-size:12px;color:#888;margin:0 0 14px">
+      Driver app reads these values when processing TM payments. Council subsidy and hoist rates are <strong>not hardcoded</strong> — set per company here.
+    </p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;max-width:720px">
+      <div>
+        <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:5px">Council Subsidy %</label>
+        <input id="tm-subsidy-pct" type="number" min="0" max="100" step="1" placeholder="65" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:6px;font-size:14px;box-sizing:border-box"/>
+        <div style="font-size:11px;color:#9e9e9e;margin-top:4px">e.g. 65 = council pays 65% of fare (capped)</div>
+      </div>
+      <div>
+        <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:5px">Council Cap Amount ($)</label>
+        <input id="tm-cap-amount" type="number" min="0" step="0.01" placeholder="37.40" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:6px;font-size:14px;box-sizing:border-box"/>
+        <div style="font-size:11px;color:#9e9e9e;margin-top:4px">Maximum council pays per trip</div>
+      </div>
+      <div>
+        <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:5px">Hoist Cost Per Unit ($)</label>
+        <input id="tm-hoist-cost" type="number" min="0" step="0.01" placeholder="11.50" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:6px;font-size:14px;box-sizing:border-box"/>
+        <div style="font-size:11px;color:#9e9e9e;margin-top:4px">WAV / wheelchair van hoist charge (council pays)</div>
+      </div>
+    </div>
+    <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <button onclick="saveTmConfig()" class="sa-btn" style="background:#00695C;color:#fff;border:none">&#10003; Save TM Config</button>
+      <span id="tm-config-msg" style="font-size:12px;color:#888"></span>
+    </div>
+  </div>
+</div>
+
 <!-- Payment Methods — per company -->
 <div class="sa-card" id="payment-card">
   <div class="sa-bar" style="background:#E65100"><h3>&#128179; Payment Methods</h3>
@@ -1094,6 +1127,43 @@ function toggleCompanyCash(){
   });
 }
 
+/* ── TM Configuration ─────────────────────────────── */
+function loadTmConfig(){
+  _fbGet('companySettings/'+CID+'/tmConfig').then(function(data){
+    data = data || {};
+    var pct = document.getElementById('tm-subsidy-pct');
+    var cap = document.getElementById('tm-cap-amount');
+    var hoist = document.getElementById('tm-hoist-cost');
+    if(pct) pct.value = data.councilSubsidyPercent != null ? data.councilSubsidyPercent : 65;
+    if(cap) cap.value = data.councilCapAmount != null ? data.councilCapAmount : 37.40;
+    if(hoist) hoist.value = data.hoistCostPerUnit != null ? data.hoistCostPerUnit : 11.50;
+  }).catch(function(){});
+}
+
+function saveTmConfig(){
+  var pctEl = document.getElementById('tm-subsidy-pct');
+  var capEl = document.getElementById('tm-cap-amount');
+  var hoistEl = document.getElementById('tm-hoist-cost');
+  var msg = document.getElementById('tm-config-msg');
+  var payload = {
+    councilSubsidyPercent: parseFloat(pctEl && pctEl.value) || 65,
+    councilCapAmount: parseFloat(capEl && capEl.value) || 37.40,
+    hoistCostPerUnit: parseFloat(hoistEl && hoistEl.value) || 11.50,
+    updatedAt: Date.now()
+  };
+  db.ref('companySettings/'+CID+'/tmConfig').set(payload).then(function(){
+    var saEmail = (firebase.auth().currentUser||{}).email || 'sa-admin';
+    var rand = Math.random().toString(36).slice(2,7);
+    db.ref('superAuditLog/LOG'+Date.now()+'_'+rand).set({
+      action:'tm_config_updated',actor:saEmail,cid:CID,cidName:(companyData&&companyData.name)||CID,
+      detail:'TM config: '+payload.councilSubsidyPercent+'% cap $'+payload.councilCapAmount+' hoist $'+payload.hoistCostPerUnit,ts:Date.now()
+    });
+    if(msg) msg.innerHTML='<span style="color:#2e7d32">&#10003; Saved — Driver app will use '+payload.councilSubsidyPercent+'% / $'+payload.councilCapAmount.toFixed(2)+' cap / $'+payload.hoistCostPerUnit.toFixed(2)+' hoist.</span>';
+  }).catch(function(e){
+    if(msg) msg.innerHTML='<span style="color:#c00">Error: '+esc(e.message)+'</span>';
+  });
+}
+
 /* ── ACC Vendor ID ────────────────────────────────── */
 function loadAccVendorId(){
   _fbGet('companySettings/'+CID+'/accVendorId').then(function(val){
@@ -1245,7 +1315,7 @@ function saveStripeConfig(){
 window._fbOnLogin = function(){
   loadCompany(); loadFeatureFlags(); loadOwnerSettings();
   loadBookings(); loadDriverRegistrations(); loadCompanyCash();
-  loadAccVendorId(); loadStripeConfig();
+  loadTmConfig(); loadAccVendorId(); loadStripeConfig();
 };
 
 /* ── Owner Group Card ─────────────────────────────── */
