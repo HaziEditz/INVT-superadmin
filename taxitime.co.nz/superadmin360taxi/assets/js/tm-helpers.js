@@ -479,6 +479,7 @@ window.updateCompanyPlan = function(companyId, planData) {
 
   var pkgId = planData.packageId;
   var pkgName = planData.packageName;
+  var pkg = planData.packageMeta || null;
   var status = window._resolvePlanStatus(planData);
   var isTrial = status === 'trial';
   var monthlyRate = planData.monthlyRate;
@@ -555,6 +556,24 @@ window.updateCompanyPlan = function(companyId, planData) {
       db.ref('superBilling/' + cid + '/info').update(superBillingInfo),
       db.ref('companyBilling/' + cid).update(companyBillingPatch)
     );
+
+    var isPaid = status === 'active' && pkgId && pkgId !== 'pkg_trial';
+    if (isPaid && pkg && pkg.modules && planData.enableModules !== false) {
+      var featurePatch = {};
+      var modulePatch = {};
+      ['taxi', 'food', 'freight'].forEach(function(m) {
+        if (pkg.modules[m]) {
+          featurePatch[m] = true;
+          modulePatch[m] = true;
+        }
+      });
+      if (Object.keys(featurePatch).length) {
+        writes.push(db.ref('companySettings/' + cid + '/features').update(featurePatch));
+      }
+      if (Object.keys(modulePatch).length) {
+        writes.push(db.ref('superClients/' + cid + '/modules').update(modulePatch));
+      }
+    }
   } else {
     writes.push(
       db.ref('companySettings/' + cid + '/plan').update({ status: status }),

@@ -846,12 +846,20 @@ function clearCoOverride(cid){
 }
 
 /* ── Seed defaults if empty ──────────────────────────────────────── */
+function ensureBasicNoMinimum(){
+  var basic=allPackages['pkg_basic'];
+  if(basic&&+(basic.minimumMonthly||0)===50){
+    return db.ref(PKG_PATH+'/pkg_basic/minimumMonthly').set(0).then(function(){
+      allPackages['pkg_basic'].minimumMonthly=0;
+    });
+  }
+}
 function seedDefaults(){
   _fbGet(PKG_PATH).then(function(data){
     if(data) return;
     var defaults=[
       {id:'pkg_trial',name:'Free Trial',billingType:'per_car_monthly',pricePerCar:0,minimumMonthly:null,description:'30-day free trial. All modules included. No charge until trial ends.',sortOrder:0,active:true,showOnJoin:true,trialDays:30,dateFrom:new Date().toISOString().slice(0,10),createdAt:new Date().toISOString(),modules:{taxi:true,food:true,freight:true}},
-      {id:'pkg_basic',name:'Basic',billingType:'per_car_monthly',pricePerCar:10,minimumMonthly:50,description:'Taxi dispatch only. Perfect for small fleets just getting started.',sortOrder:1,active:true,showOnJoin:true,dateFrom:new Date().toISOString().slice(0,10),createdAt:new Date().toISOString(),modules:{taxi:true,food:false,freight:false}},
+      {id:'pkg_basic',name:'Basic',billingType:'per_car_monthly',pricePerCar:10,minimumMonthly:0,description:'Taxi dispatch only. Perfect for small fleets just getting started.',sortOrder:1,active:true,showOnJoin:true,dateFrom:new Date().toISOString().slice(0,10),createdAt:new Date().toISOString(),modules:{taxi:true,food:false,freight:false}},
       {id:'pkg_standard',name:'Standard',billingType:'per_car_monthly',pricePerCar:15,minimumMonthly:99,description:'Taxi + Food Delivery. Grow your revenue with restaurant orders.',sortOrder:2,active:true,showOnJoin:true,dateFrom:new Date().toISOString().slice(0,10),createdAt:new Date().toISOString(),volumeTiers:[{min:1,max:5,price:15},{min:6,max:20,price:12},{min:21,max:0,price:10}],modules:{taxi:true,food:true,freight:false}},
       {id:'pkg_pro',name:'Pro — All Modules',billingType:'per_car_monthly',pricePerCar:20,minimumMonthly:149,description:'All modules: Taxi, Food Delivery & Freight. Best value for large fleets.',sortOrder:3,active:true,showOnJoin:true,dateFrom:new Date().toISOString().slice(0,10),createdAt:new Date().toISOString(),volumeTiers:[{min:1,max:5,price:20},{min:6,max:20,price:16},{min:21,max:0,price:13}],modules:{taxi:true,food:true,freight:true}},
       {id:'pkg_annual',name:'Annual Plan',billingType:'flat_annual',flatPrice:500,description:'One flat yearly fee. Includes all modules. Great for predictable budgeting.',sortOrder:4,active:true,showOnJoin:true,dateFrom:new Date().toISOString().slice(0,10),createdAt:new Date().toISOString(),modules:{taxi:true,food:true,freight:true}}
@@ -875,6 +883,8 @@ window._fbOnLogin = function(){
     allCompanies=results[1]||{};
     allBilling=results[2]||{};
     allCompanySettings=results[3]||{};
+    return ensureBasicNoMinimum();
+  }).then(function(){
     renderPackages(allPackages);
     renderCompanyPricing();
   });

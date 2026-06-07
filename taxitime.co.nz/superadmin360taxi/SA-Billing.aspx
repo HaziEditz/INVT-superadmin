@@ -646,6 +646,52 @@ function generateInvoice(){
   document.getElementById('inv-period').scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 
+function resolveSavedPackageId(sources){
+  var csBilling=sources.csBilling||{};
+  var settings=sources.settings||{};
+  var info=sources.info||{};
+  var compBilling=sources.compBilling||{};
+  var client=sources.client||{};
+  var plan=settings.plan;
+  var planPkgId=plan&&typeof plan==='object'?plan.packageId:null;
+  var planName=typeof plan==='string'?plan:(plan&&plan.name);
+  var pkgId=csBilling.packageId||planPkgId||info.packageId||compBilling.packageId||client.packageId||'';
+  if(!pkgId&&planName){
+    Object.keys(allPackages).forEach(function(pid){
+      if(allPackages[pid].name===planName) pkgId=pid;
+    });
+  }
+  return pkgId;
+}
+
+function loadPackageForm(){
+  if(!cid||!Object.keys(allPackages).length) return;
+  Promise.all([
+    _fbGet('companySettings/'+cid+'/billing'),
+    _fbGet('companySettings/'+cid),
+    _fbGet('superBilling/'+cid+'/info'),
+    _fbGet('companyBilling/'+cid),
+    _fbGet('superClients/'+cid)
+  ]).then(function(results){
+    var csBilling=results[0]||{};
+    var settings=results[1]||{};
+    var info=results[2]||{};
+    var compBilling=results[3]||{};
+    var client=results[4]||{};
+    if(client&&Object.keys(client).length) companyData=Object.assign(companyData||{},client);
+    var pkgId=resolveSavedPackageId({csBilling:csBilling,settings:settings,info:info,compBilling:compBilling,client:client});
+    renderPackageOptions(allPackages,pkgId);
+    renderPlanCompliance();
+    if(info.monthlyFee) document.getElementById('pkg-fee').value=info.monthlyFee;
+    else if(csBilling.monthlyRate){
+      var fleet=+(companyData.fleetSize||companyData.fleet||0);
+      document.getElementById('pkg-fee').value=fleet>0?csBilling.monthlyRate*fleet:csBilling.monthlyRate;
+    }
+    if(info.startDate||csBilling.billingStartDate) document.getElementById('pkg-start').value=info.startDate||csBilling.billingStartDate;
+    if(info.nextDueDate||csBilling.nextDueDate) document.getElementById('pkg-due').value=info.nextDueDate||csBilling.nextDueDate;
+  }).catch(function(e){ console.warn('[Billing] loadPackageForm:', e.message||e); });
+}
+
 function renderPackageOptions(pkgs, currentPkgId){
   var sel=document.getElementById('pkg-sel');
   sel.innerHTML='<option value="">-- no package assigned --</option>';
@@ -689,7 +735,14 @@ function savePackageAssign(){
       companyData.packageId=pkgId||null;
       companyData.packageName=pkgName;
       companyData.status=(pkg&&!pkg.trialDays&&pkgId!=='pkg_trial')?'active':'trial';
+      if(pkg&&pkg.modules){
+        companyData.modules=companyData.modules||{};
+        ['taxi','food','freight'].forEach(function(m){
+          if(pkg.modules[m]) companyData.modules[m]=true;
+        });
+      }
     }
+    renderPlanCompliance();
     console.log('[Billing] updateCompanyPlan', { companyId: cid, plan: pkgName, packageId: pkgId });
     setTimeout(function(){ msg.textContent=''; },3000);
   }).catch(function(e){ showNotice('Error: '+e.message,'err'); });
@@ -1099,28 +1152,7 @@ window._fbOnLogin = function(){
   _fbGet('superPackages').then(function(data){
     allPackages=data||{};
     renderPlanCompliance();
-    Promise.all([
-      _fbGet('superBilling/'+cid+'/info'),
-      _fbGet('companySettings/'+cid)
-    ]).then(function(results){
-      var info=results[0]||{};
-      var settings=results[1]||{};
-      var csBilling=settings.billing||{};
-      var pkgId=info.packageId||csBilling.packageId||'';
-      if(!pkgId && typeof settings.plan==='string'){
-        Object.keys(allPackages).forEach(function(pid){
-          if(allPackages[pid].name===settings.plan) pkgId=pid;
-        });
-      }
-      renderPackageOptions(allPackages, pkgId);
-      if(info.monthlyFee) document.getElementById('pkg-fee').value=info.monthlyFee;
-      else if(csBilling.monthlyRate && companyData){
-        var fleet=+(companyData.fleetSize||companyData.fleet||0);
-        document.getElementById('pkg-fee').value=fleet>0?csBilling.monthlyRate*fleet:csBilling.monthlyRate;
-      }
-      if(info.startDate||csBilling.billingStartDate) document.getElementById('pkg-start').value=info.startDate||csBilling.billingStartDate;
-      if(info.nextDueDate||csBilling.nextDueDate) document.getElementById('pkg-due').value=info.nextDueDate||csBilling.nextDueDate;
-    });
+    loadPackageForm();
   });
 
   _fbGet('superBilling/'+cid+'/invoices').then(function(data){ renderInvoices(data); });
