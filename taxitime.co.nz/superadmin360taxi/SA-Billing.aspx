@@ -366,6 +366,33 @@ function showNotice(msg,type){
   setTimeout(function(){ el.style.display='none'; },4000);
 }
 
+function getPackagePerCarRate(pkg){
+  if(!pkg) return 0;
+  var bt=pkg.billingType||'per_car_monthly';
+  if(bt==='flat_monthly') return +(pkg.flatPrice||0);
+  if(bt==='flat_annual') return +(pkg.flatPrice||0)/12;
+  return +(pkg.pricePerCar||pkg.monthlyPrice||0);
+}
+
+function formatPackageOptionLabel(p){
+  var bt=p.billingType||'per_car_monthly';
+  if(bt==='flat_annual') return p.name+' — $'+(+(p.flatPrice||0)).toFixed(2)+'/yr';
+  if(bt==='flat_monthly') return p.name+' — $'+(+(p.flatPrice||0)).toFixed(2)+'/mo';
+  return p.name+' — $'+(+(p.pricePerCar||p.monthlyPrice||0)).toFixed(2)+'/car/mo';
+}
+
+function getPackageDefaultMonthlyFee(pkg, fleetSize){
+  if(!pkg) return '';
+  var bt=pkg.billingType||'per_car_monthly';
+  var fleet=+(fleetSize||0);
+  if(bt==='flat_annual') return ((+(pkg.flatPrice||0))/12).toFixed(2);
+  if(bt==='flat_monthly') return +(pkg.flatPrice||0)||'';
+  var ppc=+(pkg.pricePerCar||pkg.monthlyPrice||0);
+  var monthly=fleet>0?ppc*fleet:ppc;
+  var minM=+(pkg.minimumMonthly||0);
+  return Math.max(monthly,minM)||'';
+}
+
 /* ── OVERVIEW MODE ─────────────────────────────────────────────────────────── */
 function loadOverview(){
   document.getElementById('ov-loading').style.display='block';
@@ -627,14 +654,15 @@ function renderPackageOptions(pkgs, currentPkgId){
     if(p.active===false) return;
     var opt=document.createElement('option');
     opt.value=id;
-    opt.textContent=p.name+' — $'+p.monthlyPrice+'/mo';
+    opt.textContent=formatPackageOptionLabel(p);
     if(id===currentPkgId) opt.selected=true;
     sel.appendChild(opt);
   });
-  sel.addEventListener('change', function(){
+  var fleetSize=companyData&&(companyData.fleetSize||companyData.fleet||0);
+  sel.onchange=function(){
     var pid=sel.value;
-    if(pid && pkgs[pid]) document.getElementById('pkg-fee').value=pkgs[pid].monthlyPrice||'';
-  });
+    if(pid && pkgs[pid]) document.getElementById('pkg-fee').value=getPackageDefaultMonthlyFee(pkgs[pid], fleetSize);
+  };
 }
 
 function savePackageAssign(){
@@ -642,18 +670,32 @@ function savePackageAssign(){
   var fee=+(document.getElementById('pkg-fee').value||0);
   var start=document.getElementById('pkg-start').value;
   var due=document.getElementById('pkg-due').value;
-  var pkgName=pkgId&&allPackages[pkgId]?allPackages[pkgId].name:'';
-  db.ref('superBilling/'+cid+'/info').update({
+  var pkg=pkgId&&allPackages[pkgId]?allPackages[pkgId]:null;
+  var pkgName=pkg?pkg.name:'';
+  var monthlyRate=pkg?getPackagePerCarRate(pkg):null;
+  var nowIso=new Date().toISOString();
+  var billingPatch={
     packageId:pkgId||null,
-    packageName:pkgName,
-    monthlyFee:fee||null,
-    startDate:start||null,
+    monthlyRate:monthlyRate,
+    billingStartDate:start||null,
     nextDueDate:due||null,
-    updatedAt:new Date().toISOString()
-  }).then(function(){
+    updatedAt:nowIso
+  };
+  Promise.all([
+    db.ref('superBilling/'+cid+'/info').update({
+      packageId:pkgId||null,
+      packageName:pkgName,
+      monthlyFee:fee||null,
+      startDate:start||null,
+      nextDueDate:due||null,
+      updatedAt:nowIso
+    }),
+    db.ref('companySettings/'+cid+'/plan').set(pkgName||null),
+    db.ref('companySettings/'+cid+'/billing').update(billingPatch),
+    db.ref('companyBilling/'+cid).update({ packageId:pkgId||null, updatedAt:nowIso })
+  ]).then(function(){
     var msg=document.getElementById('pkg-msg');
     msg.style.color='#2E7D32'; msg.textContent='&#10003; Saved';
-    // Also sync to superClients for the overview
     if(pkgId) db.ref('superClients/'+cid).update({packageId:pkgId, packageName:pkgName});
     setTimeout(function(){ msg.textContent=''; },2000);
   }).catch(function(e){ showNotice('Error: '+e.message,'err'); });
@@ -1063,12 +1105,27 @@ window._fbOnLogin = function(){
   _fbGet('superPackages').then(function(data){
     allPackages=data||{};
     renderPlanCompliance();
-    _fbGet('superBilling/'+cid+'/info').then(function(info){
-      info=info||{};
-      renderPackageOptions(allPackages, info.packageId||'');
+    Promise.all([
+      _fbGet('superBilling/'+cid+'/info'),
+      _fbGet('companySettings/'+cid)
+    ]).then(function(results){
+      var info=results[0]||{};
+      var settings=results[1]||{};
+      var csBilling=settings.billing||{};
+      var pkgId=info.packageId||csBilling.packageId||'';
+      if(!pkgId && typeof settings.plan==='string'){
+        Object.keys(allPackages).forEach(function(pid){
+          if(allPackages[pid].name===settings.plan) pkgId=pid;
+        });
+      }
+      renderPackageOptions(allPackages, pkgId);
       if(info.monthlyFee) document.getElementById('pkg-fee').value=info.monthlyFee;
-      if(info.startDate)  document.getElementById('pkg-start').value=info.startDate;
-      if(info.nextDueDate) document.getElementById('pkg-due').value=info.nextDueDate;
+      else if(csBilling.monthlyRate && companyData){
+        var fleet=+(companyData.fleetSize||companyData.fleet||0);
+        document.getElementById('pkg-fee').value=fleet>0?csBilling.monthlyRate*fleet:csBilling.monthlyRate;
+      }
+      if(info.startDate||csBilling.billingStartDate) document.getElementById('pkg-start').value=info.startDate||csBilling.billingStartDate;
+      if(info.nextDueDate||csBilling.nextDueDate) document.getElementById('pkg-due').value=info.nextDueDate||csBilling.nextDueDate;
     });
   });
 

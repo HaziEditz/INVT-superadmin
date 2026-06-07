@@ -322,6 +322,7 @@ var BILLING_PATH = 'companyBilling';
 var allPackages = {};
 var allCompanies = {};
 var allBilling = {};
+var allCompanySettings = {};
 
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
@@ -677,9 +678,35 @@ function getPkgName(pkgId){
   return pkgId ? (allPackages[pkgId]&&allPackages[pkgId].name||pkgId) : '—';
 }
 
+function resolveCompanyPackage(cid, co){
+  var cs=allCompanySettings[cid]||{};
+  var csBilling=cs.billing||{};
+  var b=allBilling[cid]||{};
+  var planName=typeof cs.plan==='string'?cs.plan:(cs.plan&&cs.plan.name)||'';
+  var pkgId=csBilling.packageId||b.packageId||co.packageId||'';
+  if(!pkgId&&planName){
+    Object.keys(allPackages).forEach(function(pid){
+      if(allPackages[pid].name===planName) pkgId=pid;
+    });
+  }
+  return { pkgId:pkgId, planName:planName, csBilling:csBilling };
+}
+
+function companyHasAssignedPackage(resolved){
+  return !!(resolved.pkgId||resolved.planName);
+}
+
 function renderCompanyPricing(){
   var tbody=document.getElementById('co-pricing-tbody');
-  var companies=Object.entries(allCompanies).sort(function(a,b){
+  var companyIdSet={};
+  Object.keys(allCompanies).forEach(function(cid){ companyIdSet[cid]=true; });
+  Object.keys(allCompanySettings).forEach(function(cid){
+    var co=allCompanies[cid]||{};
+    if(companyHasAssignedPackage(resolveCompanyPackage(cid, co))) companyIdSet[cid]=true;
+  });
+  var companies=Object.keys(companyIdSet).map(function(cid){
+    return [cid, allCompanies[cid]||{ name: cid }];
+  }).sort(function(a,b){
     return (a[1].name||a[0]).localeCompare(b[1].name||b[0]);
   });
   if(!companies.length){
@@ -690,14 +717,24 @@ function renderCompanyPricing(){
   var totalCars=0, totalRev=0, customCount=0, activeCount=0;
   var rows=companies.map(function(entry){
     var cid=entry[0], co=entry[1];
+    var resolved=resolveCompanyPackage(cid, co);
+    var pkgId=resolved.pkgId;
     var b=allBilling[cid]||{};
-    var pkgId=b.packageId||co.packageId||'';
+    var csBilling=resolved.csBilling;
     var fleet=+(b.contractedFleet||co.fleetSize||0);
     var override=b.pricePerCarOverride!==undefined&&b.pricePerCarOverride!==null&&b.pricePerCarOverride!==''?+b.pricePerCarOverride:null;
     var monthly=getMonthlyFee(pkgId,fleet,override);
+    if(monthly<=0&&csBilling.monthlyRate){
+      monthly=fleet>0?+(csBilling.monthlyRate)*fleet:+(csBilling.monthlyRate);
+    }
     var hasOverride=override!==null;
     var notes=b.notes||co.notes||'';
-    if(fleet>0){ totalCars+=fleet; totalRev+=monthly; activeCount++; }
+    var hasPackage=companyHasAssignedPackage(resolved);
+    if(hasPackage){
+      activeCount++;
+      totalRev+=monthly;
+      if(fleet>0) totalCars+=fleet;
+    }
     if(hasOverride) customCount++;
     var pkg=allPackages[pkgId]||{};
     var bt=pkg.billingType||'per_car_monthly';
@@ -798,11 +835,13 @@ window._fbOnLogin = function(){
   Promise.all([
     _fbGet(PKG_PATH),
     _fbGet('superClients'),
-    _fbGet(BILLING_PATH)
+    _fbGet(BILLING_PATH),
+    _fbGet('companySettings')
   ]).then(function(results){
     allPackages=results[0]||{};
     allCompanies=results[1]||{};
     allBilling=results[2]||{};
+    allCompanySettings=results[3]||{};
     renderPackages(allPackages);
     renderCompanyPricing();
   });
