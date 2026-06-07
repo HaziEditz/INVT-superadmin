@@ -29,6 +29,7 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
 .sa-notice{padding:10px 16px;border-radius:6px;margin-bottom:14px;font-size:13px}
 .sa-notice.ok{background:#E8F5E9;color:#1B5E20;border-left:4px solid #2E7D32}
 .sa-notice.err{background:#FFEBEE;color:#B71C1C;border-left:4px solid #C62828}
+.sa-notice.warn{background:#FFF8E1;color:#E65100;border-left:4px solid #FF9800}
 .ff label{display:block;font-size:12px;color:#666;font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em}
 .ff input,.ff select,.ff textarea{width:100%;padding:9px 11px;border:1px solid #ddd;border-radius:5px;font-size:13.5px;box-sizing:border-box;font-family:inherit;transition:border-color .15s}
 .ff input:focus,.ff select:focus,.ff textarea:focus{outline:none;border-color:#1565C0;box-shadow:0 0 0 3px rgba(21,101,192,.08)}
@@ -164,12 +165,12 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
   <!-- Quick templates -->
   <div class="template-strip">
     <span class="tpl-label">Quick Template:</span>
-    <button class="tpl-btn" onclick="applyTemplate('invoice')">&#128190; Monthly Invoice</button>
-    <button class="tpl-btn" onclick="applyTemplate('payment_reminder')">&#9888; Payment Reminder</button>
-    <button class="tpl-btn" onclick="applyTemplate('overdue')">&#128680; Overdue Notice</button>
-    <button class="tpl-btn" onclick="applyTemplate('welcome')">&#127881; Welcome</button>
-    <button class="tpl-btn" onclick="applyTemplate('subscription')">&#128260; Subscription Update</button>
-    <button class="tpl-btn" onclick="applyTemplate('general')">&#128221; General Notice</button>
+    <button class="tpl-btn" onclick="applyTemplate('invoice', this)">&#128190; Monthly Invoice</button>
+    <button class="tpl-btn" onclick="applyTemplate('payment_reminder', this)">&#9888; Payment Reminder</button>
+    <button class="tpl-btn" onclick="applyTemplate('overdue', this)">&#128680; Overdue Notice</button>
+    <button class="tpl-btn" onclick="applyTemplate('welcome', this)">&#127881; Welcome</button>
+    <button class="tpl-btn" onclick="applyTemplate('subscription', this)">&#128260; Subscription Update</button>
+    <button class="tpl-btn" onclick="applyTemplate('general', this)">&#128221; General Notice</button>
     <button class="tpl-btn sa-btn-n" style="border-radius:20px" onclick="clearAll()">&#10006; Clear</button>
   </div>
 
@@ -293,49 +294,66 @@ function fmtDate(ts) {
 /* ── Templates ── */
 var TEMPLATES = {
   invoice: {
-    subject: 'Invoice #{REF} — BookaWaka Platform — {MONTH}',
-    body: 'Dear {CONTACT},\n\nPlease find attached your invoice for the BookaWaka platform subscription for the period ending {MONTH}.\n\nInvoice Reference: {REF}\nAmount Due: {AMOUNT}\nDue Date: [DUE DATE]\n\nPayment can be made via bank transfer to:\n  Account Name: BookaWaka Ltd\n  Bank: [BANK DETAILS]\n\nIf you have any questions about this invoice, please don\'t hesitate to reply to this email.\n\nThank you for your continued partnership with BookaWaka.\n\nKind regards,\nBookaWaka Finance Team'
+    subject: 'Invoice #{REF} — {COMPANY_NAME}',
+    body: 'Dear {COMPANY_NAME},\n\nPlease find your monthly invoice attached for your BookaWaka platform subscription for {MONTH}.\n\nInvoice Reference: #{REF}\nAmount Due: {AMOUNT}\nDue Date: [DUE DATE]\n\nPayment can be made via bank transfer to:\n  Account Name: BookaWaka Ltd\n  Bank: [BANK DETAILS]\n\nIf you have any questions about this invoice, please reply to this email.\n\nThank you for your continued partnership with BookaWaka.\n\nKind regards,\nBookaWaka Finance Team'
   },
   payment_reminder: {
-    subject: 'Payment Reminder — Invoice {REF} — BookaWaka',
-    body: 'Dear {CONTACT},\n\nThis is a friendly reminder that payment for Invoice {REF} ({AMOUNT}) is due shortly.\n\nPlease ensure payment is made by the due date to avoid any interruption to your service.\n\nIf you have already made payment, please disregard this message.\n\nShould you have any queries or need to discuss payment arrangements, please reply to this email.\n\nKind regards,\nBookaWaka Finance Team'
+    subject: 'Payment Reminder — {COMPANY_NAME}',
+    body: 'Dear {COMPANY_NAME},\n\nThis is a friendly reminder that your payment is due for invoice #{REF} ({AMOUNT}).\n\nPlease ensure payment is made by the due date to avoid any interruption to your service.\n\nIf you have already made payment, please disregard this message.\n\nShould you have any queries or need to discuss payment arrangements, please reply to this email.\n\nKind regards,\nBookaWaka Finance Team'
   },
   overdue: {
-    subject: 'OVERDUE: Invoice {REF} — Action Required — BookaWaka',
-    body: 'Dear {CONTACT},\n\nOur records show that Invoice {REF} ({AMOUNT}) is now overdue.\n\nWe ask that you arrange payment as soon as possible to ensure continuity of your BookaWaka services. Failure to settle this balance within 7 days may result in temporary suspension of platform access.\n\nIf you are experiencing difficulty making payment, please contact us immediately so we can discuss a suitable arrangement.\n\nKind regards,\nBookaWaka Accounts Team'
+    subject: 'Overdue Payment — Action Required — {COMPANY_NAME}',
+    body: 'Dear {COMPANY_NAME},\n\nYour account is overdue. Invoice #{REF} ({AMOUNT}) remains unpaid.\n\nPlease make payment immediately to ensure continuity of your BookaWaka services. Failure to settle this balance within 7 days may result in temporary suspension of platform access.\n\nIf you are experiencing difficulty making payment, please contact us immediately so we can discuss a suitable arrangement.\n\nKind regards,\nBookaWaka Accounts Team'
   },
   welcome: {
-    subject: 'Welcome to BookaWaka — {COMPANY}',
-    body: 'Dear {CONTACT},\n\nWelcome to the BookaWaka platform! We\'re thrilled to have {COMPANY} on board.\n\nHere\'s what you can expect:\n\n• Real-time dispatch and trip management\n• Driver and fleet management tools\n• Automated fare calculations and reporting\n• Total Mobility subsidy processing (if applicable)\n• Dedicated support from the BookaWaka team\n\nYour company admin portal is available at: https://admin.bookawaka.co.nz\nYour dispatch portal is available at: https://dispatch.bookawaka.co.nz\n\nIf you have any questions getting started, please don\'t hesitate to reach out.\n\nWelcome aboard!\n\nKind regards,\nThe BookaWaka Team'
+    subject: 'Welcome to BookaWaka — {COMPANY_NAME}',
+    body: 'Dear {COMPANY_NAME},\n\nWelcome to the BookaWaka platform! We\'re thrilled to have you on board.\n\nHere\'s what you can expect:\n\n• Real-time dispatch and trip management\n• Driver and fleet management tools\n• Automated fare calculations and reporting\n• Total Mobility subsidy processing (if applicable)\n• Dedicated support from the BookaWaka team\n\nYour company admin portal is available at: https://admin.bookawaka.co.nz\nYour dispatch portal is available at: https://dispatch.bookawaka.co.nz\n\nIf you have any questions getting started, please don\'t hesitate to reach out.\n\nWelcome aboard!\n\nKind regards,\nThe BookaWaka Team'
   },
   subscription: {
-    subject: 'Subscription Update — BookaWaka Platform — {COMPANY}',
-    body: 'Dear {CONTACT},\n\nWe are writing to inform you of an update to your BookaWaka platform subscription.\n\nYour current plan: [PLAN NAME]\nEffective date: [DATE]\nNew amount: {AMOUNT}/month\n\nThis change reflects [REASON FOR CHANGE].\n\nIf you have any questions about this update or wish to discuss your plan, please reply to this email or contact your account manager.\n\nThank you for your continued support.\n\nKind regards,\nBookaWaka Team'
+    subject: 'Subscription Update — {COMPANY_NAME}',
+    body: 'Dear {COMPANY_NAME},\n\nWe are writing to inform you of an update to your BookaWaka platform subscription.\n\nYour current plan: [PLAN NAME]\nEffective date: [DATE]\nNew amount: {AMOUNT}/month\n\nThis change reflects [REASON FOR CHANGE].\n\nIf you have any questions about this update or wish to discuss your plan, please reply to this email or contact your account manager.\n\nThank you for your continued support.\n\nKind regards,\nBookaWaka Team'
   },
   general: {
-    subject: 'Message from BookaWaka — {COMPANY}',
-    body: 'Dear {CONTACT},\n\nWe are reaching out regarding your account with BookaWaka.\n\n[YOUR MESSAGE HERE]\n\nIf you have any questions, please don\'t hesitate to contact us.\n\nKind regards,\nBookaWaka Admin Team'
+    subject: 'Message from BookaWaka — {COMPANY_NAME}',
+    body: 'Dear {COMPANY_NAME},\n\nWe are reaching out regarding your account with BookaWaka.\n\n[YOUR MESSAGE HERE]\n\nIf you have any questions, please don\'t hesitate to contact us.\n\nKind regards,\nBookaWaka Admin Team'
   }
 };
 
-function applyTemplate(key) {
+function applyTemplate(key, btnEl) {
   document.querySelectorAll('.tpl-btn').forEach(function(b){ b.classList.remove('active'); });
-  event.target.classList.add('active');
-  var co = allCompanies[document.getElementById('co-select').value] || {};
+  if (btnEl) btnEl.classList.add('active');
+  var cid = document.getElementById('co-select').value;
+  var co = allCompanies[cid] || {};
   var tpl = TEMPLATES[key];
   if (!tpl) return;
-  var contact = co.contactName || co.ownerName || co.name || '[Contact Name]';
-  var company = co.name || '[Company Name]';
-  var month = new Date().toLocaleDateString('en-NZ', {month:'long', year:'numeric'});
-  var ref = document.getElementById('ref-no').value || 'BW-' + new Date().getFullYear() + '-XXXX';
+  var companyName = co.name || '[Company Name]';
+  var contact = co.contactName || co.ownerName || companyName;
+  var now = new Date();
+  var year = now.getFullYear();
+  var monthNum = String(now.getMonth() + 1).padStart(2, '0');
+  var monthLabel = now.toLocaleDateString('en-NZ', { month: 'long', year: 'numeric' });
+  var defaultRef = 'BW-' + year + '-' + monthNum;
+  var refEl = document.getElementById('ref-no');
+  if (!refEl.value) refEl.value = defaultRef;
+  var ref = refEl.value || defaultRef;
   var amount = document.getElementById('ref-amount').value || '[AMOUNT]';
   function fill(s) {
-    return s.replace(/{CONTACT}/g, contact).replace(/{COMPANY}/g, company)
-            .replace(/{MONTH}/g, month).replace(/{REF}/g, ref).replace(/{AMOUNT}/g, amount);
+    return String(s)
+      .replace(/{COMPANY_NAME}/g, companyName)
+      .replace(/{COMPANY}/g, companyName)
+      .replace(/{CONTACT}/g, contact)
+      .replace(/{MONTH}/g, monthLabel)
+      .replace(/{YEAR}/g, String(year))
+      .replace(/{MONTH_NUM}/g, monthNum)
+      .replace(/{REF}/g, ref)
+      .replace(/{AMOUNT}/g, amount);
   }
   document.getElementById('email-subject').value = fill(tpl.subject);
   document.getElementById('email-body').value = fill(tpl.body);
   updateCharCount();
+  if (!cid) {
+    showNotice('Select a company above to insert the company name into the template.', 'warn');
+  }
 }
 
 function updateCharCount() {

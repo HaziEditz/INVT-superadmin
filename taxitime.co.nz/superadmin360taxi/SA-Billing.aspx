@@ -695,9 +695,10 @@ function savePackageAssign(){
     db.ref('companyBilling/'+cid).update({ packageId:pkgId||null, updatedAt:nowIso })
   ]).then(function(){
     var msg=document.getElementById('pkg-msg');
-    msg.style.color='#2E7D32'; msg.textContent='&#10003; Saved';
+    msg.style.color='#2E7D32'; msg.textContent='&#10003; Saved to companySettings/'+cid+'/plan';
     if(pkgId) db.ref('superClients/'+cid).update({packageId:pkgId, packageName:pkgName});
-    setTimeout(function(){ msg.textContent=''; },2000);
+    console.log('[Billing] Saved package', { companyId: cid, plan: pkgName, packageId: pkgId, path: 'companySettings/'+cid+'/plan' });
+    setTimeout(function(){ msg.textContent=''; },3000);
   }).catch(function(e){ showNotice('Error: '+e.message,'err'); });
 }
 
