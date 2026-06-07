@@ -443,3 +443,125 @@ window._tzMonthStart = function(tz) {
   var offsetMs = now.getTime() - tzNowAsUTC;
   return tzMidnightUTC + offsetMs;
 };
+
+/** Per-car (or flat-normalized) rate from a superPackages record */
+window._planPerCarRate = function(pkg) {
+  if (!pkg) return 0;
+  var bt = pkg.billingType || 'per_car_monthly';
+  if (bt === 'flat_monthly') return +(pkg.flatPrice || 0);
+  if (bt === 'flat_annual') return +(pkg.flatPrice || 0) / 12;
+  return +(pkg.pricePerCar || pkg.monthlyPrice || 0);
+};
+
+/** Derive billing status from package + optional overrides */
+window._resolvePlanStatus = function(planData) {
+  if (planData.status) return planData.status;
+  var pkgId = planData.packageId;
+  var pkg = planData.packageMeta;
+  if (planData.clearTrial || (pkgId && pkgId !== 'pkg_trial' && pkg && !pkg.trialDays)) return 'active';
+  if (pkgId === 'pkg_trial' || (pkg && pkg.trialDays > 0) || planData.trialEnd) return 'trial';
+  return pkgId ? 'active' : 'trial';
+};
+
+/**
+ * Single source of truth — sync plan/billing to all Firebase nodes at once.
+ * Writes: companySettings/{cid}/plan, companySettings/{cid}/billing,
+ *         superBilling/{cid}/info, superClients/{cid}, companyBilling/{cid}
+ */
+window.updateCompanyPlan = function(companyId, planData) {
+  planData = planData || {};
+  var cid = String(companyId);
+  var hasPackage = planData.packageId !== undefined || planData.packageName !== undefined;
+  var hasRate = planData.monthlyRate !== undefined || planData.pricePerCarOverride !== undefined;
+  var hasBillingDates = planData.billingStartDate !== undefined || planData.startDate !== undefined || planData.nextDueDate !== undefined;
+  var hasBillingExtras = planData.contractedFleet !== undefined || planData.pricePerCarOverride !== undefined || planData.notes !== undefined;
+  var fullPlanSync = hasPackage || hasRate || hasBillingDates || planData.monthlyFee !== undefined || hasBillingExtras;
+
+  var pkgId = planData.packageId;
+  var pkgName = planData.packageName;
+  var status = window._resolvePlanStatus(planData);
+  var isTrial = status === 'trial';
+  var monthlyRate = planData.monthlyRate;
+  if (monthlyRate === undefined && planData.pricePerCarOverride != null) {
+    monthlyRate = planData.pricePerCarOverride;
+  }
+  var nowIso = planData.updatedAt || new Date().toISOString();
+  var nowMs = planData.updatedAtMs || Date.now();
+  var startDate = planData.billingStartDate || planData.startDate;
+
+  var superClientsPatch = {
+    status: status,
+    subscriptionStatus: status,
+    updatedAt: nowMs
+  };
+  if (hasPackage) {
+    superClientsPatch.packageId = pkgId || null;
+    superClientsPatch.packageName = pkgName || null;
+  }
+  if (hasRate) superClientsPatch.packagePrice = monthlyRate != null ? monthlyRate : null;
+  if (isTrial) {
+    if (hasPackage) superClientsPatch.plan = pkgName || null;
+    if (planData.trialEnd != null) superClientsPatch.trialEnd = planData.trialEnd;
+    if (planData.trialStart != null) superClientsPatch.trialStart = planData.trialStart;
+    if (planData.trialDays != null) superClientsPatch.trialDays = planData.trialDays;
+  } else if (fullPlanSync && planData.clearTrial !== false) {
+    superClientsPatch.plan = null;
+    superClientsPatch.trialEnd = null;
+    superClientsPatch.trialEndsAt = null;
+    superClientsPatch.trialStart = null;
+    superClientsPatch.trialStartedAt = null;
+    superClientsPatch.trialDays = null;
+    superClientsPatch.onTrial = null;
+    superClientsPatch.isTrial = null;
+    superClientsPatch.trial = null;
+  }
+
+  var writes = [db.ref('superClients/' + cid).update(superClientsPatch)];
+
+  if (fullPlanSync) {
+    var planNode = {
+      name: pkgName != null ? pkgName : null,
+      status: status,
+      rate: monthlyRate != null ? monthlyRate : null,
+      packageId: pkgId != null ? pkgId : null
+    };
+    var billingPatch = {
+      packageId: pkgId != null ? pkgId : null,
+      monthlyRate: monthlyRate != null ? monthlyRate : null,
+      billingStartDate: startDate || null,
+      nextDueDate: planData.nextDueDate || null,
+      updatedAt: nowIso
+    };
+    var superBillingInfo = {
+      packageId: pkgId != null ? pkgId : null,
+      packageName: pkgName != null ? pkgName : null,
+      monthlyFee: planData.monthlyFee != null ? planData.monthlyFee : null,
+      startDate: startDate || null,
+      nextDueDate: planData.nextDueDate || null,
+      status: status,
+      updatedAt: nowMs
+    };
+    if (startDate) superBillingInfo.billingStart = startDate;
+
+    var companyBillingPatch = { updatedAt: nowIso };
+    if (hasPackage) companyBillingPatch.packageId = pkgId || null;
+    if (planData.contractedFleet !== undefined) companyBillingPatch.contractedFleet = planData.contractedFleet;
+    if (planData.pricePerCarOverride !== undefined) companyBillingPatch.pricePerCarOverride = planData.pricePerCarOverride;
+    if (planData.notes !== undefined) companyBillingPatch.notes = planData.notes;
+
+    writes.push(
+      db.ref('companySettings/' + cid + '/plan').set(planNode),
+      db.ref('companySettings/' + cid + '/billing').update(billingPatch),
+      db.ref('superBilling/' + cid + '/info').update(superBillingInfo),
+      db.ref('companyBilling/' + cid).update(companyBillingPatch)
+    );
+  } else {
+    writes.push(
+      db.ref('companySettings/' + cid + '/plan').update({ status: status }),
+      db.ref('superBilling/' + cid + '/info').update({ status: status, updatedAt: nowMs }),
+      db.ref('companyBilling/' + cid).update({ updatedAt: nowIso })
+    );
+  }
+
+  return Promise.all(writes);
+};

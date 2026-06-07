@@ -794,9 +794,25 @@ function saveCoEdit(cid){
   var rateVal=document.getElementById('ie-rate-'+cid).value.trim();
   var notes=document.getElementById('ie-notes-'+cid).value.trim();
   var msg=document.getElementById('ie-msg-'+cid);
-  var patch={ packageId:pkgId||null, contractedFleet:fleetVal!==''?+fleetVal:0, pricePerCarOverride:rateVal!==''?+rateVal:null, notes:notes||null, updatedAt:new Date().toISOString() };
+  var pkg=pkgId&&allPackages[pkgId]?allPackages[pkgId]:null;
+  var pkgName=pkg?pkg.name:'';
+  var fleet=fleetVal!==''?+fleetVal:0;
+  var override=rateVal!==''?+rateVal:null;
+  var monthlyRate=override!==null?override:getEffectiveRate(pkgId,fleet);
+  var monthlyFee=getMonthlyFee(pkgId,fleet,override);
   msg.textContent='Saving\u2026';
-  db.ref(BILLING_PATH+'/'+cid).update(patch).then(function(){
+  updateCompanyPlan(cid,{
+    packageId:pkgId||null,
+    packageName:pkgName,
+    packageMeta:pkg,
+    monthlyRate:monthlyRate,
+    monthlyFee:monthlyFee||null,
+    contractedFleet:fleet,
+    pricePerCarOverride:override,
+    notes:notes||null,
+    clearTrial:!!(pkg&&!pkg.trialDays&&pkgId!=='pkg_trial')
+  }).then(function(){
+    var patch={ packageId:pkgId||null, contractedFleet:fleet, pricePerCarOverride:override, notes:notes||null, updatedAt:new Date().toISOString() };
     allBilling[cid]=Object.assign(allBilling[cid]||{},patch);
     toggleCoEdit(cid); renderCompanyPricing();
     showNotice('Pricing updated for '+((allCompanies[cid]&&allCompanies[cid].name)||cid)+'.','ok');
@@ -805,7 +821,24 @@ function saveCoEdit(cid){
 function clearCoOverride(cid){
   var msg=document.getElementById('ie-msg-'+cid);
   msg.textContent='Clearing\u2026';
-  db.ref(BILLING_PATH+'/'+cid+'/pricePerCarOverride').remove().then(function(){
+  var co=allCompanies[cid]||{};
+  var b=allBilling[cid]||{};
+  var resolved=resolveCompanyPackage(cid,co);
+  var pkgId=resolved.pkgId||document.getElementById('ie-pkg-'+cid).value;
+  var pkg=pkgId&&allPackages[pkgId]?allPackages[pkgId]:null;
+  var fleet=+(b.contractedFleet||co.fleetSize||0);
+  var monthlyRate=getEffectiveRate(pkgId,fleet);
+  var monthlyFee=getMonthlyFee(pkgId,fleet,null);
+  updateCompanyPlan(cid,{
+    packageId:pkgId||null,
+    packageName:getPkgName(pkgId),
+    packageMeta:pkg,
+    monthlyRate:monthlyRate,
+    monthlyFee:monthlyFee||null,
+    contractedFleet:fleet,
+    pricePerCarOverride:null,
+    clearTrial:!!(pkg&&!pkg.trialDays&&pkgId!=='pkg_trial')
+  }).then(function(){
     if(allBilling[cid]) allBilling[cid].pricePerCarOverride=null;
     toggleCoEdit(cid); renderCompanyPricing();
     showNotice('Custom rate removed — package volume tiers now apply.','ok');

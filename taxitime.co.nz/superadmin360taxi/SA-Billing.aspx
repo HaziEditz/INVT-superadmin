@@ -673,31 +673,24 @@ function savePackageAssign(){
   var pkg=pkgId&&allPackages[pkgId]?allPackages[pkgId]:null;
   var pkgName=pkg?pkg.name:'';
   var monthlyRate=pkg?getPackagePerCarRate(pkg):null;
-  var nowIso=new Date().toISOString();
-  var billingPatch={
+  updateCompanyPlan(cid,{
     packageId:pkgId||null,
+    packageName:pkgName,
+    packageMeta:pkg,
     monthlyRate:monthlyRate,
+    monthlyFee:fee||null,
     billingStartDate:start||null,
     nextDueDate:due||null,
-    updatedAt:nowIso
-  };
-  Promise.all([
-    db.ref('superBilling/'+cid+'/info').update({
-      packageId:pkgId||null,
-      packageName:pkgName,
-      monthlyFee:fee||null,
-      startDate:start||null,
-      nextDueDate:due||null,
-      updatedAt:nowIso
-    }),
-    db.ref('companySettings/'+cid+'/plan').set(pkgName||null),
-    db.ref('companySettings/'+cid+'/billing').update(billingPatch),
-    db.ref('companyBilling/'+cid).update({ packageId:pkgId||null, updatedAt:nowIso })
-  ]).then(function(){
+    clearTrial:!!(pkg&&!pkg.trialDays&&pkgId!=='pkg_trial')
+  }).then(function(){
     var msg=document.getElementById('pkg-msg');
-    msg.style.color='#2E7D32'; msg.textContent='&#10003; Saved to companySettings/'+cid+'/plan';
-    if(pkgId) db.ref('superClients/'+cid).update({packageId:pkgId, packageName:pkgName});
-    console.log('[Billing] Saved package', { companyId: cid, plan: pkgName, packageId: pkgId, path: 'companySettings/'+cid+'/plan' });
+    msg.style.color='#2E7D32'; msg.textContent='&#10003; Package saved across all billing nodes';
+    if(companyData){
+      companyData.packageId=pkgId||null;
+      companyData.packageName=pkgName;
+      companyData.status=(pkg&&!pkg.trialDays&&pkgId!=='pkg_trial')?'active':'trial';
+    }
+    console.log('[Billing] updateCompanyPlan', { companyId: cid, plan: pkgName, packageId: pkgId });
     setTimeout(function(){ msg.textContent=''; },3000);
   }).catch(function(e){ showNotice('Error: '+e.message,'err'); });
 }

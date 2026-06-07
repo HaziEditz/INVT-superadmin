@@ -526,33 +526,26 @@ function saveCompanyEdit(cid){
   var pkgId = document.getElementById('ec-pkg-'+cid).value;
   var pkg = pkgId && allPackages[pkgId] ? allPackages[pkgId] : null;
   var pkgName = pkg ? pkg.name : '';
-  var upd = {
+  var notes = document.getElementById('ec-notes-'+cid).value.trim() || null;
+  var profileUpd = {
     name:    name,
     city:    document.getElementById('ec-city-'+cid).value.trim(),
     country: document.getElementById('ec-country-'+cid).value.trim(),
     contactEmail: document.getElementById('ec-email-'+cid).value.trim(),
     contactPhone: document.getElementById('ec-phone-'+cid).value.trim(),
     payoutSchedule: document.getElementById('ec-sched-'+cid).value,
-    packageId:   pkgId || null,
-    packageName: pkgName || null,
-    notes: document.getElementById('ec-notes-'+cid).value.trim() || null
+    notes: notes
   };
-  // When a paid package is assigned, clear legacy trial fields so other pages
-  // (SA-Billing, Owner Portal) stop showing "Free Trial" / "free_trial".
-  // Trial-type packages (pkg_trial / trialDays > 0) keep the trial fields intact.
-  if (pkg && !pkg.trialDays && pkgId !== 'pkg_trial') {
-    upd.plan          = null;
-    upd.trialEnd      = null;
-    upd.trialEndsAt   = null;
-    upd.trialStart    = null;
-    upd.trialStartedAt = null;
-    upd.trialDays     = null;
-    upd.onTrial       = null;
-    upd.isTrial       = null;
-    upd.trial         = null;
-    upd.subscriptionStatus = 'active';
-  }
-  db.ref(SUPER_PATH+'/'+cid).update(upd).then(function(){
+  Promise.all([
+    updateCompanyPlan(cid, {
+      packageId: pkgId || null,
+      packageName: pkgName || null,
+      packageMeta: pkg,
+      notes: notes,
+      clearTrial: !!(pkg && !pkg.trialDays && pkgId !== 'pkg_trial')
+    }),
+    db.ref(SUPER_PATH+'/'+cid).update(profileUpd)
+  ]).then(function(){
     showNotice('Company '+cid+' updated successfully.','ok');
     toggleEditRow(cid);
   }).catch(function(e){ showNotice('Error: '+e.message,'err'); });

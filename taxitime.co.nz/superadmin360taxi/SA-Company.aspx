@@ -540,12 +540,31 @@ function statusBadge(status){
   return map[status] || '<span class="badge" style="background:#f5f5f5;color:#888;border:1px solid #e0e0e0">'+esc(status)+'</span>';
 }
 
+var _companyPlanListenIv = null;
+
+function applyCompanyPlanUpdate(data){
+  if(!data || typeof data !== 'object') return;
+  var prevStatus = companyData.status;
+  var prevPkg = companyData.packageId;
+  var prevName = companyData.packageName;
+  companyData = Object.assign(companyData, data);
+  if(data.status !== prevStatus || data.packageId !== prevPkg || data.packageName !== prevName){
+    renderCompany();
+  }
+}
+
+function startCompanyPlanListener(){
+  if(!CID || _companyPlanListenIv) return;
+  _companyPlanListenIv = adminListen('superClients/'+CID, applyCompanyPlanUpdate, 4000);
+}
+
 function loadCompany(){
   if(!CID){ document.getElementById('page-loading').textContent='No Company ID specified. Return to All Companies.'; return; }
   _fbGet('superClients/'+CID).then(function(data){
     if(!data){ document.getElementById('page-loading').textContent='Company '+CID+' not found.'; return; }
     companyData = data || {};
     renderCompany();
+    startCompanyPlanListener();
     document.getElementById('page-loading').style.display='none';
     document.getElementById('page-content-wrap').style.display='block';
     loadDriverCount();

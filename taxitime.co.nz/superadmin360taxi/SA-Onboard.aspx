@@ -703,11 +703,19 @@ function confirmApprove(){
         status:'trial',createdAt:now,onboardedFrom:activeReqId,note:note,
         trialEnd:reg.trialEnd||null
       };
-      db.ref('superClients/'+cid).set(companyData);
-      if(pkg){
+      db.ref('superClients/'+cid).set(companyData).then(function(){
+        if(!pkg) return;
         var pkgData=allPackages[pkg]||{};
-        db.ref('superBilling/'+cid+'/info').set({packageId:pkg,packageName:pkgData.name||pkg,billingStart:new Date(now).toISOString().slice(0,10),status:'trial',updatedAt:now});
-      }
+        return updateCompanyPlan(cid,{
+          packageId:pkg,
+          packageName:pkgData.name||pkg,
+          packageMeta:pkgData,
+          status:'trial',
+          billingStartDate:new Date(now).toISOString().slice(0,10),
+          trialEnd:reg.trialEnd||null,
+          clearTrial:false
+        });
+      });
     }
     loadRegistrations();
   }).catch(function(){ btn.disabled=false; btn.textContent='✓ Confirm & Start Trial'; toastr.error('Network error'); });
@@ -1076,7 +1084,13 @@ function confirmExtendTrial(){
   var r=allRequests[activeExtendId]||{};
   var btn=document.getElementById('ext-confirm-btn');
   btn.disabled=true; btn.textContent='Saving…';
-  db.ref('superClients/'+activeExtendCid).update({trialEnd:newTs, status:'trial'}).then(function(){
+  _fbGet('superClients/'+activeExtendCid).then(function(){
+    return updateCompanyPlan(activeExtendCid,{
+      status:'trial',
+      trialEnd:newTs,
+      clearTrial:false
+    });
+  }).then(function(){
     writeOnboardAudit('trial_extended', activeExtendCid, r.company||activeExtendCid, 'Trial extended to '+new Date(newDate).toLocaleDateString('en-NZ',{day:'numeric',month:'short',year:'numeric'}));
     if(allRequests[activeExtendId]) allRequests[activeExtendId].trialEnd=newDate;
     closeModal('modal-extend');
