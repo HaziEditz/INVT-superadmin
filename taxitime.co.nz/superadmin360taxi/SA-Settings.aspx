@@ -139,6 +139,17 @@
     </div>
   </div>
 
+  <!-- BookaWaka bank details (shown to all company owners) -->
+  <div class="set-section">
+    <div class="set-section-hdr">&#127974; BookaWaka Bank Details</div>
+    <p style="padding:8px 18px 0;font-size:12px;color:#888;margin:0">Shown on every company Owner Panel billing page under &ldquo;Pay BookaWaka&rdquo;. Saved to <code style="background:#f5f5f5;padding:1px 5px;border-radius:3px;font-size:11px">platformSettings/bookawakaBankDetails</code>.</p>
+    <div class="set-grid">
+      <div class="sa-ff"><label>Bank Name</label><input id="s-bw-bank" type="text" placeholder="e.g. ANZ"/></div>
+      <div class="sa-ff"><label>Account Name</label><input id="s-bw-acct-name" type="text" placeholder="e.g. BookaWaka Ltd"/></div>
+      <div class="sa-ff"><label>Account Number</label><input id="s-bw-acct-number" type="text" placeholder="e.g. 12-3456-7890123-00"/></div>
+    </div>
+  </div>
+
   <!-- Commission -->
   <div class="set-section">
     <div class="set-section-hdr">&#128200; Commission / Payout Rates</div>
@@ -252,6 +263,7 @@
 <script src="assets/js/tm-helpers.js"></script>
 <script>
 var SETTINGS_PATH = 'superSettings';
+var BANK_DETAILS_PATH = 'platformSettings/bookawakaBankDetails';
 
 function showNotice(msg, type){
   var el=document.getElementById('set-notice');
@@ -276,6 +288,12 @@ function loadSettings(){
       if(el && s[e[1]]!==undefined) el.value=s[e[1]];
     });
   }).catch(function(e){ showNotice('Load error: '+e.message,'err'); });
+  _fbGet(BANK_DETAILS_PATH).then(function(b){
+    b=b||{};
+    if(b.bankName) document.getElementById('s-bw-bank').value=b.bankName;
+    if(b.accountName) document.getElementById('s-bw-acct-name').value=b.accountName;
+    if(b.accountNumber) document.getElementById('s-bw-acct-number').value=b.accountNumber;
+  }).catch(function(){});
   loadHistory();
 }
 
@@ -287,7 +305,17 @@ function saveSettings(){
   });
   data.updatedAt=new Date().toISOString();
   data.updatedBy=(firebase.auth().currentUser||{}).email||'sa';
-  db.ref(SETTINGS_PATH+'/config').update(data).then(function(){
+  var bankData={
+    bankName:(document.getElementById('s-bw-bank').value||'').trim()||null,
+    accountName:(document.getElementById('s-bw-acct-name').value||'').trim()||null,
+    accountNumber:(document.getElementById('s-bw-acct-number').value||'').trim()||null,
+    updatedAt:new Date().toISOString(),
+    updatedBy:data.updatedBy
+  };
+  Promise.all([
+    db.ref(SETTINGS_PATH+'/config').update(data),
+    db.ref(BANK_DETAILS_PATH).update(bankData)
+  ]).then(function(){
     db.ref(SETTINGS_PATH+'/history').push({savedAt:Date.now(),savedBy:data.updatedBy,snapshot:data});
     showNotice('Settings saved.','ok');
     document.getElementById('save-msg').textContent='Saved at '+new Date().toLocaleTimeString();
