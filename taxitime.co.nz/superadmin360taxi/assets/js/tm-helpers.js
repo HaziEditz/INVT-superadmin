@@ -531,7 +531,7 @@ window.updateCompanyPlan = function(companyId, planData) {
       monthlyRate: monthlyRate != null ? monthlyRate : null,
       billingStartDate: startDate || null,
       nextDueDate: planData.nextDueDate || null,
-      status: status,
+      status: hasPackage ? 'active' : status,
       updatedAt: nowIso
     };
     var superBillingInfo = {
@@ -555,12 +555,9 @@ window.updateCompanyPlan = function(companyId, planData) {
       db.ref('companySettings/' + cid + '/plan').set(planNode),
       db.ref('companySettings/' + cid + '/billing').update(billingPatch),
       db.ref('superBilling/' + cid + '/info').update(superBillingInfo),
-      db.ref('companyBilling/' + cid).update(companyBillingPatch)
+      db.ref('companyBilling/' + cid).update(companyBillingPatch),
+      db.ref('companySettings/' + cid + '/active').set(true)
     );
-
-    if (status === 'active' || status === 'trial') {
-      writes.push(db.ref('companySettings/' + cid + '/active').set(true));
-    }
 
     var isPaid = status === 'active' && pkgId && pkgId !== 'pkg_trial';
     if (isPaid && pkg && pkg.modules && planData.enableModules !== false) {
