@@ -1,63 +1,8 @@
 import { Router } from 'express';
-import { fbRead, fbWrite, fbReadP, fbWriteP } from '../firebase';
+import { fbRead, fbWrite, fbReadP, fbWriteP, firebaseSignIn, verifyFirebaseToken } from '../firebase';
 import { esc } from '../utils';
 
 const router = Router();
-
-const FIREBASE_WEB_API_KEY = 'AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA';
-const https = require('https');
-
-async function firebaseSignIn(email: string, password: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    const body = JSON.stringify({ email, password, returnSecureToken: true });
-    const opts = {
-      hostname: 'identitytoolkit.googleapis.com',
-      port: 443,
-      path: '/v1/accounts:signInWithPassword?key=' + FIREBASE_WEB_API_KEY,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-    };
-    const req = https.request(opts, (resp: any) => {
-      let raw = '';
-      resp.on('data', (c: any) => raw += c);
-      resp.on('end', () => {
-        try {
-          const d = JSON.parse(raw);
-          resolve(d.idToken || null);
-        } catch { resolve(null); }
-      });
-    });
-    req.on('error', () => resolve(null));
-    req.write(body);
-    req.end();
-  });
-}
-
-async function verifyFirebaseToken(idToken: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    const body = JSON.stringify({ idToken });
-    const opts = {
-      hostname: 'identitytoolkit.googleapis.com',
-      port: 443,
-      path: '/v1/accounts:lookup?key=' + FIREBASE_WEB_API_KEY,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-    };
-    const req = https.request(opts, (resp: any) => {
-      let raw = '';
-      resp.on('data', (c: any) => raw += c);
-      resp.on('end', () => {
-        try {
-          const d = JSON.parse(raw);
-          resolve(d.users && d.users[0] && d.users[0].localId ? d.users[0].localId : null);
-        } catch { resolve(null); }
-      });
-    });
-    req.on('error', () => resolve(null));
-    req.write(body);
-    req.end();
-  });
-}
 
 function _tsMs(raw: any): number {
   if (!raw) return 0;
