@@ -141,7 +141,7 @@ firebase.initializeApp(config);
     <table class="tm-tbl">
       <thead><tr>
         <th>Council Name</th><th>Region</th><th>Cap ($)</th><th>Subsidy %</th>
-        <th>Hoist/Use ($)</th><th>Hoist By</th><th>Monthly Limit</th><th>Daily Limit</th>
+        <th>Hoist/Use ($)</th><th>Hoist</th><th>Monthly Limit</th><th>Daily Limit</th>
         <th>Portal Login Email</th><th>Last Login</th><th>Status</th><th>Actions</th>
       </tr></thead>
       <tbody id="cc-tb"><tr><td colspan="12" style="text-align:center;padding:40px;color:#9e9e9e">Loading&#8230;</td></tr></tbody>
@@ -159,9 +159,9 @@ firebase.initializeApp(config);
     <div class="tm-ff"><label>Approver Email</label><input id="cc-email" type="email" placeholder="council@example.govt.nz"/></div>
     <div class="tm-ff"><label>Subsidy Cap per Trip ($) *</label><input id="cc-cap" type="number" step="0.01" min="0" placeholder="37.50"/></div>
     <div class="tm-ff"><label>Subsidy Percentage (%) *</label><input id="cc-pct" type="number" step="1" min="1" max="100" placeholder="75"/></div>
-    <div class="tm-ff"><label>Hoist Fee per Use ($)</label><input id="cc-hrate" type="number" step="0.01" min="0" placeholder="10.00"/></div>
-    <div class="tm-ff"><label>Hoist Covered By</label>
-      <select id="cc-hcov"><option value="true">Council</option><option value="false">Passenger</option></select></div>
+    <div class="tm-ff"><label>Hoist Fee per Use ($)</label><input id="cc-hrate" type="number" step="0.01" min="0" max="200" placeholder="10.00"/></div>
+    <div class="tm-ff" style="grid-column:1/-1"><p style="font-size:11.5px;color:#555;background:#F1F8E9;border-radius:4px;padding:8px 10px;margin:0">Hoist is always <strong>100% council-paid</strong> (NZ TM). It is billed separately from the meter fare subsidy (% + cap) and never reduces the passenger meter share.</p>
+      <input type="hidden" id="cc-hcov" value="true"/></div>
     <div class="tm-ff"><label>Max Hoists per Trip</label><input id="cc-hmx" type="number" min="0" placeholder="2"/></div>
     <div class="tm-ff"><label>Monthly Trip Limit per Passenger</label><input id="cc-ml" type="number" min="0" placeholder="No limit"/></div>
     <div class="tm-ff"><label>Daily Trip Limit per Passenger</label><input id="cc-dl" type="number" min="0" placeholder="No limit"/></div>
@@ -233,7 +233,7 @@ function renderCC() {
       '<td style="font-weight:600;color:#2E7D32">$' + parseFloat(c.capAmount || 0).toFixed(2) + '</td>' +
       '<td>' + (c.subsidyPercent || 0) + '%</td>' +
       '<td>$' + parseFloat(c.hoistRatePerUse || 0).toFixed(2) + '</td>' +
-      '<td>' + (c.hoistCoveredByCouncil === false ? 'Passenger' : 'Council') + '</td>' +
+      '<td>100% Council</td>' +
       '<td>' + (c.monthlyLimitPerPassenger || '\u2014') + '</td>' +
       '<td>' + (c.dailyLimitPerPassenger || '\u2014') + '</td>' +
       '<td>' + portalCell + '</td>' +
@@ -284,7 +284,7 @@ function editCC(id) {
   document.getElementById('cc-cap').value = c.capAmount || '';
   document.getElementById('cc-pct').value = c.subsidyPercent || '';
   document.getElementById('cc-hrate').value = c.hoistRatePerUse || '';
-  document.getElementById('cc-hcov').value = c.hoistCoveredByCouncil === false ? 'false' : 'true';
+  document.getElementById('cc-hcov').value = 'true';
   document.getElementById('cc-hmx').value = c.maxHoistsPerTrip || '';
   document.getElementById('cc-ml').value = c.monthlyLimitPerPassenger || '';
   document.getElementById('cc-dl').value = c.dailyLimitPerPassenger || '';
@@ -309,8 +309,12 @@ function saveCC() {
       pct = parseFloat(document.getElementById('cc-pct').value);
   ccClearHighlights();
   if (!nm) { ccMsg('Council name is required.', false); ccHighlight('cc-name'); return; }
-  if (isNaN(cap) || cap <= 0) { ccMsg('Enter a valid subsidy cap amount ($).', false); ccHighlight('cc-cap'); return; }
+  if (isNaN(cap) || cap <= 0 || cap > 500) { ccMsg('Subsidy cap must be between $0.01 and $500.', false); ccHighlight('cc-cap'); return; }
   if (isNaN(pct) || pct < 1 || pct > 100) { ccMsg('Subsidy % must be between 1 and 100.', false); ccHighlight('cc-pct'); return; }
+  var hrate = parseFloat(document.getElementById('cc-hrate').value);
+  if (document.getElementById('cc-hrate').value !== '' && (isNaN(hrate) || hrate < 0 || hrate > 200)) {
+    ccMsg('Hoist fee per use must be between $0 and $200.', false); ccHighlight('cc-hrate'); return;
+  }
   var pw = document.getElementById('cc-pw').value.trim();
   var pw2 = document.getElementById('cc-pw2').value.trim();
   if (pw && pw.length < 6) { ccMsg('Password must be at least 6 characters.', false); ccHighlight('cc-pw'); return; }
@@ -318,11 +322,12 @@ function saveCC() {
   var email = document.getElementById('cc-email').value.trim();
   if (pw && !email) { ccMsg('Please enter an Approver Email \u2014 this becomes the portal login username.', false); ccHighlight('cc-email'); return; }
   var key = ccEid || ('cncl_' + nm.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''));
+  var prev = ccData[key] || {};
   var data = {
     name: nm, region: document.getElementById('cc-region').value.trim(),
     approverEmail: email, capAmount: cap, subsidyPercent: pct,
-    hoistRatePerUse: parseFloat(document.getElementById('cc-hrate').value) || 0,
-    hoistCoveredByCouncil: document.getElementById('cc-hcov').value === 'true',
+    hoistRatePerUse: isNaN(hrate) ? 0 : hrate,
+    hoistCoveredByCouncil: true,
     maxHoistsPerTrip: parseInt(document.getElementById('cc-hmx').value) || null,
     monthlyLimitPerPassenger: parseInt(document.getElementById('cc-ml').value) || null,
     dailyLimitPerPassenger: parseInt(document.getElementById('cc-dl').value) || null,
@@ -331,6 +336,24 @@ function saveCC() {
   };
   adminWrite('tmConfig/' + key, 'PUT', data).then(function() {
     ccData[key] = data;
+    // Simple audit trail (SA vs council portal) for shared financial fields.
+    try {
+      var audit = {
+        at: Date.now(),
+        byRole: 'superadmin',
+        byName: (window.__adminEmail || window.__adminName || 'superadmin'),
+        councilId: key,
+        previous: {
+          subsidyPercent: prev.subsidyPercent, capAmount: prev.capAmount, hoistRatePerUse: prev.hoistRatePerUse
+        },
+        next: {
+          subsidyPercent: data.subsidyPercent, capAmount: data.capAmount, hoistRatePerUse: data.hoistRatePerUse
+        }
+      };
+      if (typeof adminWrite === 'function') {
+        adminWrite('tmConfigAudit/' + key + '/' + ('-a' + Date.now()), 'PUT', audit).catch(function() {});
+      }
+    } catch (e) {}
     // Keep driver/dispatch companySettings/tmConfig in sync for approved companies.
     var syncP = (typeof syncCouncilTmConfigToApprovedCompanies === 'function')
       ? syncCouncilTmConfigToApprovedCompanies(key, data).catch(function(e) {

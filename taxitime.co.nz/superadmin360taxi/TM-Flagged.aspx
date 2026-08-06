@@ -355,9 +355,10 @@ function saveFL(doApprove) {
   var hoistRate = councilCfg.hoistRatePerUse || 0;
   var hoistTotal = hoistUsed ? hoistRate * hoistCnt : 0;
   var tmSubFare = Math.min(fare * pct, cap);
-  var tmSubHoist = councilCfg.hoistCoveredByCouncil !== false ? hoistTotal : 0;
+  // Phase 2A.1 / NZ TM: hoist always 100% council-paid; not in meter split
+  var tmSubHoist = hoistTotal;
   var totalCouncil = tmSubFare + tmSubHoist;
-  var paxPays = fare + hoistTotal - totalCouncil;
+  var paxPays = fare - tmSubFare;
   var updates = {
     meterFare: fare, waitingCharge: 0, hoistUsed: hoistUsed, hoistCount: hoistCnt, hoistTotal: hoistTotal,
     tmSubsidyFare: parseFloat(tmSubFare.toFixed(2)), tmSubsidyHoist: parseFloat(tmSubHoist.toFixed(2)),

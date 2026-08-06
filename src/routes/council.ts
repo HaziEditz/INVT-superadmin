@@ -64,7 +64,8 @@ function renderNav(session: any, token: string, activePage: string): string {
     ['flagged', '&#128681; Pending Approval'],
     ['batches', '&#128196; Claim Batches'],
     ['cards', '&#127938; Cards'],
-    ['limits', '&#128176; Spending Limits'],
+    ['limits', '&#128176; Trip Limits'],
+    ['config', '&#9881; Config'],
     ['operators', '&#127970; Operators'],
     ['reports', '&#128203; Reports']
   ];
@@ -103,6 +104,46 @@ function statusBadge(s: string): string {
   return map[s] || `<span class="cp-bdg-gr">${esc(s || 'pending')}</span>`;
 }
 
+function isTmCompletedJob(job: any): boolean {
+  if (!job || typeof job !== 'object') return false;
+  const pt = String(job.paymentType || job.PaymentType || job.paymentMethod || '').toLowerCase();
+  if (pt === 'total_mobility' || pt === 'tm' || pt.includes('total mobility')) return true;
+  // Driver app stores remainder method as paymentType but writes TM economics separately.
+  if (job.tmCouncilPays != null || job.councilPays != null || job.tmSubsidyFare != null) return true;
+  if (job.tmCardNumber || job.tmVoucherNo) return true;
+  return false;
+}
+
+/** Normalize meter vs hoist line items for portal display (Phase 2A.1). */
+function normalizeTmTripEconomics(job: any): {
+  fare: number;
+  tmSubsidyFare: number;
+  tmSubsidyHoist: number;
+  tmSubsidy: number;
+  tmPassengerPays: number;
+} {
+  const hoist = Number(job.tmSubsidyHoist ?? job.hoistTotal ?? job.hoistCost ?? 0) || 0;
+  const meterFare = Number(job.tmMeterFare ?? job.meterFare ?? 0) || 0;
+  const legacyFare = Number(job.fare ?? job.totalFare ?? job.tmTotalFare ?? 0) || 0;
+  const fare = meterFare || Math.max(0, legacyFare - (job.hoistTotal || job.tmSubsidyHoist ? hoist : 0));
+  const subsidyFare = Number(
+    job.tmSubsidyFare ??
+      (job.tmCouncilPays != null ? Math.max(0, Number(job.tmCouncilPays) - hoist) : job.tmSubsidy) ??
+      0,
+  ) || 0;
+  const totalCouncil =
+    Number(job.tmCouncilPays ?? job.councilPays ?? subsidyFare + hoist) || 0;
+  const pax =
+    Number(job.tmPassengerPays ?? job.passengerPays ?? Math.max(0, fare - subsidyFare)) || 0;
+  return {
+    fare: +fare.toFixed(2),
+    tmSubsidyFare: +subsidyFare.toFixed(2),
+    tmSubsidyHoist: +hoist.toFixed(2),
+    tmSubsidy: +totalCouncil.toFixed(2),
+    tmPassengerPays: +pax.toFixed(2),
+  };
+}
+
 function loadCouncilTrips(councilId: string, cb: (err: any, trips: any[]) => void): void {
   fbRead('tmTripStatus', (err: any, allStatus: any) => {
     if (err || !allStatus) return cb(null, []);
@@ -124,10 +165,14 @@ function loadCouncilTrips(councilId: string, cb: (err: any, trips: any[]) => voi
         Object.entries(statusMap).forEach(([rawKey, st]: [string, any]) => {
           if (!st || st.councilId !== councilId) return;
           const job = jobs[rawKey] || {};
-          if (job.paymentType !== 'total_mobility') return;
+          // tmTripStatus row for this council is authoritative for the claims list;
+          // also accept completed jobs that carry TM economics even if paymentType is the remainder method.
+          if (Object.keys(job).length && !isTmCompletedJob(job) && !st.submittedAt && !st.status) return;
+          const econ = normalizeTmTripEconomics(job);
           result.push({
             _cid: cid, _rawKey: rawKey, _companyName: namesMap[cid] || ('Operator ' + cid),
             ...job,
+            ...econ,
             status: st.status || 'pending', councilId: st.councilId,
             submittedAt: st.submittedAt, approvedAt: st.approvedAt, rejectedAt: st.rejectedAt,
             approvedBy: st.approvedBy, rejectedBy: st.rejectedBy, revisionNote: st.revisionNote, batchId: st.batchId
@@ -136,6 +181,51 @@ function loadCouncilTrips(councilId: string, cb: (err: any, trips: any[]) => voi
       });
       cb(null, result);
     }
+  });
+}
+
+/** Validation ranges for shared SA / council financial fields. */
+function validateTmFinancials(pct: number, cap: number, hoist: number): string | null {
+  if (isNaN(pct) || pct < 1 || pct > 100) return 'Subsidy % must be between 1 and 100.';
+  if (isNaN(cap) || cap <= 0 || cap > 500) return 'Subsidy cap must be between $0.01 and $500.';
+  if (isNaN(hoist) || hoist < 0 || hoist > 200) return 'Hoist fee per use must be between $0 and $200.';
+  return null;
+}
+
+function companyTmConfigFromCouncil(councilId: string, council: any) {
+  const pct = parseFloat(council.subsidyPercent) || 0;
+  const cap = parseFloat(council.capAmount) || 0;
+  const hoist = parseFloat(council.hoistRatePerUse) || 0;
+  return {
+    councilSubsidyPercent: pct,
+    councilCapAmount: cap,
+    hoistCostPerUnit: hoist,
+    councilPercent: pct,
+    passengerPercent: Math.max(0, 100 - pct),
+    capAmount: cap,
+    hoistUnitCost: hoist,
+    sourceCouncilId: String(councilId || ''),
+    syncedFromCouncilAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+}
+
+function syncCouncilTmConfigToApprovedCompanies(councilId: string, council: any, done: (n: number) => void) {
+  const payload = companyTmConfigFromCouncil(councilId, council);
+  fbRead('tmCompanyAccess', (err: any, access: any) => {
+    if (err || !access) return done(0);
+    const cids: string[] = [];
+    Object.keys(access).forEach((cid) => {
+      const row = access[cid] && access[cid][councilId];
+      if (row && row.approved === true) cids.push(cid);
+    });
+    if (cids.length === 0) return done(0);
+    let left = cids.length;
+    cids.forEach((cid) => {
+      fbWrite('PUT', 'companySettings/' + cid + '/tmConfig', payload, () => {
+        if (--left === 0) done(cids.length);
+      });
+    });
   });
 }
 
@@ -290,10 +380,12 @@ router.get('/council-portal/dashboard', requirePortalAuth, (req, res) => {
 <tr><td style="padding:4px 8px;color:#666">Region</td><td style="padding:4px 8px;font-weight:500">${esc(cfg.region || '—')}</td>
     <td style="padding:4px 8px;color:#666">Subsidy Cap</td><td style="padding:4px 8px;font-weight:500">$${parseFloat(cfg.capAmount || 0).toFixed(2)}</td></tr>
 <tr><td style="padding:4px 8px;color:#666">Subsidy %</td><td style="padding:4px 8px;font-weight:500">${cfg.subsidyPercent || 0}%</td>
-    <td style="padding:4px 8px;color:#666">Hoist Fee</td><td style="padding:4px 8px;font-weight:500">$${parseFloat(cfg.hoistRatePerUse || 0).toFixed(2)} / use</td></tr>
+    <td style="padding:4px 8px;color:#666">Hoist Fee</td><td style="padding:4px 8px;font-weight:500">$${parseFloat(cfg.hoistRatePerUse || 0).toFixed(2)} / use <span style="color:#888;font-size:11px">(100% council)</span></td></tr>
 <tr><td style="padding:4px 8px;color:#666">Monthly Limit</td><td style="padding:4px 8px;font-weight:500">${cfg.monthlyLimitPerPassenger || 'No limit'}</td>
     <td style="padding:4px 8px;color:#666">Daily Limit</td><td style="padding:4px 8px;font-weight:500">${cfg.dailyLimitPerPassenger || 'No limit'}</td></tr>
-</table></div></div>` : '';
+</table>
+<p style="font-size:12px;margin-top:10px"><a href="/council-portal/config?t=${encodeURIComponent(token)}" style="color:#2E7D32;font-weight:600">Edit subsidy %, cap &amp; hoist rate &rarr;</a></p>
+</div></div>` : '';
       const recentRows = recent.map(t => {
         const dt = t.startedAt_ISO ? t.startedAt_ISO.slice(0, 16).replace('T', ' ') : '—';
         return `<tr><td style="font-family:monospace;font-size:11px">${esc(t.tmVoucherNo || t._rawKey)}</td>
@@ -342,8 +434,15 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
       totalPax += parseFloat(t.tmPassengerPays || 0);
     });
     const monthOpts = sortedMonths.map(m => `<option value="${esc(m)}" ${m === filterMonth ? 'selected' : ''}>${m}</option>`).join('');
+    let totalMeterSub = 0, totalHoist = 0;
+    displayTrips.forEach(t => {
+      totalMeterSub += parseFloat(t.tmSubsidyFare || 0);
+      totalHoist += parseFloat(t.tmSubsidyHoist || 0);
+    });
     const rows = displayTrips.map(t => {
       const dt = t.startedAt_ISO ? t.startedAt_ISO.slice(0, 16).replace('T', ' ') : '—';
+      const meterSub = parseFloat(t.tmSubsidyFare || 0);
+      const hoistSub = parseFloat(t.tmSubsidyHoist || 0);
       return `<tr><td style="font-family:monospace;font-size:11px">${esc(t.tmVoucherNo || '—')}</td>
 <td>${esc(t.tmPassengerName || '—')}</td>
 <td style="font-size:12px;color:#555">${esc(t._companyName || '—')}</td>
@@ -351,12 +450,15 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
 <td>${dt}</td>
 <td>${esc(t.source || '—')}</td>
 <td>$${parseFloat(t.fare || 0).toFixed(2)}</td>
-<td style="font-weight:700;color:#2E7D32">$${parseFloat(t.tmSubsidy || 0).toFixed(2)}</td>
+<td style="color:#2E7D32">$${meterSub.toFixed(2)}</td>
+<td style="color:#2E7D32">$${hoistSub.toFixed(2)}</td>
+<td style="font-weight:700;color:#1B5E20">$${parseFloat(t.tmSubsidy || 0).toFixed(2)}</td>
 <td>$${parseFloat(t.tmPassengerPays || 0).toFixed(2)}</td>
 <td>${statusBadge(t.status)}</td></tr>`;
     }).join('');
     const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Trips</h2>
+<p style="font-size:12.5px;color:#666;margin:-8px 0 14px">Council totals split into <strong>meter subsidy</strong> (% + cap) and <strong>hoist</strong> (100% council) — separate line items.</p>
 <div class="cp-month-row">
   <form method="GET" action="/council-portal/trips" style="display:flex;gap:10px;align-items:center">
     <input type="hidden" name="t" value="${esc(token)}"/>
@@ -370,10 +472,12 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
 </div>
 <div class="cp-card" style="overflow-x:auto">
 ${displayTrips.length ? `<table class="cp-tbl">
-<thead><tr><th>Voucher No.</th><th>Passenger</th><th>Operator</th><th>Category</th><th>Date</th><th>Pickup</th><th>Fare</th><th>Council Pays</th><th>Pax Pays</th><th>Status</th></tr></thead>
+<thead><tr><th>Voucher No.</th><th>Passenger</th><th>Operator</th><th>Category</th><th>Date</th><th>Pickup</th><th>Meter Fare</th><th>Meter Subsidy</th><th>Hoist (council)</th><th>Total Council</th><th>Pax Pays</th><th>Status</th></tr></thead>
 <tbody>${rows}</tbody>
 <tfoot><tr><td colspan="6" style="text-align:right">Totals:</td>
 <td>$${totalFare.toFixed(2)}</td>
+<td>$${totalMeterSub.toFixed(2)}</td>
+<td>$${totalHoist.toFixed(2)}</td>
 <td>$${totalCouncil.toFixed(2)}</td><td>$${totalPax.toFixed(2)}</td><td></td></tr></tfoot>
 </table>` : '<div class="cp-empty">No trips found.</div>'}
 </div>`;
@@ -743,7 +847,8 @@ ${tar.updatedAt ? `<div style="font-size:11px;color:#aaa;margin-top:6px">Tariffs
       ${sc.email ? `<span>&#9993; ${esc(sc.email)}</span>` : ''}
       ${sc.address ? `<span>&#128205; ${esc(sc.address)}</span>` : ''}
     </div>` : ''}
-    <div style="font-size:13px;font-weight:700;color:#1B5E20;margin-bottom:6px">TM Tariffs</div>
+    <div style="font-size:13px;font-weight:700;color:#1B5E20;margin-bottom:4px">TM Tariffs <span style="font-weight:600;color:#888;font-size:11px">(legacy / unused)</span></div>
+    <p style="font-size:11.5px;color:#888;margin:0 0 6px;line-height:1.4">Not used for live metering or claims. Drivers fare against the company tariff on the trip; council subsidy comes from council TM config.</p>
     ${tarHtml}
     <div style="font-size:13px;font-weight:700;color:#1B5E20;margin:14px 0 6px">Drivers &amp; Vehicles (${drivers.length})</div>
     <div style="overflow-x:auto">
@@ -764,6 +869,127 @@ ${sections}`;
   });
 });
 
+// ── Config (subsidy %, cap, hoist — dual-edit with SA + audit) ─────────────────
+router.get('/council-portal/config', requirePortalAuth, (req, res) => {
+  const sess = (req as any).cpSession;
+  const token = (req as any).cpToken;
+  const msg = (req.query.msg as string) || '';
+  const mt = (req.query.mt as string) || '';
+  const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(decodeURIComponent(msg))}</div>` : '';
+  fbRead('tmConfig/' + sess.councilId, (e1: any, cfg: any) => {
+    fbRead('tmConfigAudit/' + sess.councilId, (e2: any, auditMap: any) => {
+      cfg = cfg || {};
+      const entries = Object.entries(auditMap || {})
+        .map(([id, a]: [string, any]) => ({ id, ...(a || {}) }))
+        .sort((a, b) => (b.at || 0) - (a.at || 0))
+        .slice(0, 25);
+      const auditRows = entries.length
+        ? entries.map((a) => {
+            const when = a.at ? new Date(a.at).toLocaleString('en-NZ') : '—';
+            const role = a.byRole === 'council' ? 'Council' : 'Superadmin';
+            const prev = a.previous || {};
+            const next = a.next || {};
+            return `<tr>
+<td style="font-size:11px;white-space:nowrap">${esc(when)}</td>
+<td><span class="cp-bdg-b">${esc(role)}</span> ${esc(a.byName || a.byEmail || '')}</td>
+<td style="font-size:12px">% ${prev.subsidyPercent ?? '—'} → <strong>${next.subsidyPercent ?? '—'}</strong></td>
+<td style="font-size:12px">$${Number(prev.capAmount ?? 0).toFixed(2)} → <strong>$${Number(next.capAmount ?? 0).toFixed(2)}</strong></td>
+<td style="font-size:12px">$${Number(prev.hoistRatePerUse ?? 0).toFixed(2)} → <strong>$${Number(next.hoistRatePerUse ?? 0).toFixed(2)}</strong></td>
+</tr>`;
+          }).join('')
+        : '<tr><td colspan="5" class="cp-empty">No changes recorded yet.</td></tr>';
+      const body = `${noticeHtml}
+<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:6px">TM Financial Config</h2>
+<p style="font-size:13px;color:#666;margin-bottom:16px">Edit subsidy %, per-trip cap, and hoist rate. Same fields Superadmin can edit. Hoist is always <strong>100% council-paid</strong> and is not part of the meter %/cap split. Changes sync to approved operators&rsquo; driver apps.</p>
+<div class="cp-card">
+<div class="cp-card-hd"><h3>Rates — ${esc(sess.name || sess.councilId)}</h3></div>
+<div class="cp-card-bd">
+<form method="POST" action="/api/council-config-save" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;align-items:end">
+<input type="hidden" name="_token" value="${esc(token)}"/>
+<div><label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Subsidy % (1–100)</label>
+<input type="number" name="subsidyPercent" required min="1" max="100" step="1"
+  value="${esc(String(cfg.subsidyPercent ?? ''))}"
+  style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:4px;font-size:14px"/></div>
+<div><label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Subsidy cap per trip ($0.01–500)</label>
+<input type="number" name="capAmount" required min="0.01" max="500" step="0.01"
+  value="${esc(String(cfg.capAmount ?? ''))}"
+  style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:4px;font-size:14px"/></div>
+<div><label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Hoist fee per use ($0–200)</label>
+<input type="number" name="hoistRatePerUse" required min="0" max="200" step="0.01"
+  value="${esc(String(cfg.hoistRatePerUse ?? '0'))}"
+  style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:4px;font-size:14px"/></div>
+<div style="grid-column:1/-1">
+<button type="submit" class="cp-btn cp-btn-g">Save &amp; sync to operators</button>
+<span style="font-size:12px;color:#888;margin-left:10px">Passenger pays $0 toward hoist.</span>
+</div>
+</form>
+</div></div>
+<div class="cp-card">
+<div class="cp-card-hd"><h3>Change history</h3>
+<span style="font-size:12px;color:#888">Who changed what (SA vs council)</span></div>
+<table class="cp-tbl"><thead><tr><th>When</th><th>By</th><th>Subsidy %</th><th>Cap</th><th>Hoist / use</th></tr></thead>
+<tbody>${auditRows}</tbody></table>
+</div>`;
+      res.send(portalPage('Config', renderNav(sess, token, 'config'), body));
+    });
+  });
+});
+
+router.post('/api/council-config-save', (req, res) => {
+  const { _token, subsidyPercent, capAmount, hoistRatePerUse } = req.body;
+  const sess = cpGetSession(_token);
+  const te = encodeURIComponent(_token || '');
+  if (!sess) return res.redirect('/council-portal?err=session');
+  const pct = parseFloat(String(subsidyPercent));
+  const cap = parseFloat(String(capAmount));
+  const hoist = parseFloat(String(hoistRatePerUse));
+  const verr = validateTmFinancials(pct, cap, hoist);
+  if (verr) {
+    return res.redirect(`/council-portal/config?t=${te}&msg=${encodeURIComponent(verr)}&mt=err`);
+  }
+  fbRead('tmConfig/' + sess.councilId, (err: any, prev: any) => {
+    if (err || !prev) {
+      return res.redirect(`/council-portal/config?t=${te}&msg=${encodeURIComponent('Council config not found')}&mt=err`);
+    }
+    const next = {
+      ...prev,
+      subsidyPercent: pct,
+      capAmount: cap,
+      hoistRatePerUse: hoist,
+      hoistCoveredByCouncil: true,
+      updatedAt: Date.now(),
+    };
+    const audit = {
+      at: Date.now(),
+      byRole: 'council',
+      byName: sess.name || sess.councilId,
+      byEmail: sess.email || '',
+      councilId: sess.councilId,
+      previous: {
+        subsidyPercent: prev.subsidyPercent,
+        capAmount: prev.capAmount,
+        hoistRatePerUse: prev.hoistRatePerUse,
+      },
+      next: {
+        subsidyPercent: pct,
+        capAmount: cap,
+        hoistRatePerUse: hoist,
+      },
+    };
+    const auditKey = '-a' + Date.now();
+    fbWrite('PUT', 'tmConfig/' + sess.councilId, next, (wErr: any) => {
+      if (wErr) {
+        return res.redirect(`/council-portal/config?t=${te}&msg=${encodeURIComponent('Save failed')}&mt=err`);
+      }
+      fbWrite('PUT', 'tmConfigAudit/' + sess.councilId + '/' + auditKey, audit, () => {
+        syncCouncilTmConfigToApprovedCompanies(sess.councilId, next, () => {
+          res.redirect(`/council-portal/config?t=${te}&msg=${encodeURIComponent('Saved. Driver apps synced for approved operators.')}&mt=ok`);
+        });
+      });
+    });
+  });
+});
+
 // ── CSV Export ─────────────────────────────────────────────────────────────────
 router.get('/council-portal/export', requirePortalAuth, (req, res) => {
   const sess = (req as any).cpSession;
@@ -771,13 +997,16 @@ router.get('/council-portal/export', requirePortalAuth, (req, res) => {
   loadCouncilTrips(sess.councilId, (err: any, trips: any[]) => {
     const filtered = filterMonth ? trips.filter(t => (t.startedAt_ISO || '').slice(0, 7) === filterMonth) : trips;
     filtered.sort((a, b) => (a.startedAt_ISO || '').localeCompare(b.startedAt_ISO || ''));
-    const cols = ['Date', 'Operator', 'Passenger', 'Voucher No', 'Trip Category', 'Pickup', 'Dropoff', 'Fare', 'Council Pays', 'Pax Pays', 'Status', 'Submitted', 'Approved'];
+    const cols = ['Date', 'Operator', 'Passenger', 'Voucher No', 'Trip Category', 'Pickup', 'Dropoff', 'Meter Fare', 'Meter Subsidy', 'Hoist (council)', 'Total Council', 'Pax Pays', 'Status', 'Submitted', 'Approved'];
     const esc2 = (v: any) => '"' + String(v || '').replace(/"/g, '""') + '"';
     const rows = filtered.map(t => [
       t.startedAt_ISO ? t.startedAt_ISO.slice(0, 16).replace('T', ' ') : '',
       t._companyName || '', t.tmPassengerName || '', t.tmVoucherNo || '',
       t.tmTripCategory || '', t.source || '', t.destination || '',
-      parseFloat(t.fare || 0).toFixed(2), parseFloat(t.tmSubsidy || 0).toFixed(2),
+      parseFloat(t.fare || 0).toFixed(2),
+      parseFloat(t.tmSubsidyFare || 0).toFixed(2),
+      parseFloat(t.tmSubsidyHoist || 0).toFixed(2),
+      parseFloat(t.tmSubsidy || 0).toFixed(2),
       parseFloat(t.tmPassengerPays || 0).toFixed(2), t.status || '',
       t.submittedAt ? new Date(t.submittedAt).toLocaleString('en-NZ') : '',
       t.approvedAt ? new Date(t.approvedAt).toLocaleString('en-NZ') : ''
@@ -805,13 +1034,23 @@ router.get('/council-portal/cards', requirePortalAuth, (req, res) => {
     const rows = cards.map(([id, c]: [string, any]) => {
       const active = c.active !== false;
       const balance = parseFloat(c.balance || 0).toFixed(2);
-      const limit = c.monthlyLimit ? `$${parseFloat(c.monthlyLimit).toFixed(0)}/mo` : '—';
+      // Canonical SA fields: usageLimitMonthly / usageLimitDaily (trip counts).
+      // Fall back to legacy portal keys if present on older writes.
+      const monthlyTrips = c.usageLimitMonthly ?? c.monthlyLimit;
+      const dailyTrips = c.usageLimitDaily ?? c.maxFarePerTrip;
+      const limit = monthlyTrips != null && monthlyTrips !== ''
+        ? `${parseInt(String(monthlyTrips), 10) || 0}/mo`
+        : '—';
+      const daily = dailyTrips != null && dailyTrips !== ''
+        ? `${parseInt(String(dailyTrips), 10) || 0}/day`
+        : '—';
       return `<tr>
 <td>${esc(id)}</td>
 <td>${esc(c.passengerName || '—')}</td>
 <td>${esc(c.passengerPhone || '—')}</td>
 <td style="font-weight:600;color:#1B5E20">$${balance}</td>
 <td>${limit}</td>
+<td>${daily}</td>
 <td><span class="${active ? 'cp-bdg-g' : 'cp-bdg-r'}">${active ? 'Active' : 'Inactive'}</span></td>
 <td>
 <form method="POST" action="/api/council-card-toggle" style="display:inline">
@@ -827,7 +1066,7 @@ ${noticeHtml}
 <div class="cp-card">
 <div class="cp-card-hd"><h3>&#127938; TM Cards (${esc(sess.name || sess.councilId)})</h3>
 <span style="font-size:12px;color:#888">${cards.length} card(s)</span></div>
-${cards.length ? `<table class="cp-tbl"><thead><tr><th>Card No</th><th>Passenger</th><th>Phone</th><th>Balance</th><th>Monthly Limit</th><th>Status</th><th>Action</th></tr></thead>
+${cards.length ? `<table class="cp-tbl"><thead><tr><th>Card No</th><th>Passenger</th><th>Phone</th><th>Balance</th><th>Monthly Trips</th><th>Daily Trips</th><th>Status</th><th>Action</th></tr></thead>
 <tbody>${rows}</tbody></table>` : '<div class="cp-empty">No cards found for this council.</div>'}
 </div></div>`;
     res.send(portalPage('Cards', renderNav(sess, token, 'cards'), body));
@@ -849,7 +1088,7 @@ router.post('/api/council-card-toggle', (req, res) => {
   });
 });
 
-// ── Spending Limits ────────────────────────────────────────────────────────────
+// ── Trip Limits (aligned with SA tmCards usageLimitMonthly / usageLimitDaily) ──
 router.get('/council-portal/limits', requirePortalAuth, (req, res) => {
   const sess = (req as any).cpSession;
   const token = (req as any).cpToken;
@@ -862,8 +1101,11 @@ router.get('/council-portal/limits', requirePortalAuth, (req, res) => {
       .sort((a: any, b: any) => (a[1].passengerName || '').localeCompare(b[1].passengerName || ''));
     const te = encodeURIComponent(token);
     const rows = cards.map(([id, c]: [string, any]) => {
-      const monthlyLimit = c.monthlyLimit ? parseFloat(c.monthlyLimit).toFixed(0) : '';
-      const tripLimit = c.maxFarePerTrip ? parseFloat(c.maxFarePerTrip).toFixed(2) : '';
+      // Align with SA TM-Cards.aspx: usageLimitMonthly / usageLimitDaily (trip counts).
+      const monthlyRaw = c.usageLimitMonthly ?? c.monthlyLimit;
+      const dailyRaw = c.usageLimitDaily ?? c.maxFarePerTrip;
+      const usageLimitMonthly = monthlyRaw != null && monthlyRaw !== '' ? String(parseInt(String(monthlyRaw), 10) || '') : '';
+      const usageLimitDaily = dailyRaw != null && dailyRaw !== '' ? String(parseInt(String(dailyRaw), 10) || '') : '';
       return `<tr>
 <td>${esc(id)}</td>
 <td>${esc(c.passengerName || '—')}</td>
@@ -871,10 +1113,10 @@ router.get('/council-portal/limits', requirePortalAuth, (req, res) => {
 <form method="POST" action="/api/council-card-limits" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
 <input type="hidden" name="_token" value="${esc(token)}"/>
 <input type="hidden" name="cardId" value="${esc(id)}"/>
-<input type="number" name="monthlyLimit" value="${esc(monthlyLimit)}" placeholder="No monthly limit" min="0" step="1"
-  style="padding:5px 8px;border:1px solid #ddd;border-radius:4px;font-size:12.5px;width:130px"/>
-<input type="number" name="maxFarePerTrip" value="${esc(tripLimit)}" placeholder="No trip limit" min="0" step="0.01"
-  style="padding:5px 8px;border:1px solid #ddd;border-radius:4px;font-size:12.5px;width:120px"/>
+<input type="number" name="usageLimitMonthly" value="${esc(usageLimitMonthly)}" placeholder="No monthly trip limit" min="0" step="1"
+  style="padding:5px 8px;border:1px solid #ddd;border-radius:4px;font-size:12.5px;width:150px"/>
+<input type="number" name="usageLimitDaily" value="${esc(usageLimitDaily)}" placeholder="No daily trip limit" min="0" step="1"
+  style="padding:5px 8px;border:1px solid #ddd;border-radius:4px;font-size:12.5px;width:140px"/>
 <button type="submit" class="cp-btn-sm">Save</button>
 </form>
 </td></tr>`;
@@ -882,9 +1124,9 @@ router.get('/council-portal/limits', requirePortalAuth, (req, res) => {
     const body = `<div class="cp-main">
 ${noticeHtml}
 <div class="cp-card">
-<div class="cp-card-hd"><h3>&#128176; Spending Limits — ${esc(sess.name || sess.councilId)}</h3>
-<span style="font-size:12px;color:#888">Set monthly cap and max fare per trip for each card</span></div>
-${cards.length ? `<table class="cp-tbl"><thead><tr><th>Card No</th><th>Passenger</th><th>Monthly Limit ($) / Max Per Trip ($)</th></tr></thead>
+<div class="cp-card-hd"><h3>&#128176; Trip Limits — ${esc(sess.name || sess.councilId)}</h3>
+<span style="font-size:12px;color:#888">Same fields as Superadmin TM Cards: monthly / daily trip limits per card</span></div>
+${cards.length ? `<table class="cp-tbl"><thead><tr><th>Card No</th><th>Passenger</th><th>Monthly Trips / Daily Trips</th></tr></thead>
 <tbody>${rows}</tbody></table>` : '<div class="cp-empty">No cards found for this council.</div>'}
 </div>
 <div class="cp-card" style="margin-top:18px">
@@ -892,23 +1134,23 @@ ${cards.length ? `<table class="cp-tbl"><thead><tr><th>Card No</th><th>Passenger
 <div style="padding:16px 18px">
 <form method="POST" action="/api/council-default-limits" style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
 <input type="hidden" name="_token" value="${esc(token)}"/>
-<div><label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Default Monthly Limit ($)</label>
-<input type="number" name="defaultMonthlyLimit" placeholder="Unlimited" min="0" step="1"
-  style="padding:7px 10px;border:1px solid #ddd;border-radius:4px;font-size:13px;width:160px"/></div>
-<div><label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Default Max Fare Per Trip ($)</label>
-<input type="number" name="defaultMaxFarePerTrip" placeholder="Unlimited" min="0" step="0.01"
-  style="padding:7px 10px;border:1px solid #ddd;border-radius:4px;font-size:13px;width:160px"/></div>
+<div><label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Default Monthly Trip Limit</label>
+<input type="number" name="defaultUsageLimitMonthly" placeholder="Unlimited" min="0" step="1"
+  style="padding:7px 10px;border:1px solid #ddd;border-radius:4px;font-size:13px;width:180px"/></div>
+<div><label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Default Daily Trip Limit</label>
+<input type="number" name="defaultUsageLimitDaily" placeholder="Unlimited" min="0" step="1"
+  style="padding:7px 10px;border:1px solid #ddd;border-radius:4px;font-size:13px;width:180px"/></div>
 <button type="submit" class="cp-btn">Apply to All Cards</button>
 </form>
 </div>
 </div>
 </div>`;
-    res.send(portalPage('Spending Limits', renderNav(sess, token, 'limits'), body));
+    res.send(portalPage('Trip Limits', renderNav(sess, token, 'limits'), body));
   });
 });
 
 router.post('/api/council-card-limits', (req, res) => {
-  const { _token, cardId, monthlyLimit, maxFarePerTrip } = req.body;
+  const { _token, cardId, usageLimitMonthly, usageLimitDaily } = req.body;
   const sess = cpGetSession(_token);
   if (!sess) return res.redirect('/council-portal?err=session');
   const te = encodeURIComponent(_token);
@@ -916,8 +1158,15 @@ router.post('/api/council-card-limits', (req, res) => {
     if (err || !card) return res.redirect(`/council-portal/limits?t=${te}&msg=${encodeURIComponent('Card not found')}&mt=err`);
     if (card.councilId !== sess.councilId) return res.redirect(`/council-portal/limits?t=${te}&msg=${encodeURIComponent('Access denied')}&mt=err`);
     const patch: any = { updatedAt: Date.now() };
-    if (monthlyLimit !== '' && monthlyLimit !== undefined) patch.monthlyLimit = parseFloat(monthlyLimit) || null;
-    if (maxFarePerTrip !== '' && maxFarePerTrip !== undefined) patch.maxFarePerTrip = parseFloat(maxFarePerTrip) || null;
+    // Write SA-canonical keys; clear legacy portal-only dollar keys if present.
+    if (usageLimitMonthly !== '' && usageLimitMonthly !== undefined) {
+      patch.usageLimitMonthly = parseInt(String(usageLimitMonthly), 10) || null;
+    }
+    if (usageLimitDaily !== '' && usageLimitDaily !== undefined) {
+      patch.usageLimitDaily = parseInt(String(usageLimitDaily), 10) || null;
+    }
+    if (card.monthlyLimit !== undefined) patch.monthlyLimit = null;
+    if (card.maxFarePerTrip !== undefined) patch.maxFarePerTrip = null;
     fbWrite('PATCH', 'tmCards/' + cardId, patch, (e: any) => {
       if (e) return res.redirect(`/council-portal/limits?t=${te}&msg=${encodeURIComponent('Error: ' + e)}&mt=err`);
       res.redirect(`/council-portal/limits?t=${te}&msg=${encodeURIComponent('Limits saved')}&mt=ok`);
@@ -926,7 +1175,7 @@ router.post('/api/council-card-limits', (req, res) => {
 });
 
 router.post('/api/council-default-limits', (req, res) => {
-  const { _token, defaultMonthlyLimit, defaultMaxFarePerTrip } = req.body;
+  const { _token, defaultUsageLimitMonthly, defaultUsageLimitDaily } = req.body;
   const sess = cpGetSession(_token);
   if (!sess) return res.redirect('/council-portal?err=session');
   const te = encodeURIComponent(_token);
@@ -935,10 +1184,12 @@ router.post('/api/council-default-limits', (req, res) => {
       .filter(([, c]: [string, any]) => c.councilId === sess.councilId);
     if (cards.length === 0) return res.redirect(`/council-portal/limits?t=${te}&msg=${encodeURIComponent('No cards to update')}&mt=err`);
     let done = cards.length;
-    cards.forEach(([id]: [string, any]) => {
+    cards.forEach(([id, c]: [string, any]) => {
       const patch: any = { updatedAt: Date.now() };
-      if (defaultMonthlyLimit) patch.monthlyLimit = parseFloat(defaultMonthlyLimit);
-      if (defaultMaxFarePerTrip) patch.maxFarePerTrip = parseFloat(defaultMaxFarePerTrip);
+      if (defaultUsageLimitMonthly) patch.usageLimitMonthly = parseInt(String(defaultUsageLimitMonthly), 10) || null;
+      if (defaultUsageLimitDaily) patch.usageLimitDaily = parseInt(String(defaultUsageLimitDaily), 10) || null;
+      if (c && c.monthlyLimit !== undefined) patch.monthlyLimit = null;
+      if (c && c.maxFarePerTrip !== undefined) patch.maxFarePerTrip = null;
       fbWrite('PATCH', 'tmCards/' + id, patch, () => { if (--done === 0) res.redirect(`/council-portal/limits?t=${te}&msg=${encodeURIComponent('Default limits applied to all cards')}&mt=ok`); });
     });
   });

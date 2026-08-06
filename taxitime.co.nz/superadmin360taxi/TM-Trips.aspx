@@ -292,21 +292,26 @@ function mapTMTrip(j, cid, rawKey) {
   var rawDriverName = j.driverFullName || j.driverDisplayName || j.driver_name || j.driverName || j.driverEmail || '';
   var driverName = cleanDriverName(rawDriverName);
 
-  // Fare fields — estimatedFare is the passenger app's total trip fare (authoritative for multi-pax)
-  var meterFare     = +(j.estimatedFare || j.fare || j.meterFare || j.totalFare || 0);
+  // Fare fields — prefer driver Phase 2A.1 breakdown when present (meter vs hoist separated).
+  // estimatedFare is the passenger app's total trip fare (authoritative for multi-pax legacy).
   var waitingCharge = +(j.waitingCost || j.WaitingCost || j.waitingCharge || j.waitingFee || 0);
-  var tmHoistCount  = +(j.tmHoistCount || 0);
-  // tmHoistFeeTotal: dedicated field written by passenger app from its fix onward
-  // Historical fallback: tmHoistCount × $5.00/lift (tm_settings/config default, confirmed unchanged by passenger app dev)
-  var hoistTotal    = +(j.tmHoistFeeTotal || j.hoistTotal || j.hoistFee || (tmHoistCount * 5));
+  var tmHoistCount  = +(j.tmHoistCount || j.hoistCount || 0);
+  var hoistTotal    = +(j.tmHoistFeeTotal || j.hoistTotal || j.hoistFee || j.tmSubsidyHoist || (tmHoistCount * 5));
+  var meterFare     = +(j.tmMeterFare || j.meterFare || 0);
+  if (!meterFare) {
+    // Legacy: total may have included hoist — subtract hoist when driver wrote hoist separately.
+    var rawTotal = +(j.estimatedFare || j.fare || j.totalFare || j.tmTotalFare || 0);
+    meterFare = (j.hoistTotal || j.tmSubsidyHoist || j.hoistFee)
+      ? Math.max(0, rawTotal - hoistTotal)
+      : rawTotal;
+  }
 
-  // NZ TM multi-passenger subsidy rule (confirmed by passenger app dev):
-  // Divide fare equally per card, apply the council subsidy cap INDIVIDUALLY per card, then sum.
-  // Single-calc on total fare under-claims when fare-per-card is below the cap threshold.
-  // Example: $100 fare, 2 passengers → $50/card → $25 subsidy/card → $50 council total
-  //          Single-calc gives $37.50 (one cap applied to $100) — under-claims by $12.50
+  // Prefer driver-written meter subsidy when present; else recompute (multi-card rule).
   var tmSubsidyFare;
-  if (allCardNums.length > 1) {
+  if (j.tmSubsidyFare != null && j.tmSubsidyFare !== '') {
+    tmSubsidyFare = +j.tmSubsidyFare;
+  } else if (allCardNums.length > 1) {
+    // NZ TM multi-passenger: divide meter fare equally per card, apply cap per card, sum.
     var farePerCard = meterFare / allCardNums.length;
     tmSubsidyFare = allCardNums.reduce(function(sum, cn) {
       var paxCouncilId = (ttCards[cn] || {}).councilId || councilId;
@@ -316,14 +321,18 @@ function mapTMTrip(j, cid, rawKey) {
     tmSubsidyFare = calcTMSubsidy(meterFare, councilId);
   }
 
-  var council = ttCouncils[councilId] || {};
-  var hoistCoveredByCouncil = council.hoistCoveredByCouncil !== false;
-  var tmSubsidyHoist   = hoistCoveredByCouncil ? hoistTotal : 0;
-  var totalCouncilPays = tmSubsidyFare + tmSubsidyHoist;
+  // Phase 2A.1 / NZ TM: hoist is always 100% council-paid; never enters meter %/cap.
+  var tmSubsidyHoist = hoistTotal;
+  if (j.tmSubsidyHoist != null && j.tmSubsidyHoist !== '') tmSubsidyHoist = +j.tmSubsidyHoist;
+  var totalCouncilPays = (j.tmCouncilPays != null && j.tmCouncilPays !== '')
+    ? +j.tmCouncilPays
+    : +(tmSubsidyFare + tmSubsidyHoist).toFixed(2);
 
-  // Passenger pays their share of the fare + waiting (waiting is never covered by TM)
+  // Passenger pays meter share + waiting only (never hoist).
   var passengerShareFare = meterFare - tmSubsidyFare;
-  var passengerPays = passengerShareFare + waitingCharge + (hoistCoveredByCouncil ? 0 : hoistTotal);
+  var passengerPays = (j.tmPassengerPays != null && j.tmPassengerPays !== '')
+    ? +j.tmPassengerPays
+    : +(passengerShareFare + waitingCharge).toFixed(2);
 
   // Distance — try multiple field names driver apps may use
   var distRaw = j.distanceKm || j.distance || j.distanceTravelled || j.distanceTraveled
@@ -520,16 +529,16 @@ function viewTT(id) {
     '<table style="width:100%;margin-top:8px">' +
     frow('Meter Fare (trip only)', '$' + parseFloat(t.meterFare || 0).toFixed(2)) +
     (parseFloat(t.waitingCharge||0) > 0 ? frow('Waiting Charge (passenger pays, not TM)', '$' + parseFloat(t.waitingCharge).toFixed(2), '#9e9e9e') : '') +
-    (parseFloat(t.hoistTotal||0) > 0 ? frow('Hoist Fee', '$' + parseFloat(t.hoistTotal).toFixed(2)) : '') +
     '<tr><td colspan="2" style="padding:4px 0;border-top:1px dashed #ccc"></td></tr>' +
     (t.tmPassengerCount > 1 ? frow(t.tmPassengerCount + ' TM passengers — fare split $' + (t.meterFare/t.tmPassengerCount).toFixed(2) + '/card', '', '#1565C0') : '') +
-    frow('TM Subsidy (' + subPct + '% of meter fare' + (t.tmPassengerCount > 1 ? ', per card' : '') + ')' + capNote, '<span style="color:#2E7D32;font-weight:600">$' + parseFloat(t.tmSubsidyFare || 0).toFixed(2) + '</span>') +
-    (parseFloat(t.tmSubsidyHoist||0) > 0 ? frow('TM Subsidy (Hoist)', '<span style="color:#2E7D32;font-weight:600">$' + parseFloat(t.tmSubsidyHoist).toFixed(2) + '</span>') : '') +
+    frow('Line 1 — Meter subsidy (' + subPct + '% of meter' + (t.tmPassengerCount > 1 ? ', per card' : '') + ')' + capNote, '<span style="color:#2E7D32;font-weight:600">$' + parseFloat(t.tmSubsidyFare || 0).toFixed(2) + '</span>') +
+    frow('Line 2 — Hoist fee (100% council, not in meter split)', '<span style="color:#2E7D32;font-weight:600">$' + parseFloat(t.tmSubsidyHoist || t.hoistTotal || 0).toFixed(2) + '</span>') +
     '<tr style="border-top:2px solid #ccc"><td style="padding:6px 0"><strong>Total Council Pays</strong></td>' +
     '<td style="text-align:right"><strong style="color:#2E7D32;font-size:15px">$' + parseFloat(t.totalCouncilPays || 0).toFixed(2) + '</strong></td></tr>' +
-    '<tr><td style="padding:2px 0;font-size:12px;color:#555">&nbsp;&nbsp;= Fare subsidy + hoist subsidy</td><td></td></tr>' +
-    '<tr style="border-top:1px solid #e0e0e0"><td style="padding:6px 0">Passenger Share (fare \u2212 subsidy)</td><td style="text-align:right">$' + parseFloat(t.passengerShareFare || (t.meterFare - t.tmSubsidyFare) || 0).toFixed(2) + '</td></tr>' +
+    '<tr><td style="padding:2px 0;font-size:12px;color:#555">&nbsp;&nbsp;= Meter subsidy + hoist (separate line items)</td><td></td></tr>' +
+    '<tr style="border-top:1px solid #e0e0e0"><td style="padding:6px 0">Passenger Share (meter \u2212 subsidy)</td><td style="text-align:right">$' + parseFloat(t.passengerShareFare || (t.meterFare - t.tmSubsidyFare) || 0).toFixed(2) + '</td></tr>' +
     (parseFloat(t.waitingCharge||0) > 0 ? '<tr><td style="padding:2px 0">+ Waiting Charge</td><td style="text-align:right">$' + parseFloat(t.waitingCharge).toFixed(2) + '</td></tr>' : '') +
+    '<tr><td style="padding:2px 0;font-size:12px;color:#555">Hoist (passenger)</td><td style="text-align:right;font-size:12px;color:#555">$0.00</td></tr>' +
     '<tr style="border-top:2px solid #37474F"><td style="padding:6px 0"><strong>Passenger Total Pays</strong></td>' +
     '<td style="text-align:right"><strong style="font-size:15px">$' + parseFloat(t.passengerPays || 0).toFixed(2) + '</strong>' +
     (t.payMethod ? ' <span class="bx" style="font-size:10px;background:#E3F2FD;color:#1565C0">' + t.payMethod + '</span>' : '') + '</td></tr>' +
