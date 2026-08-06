@@ -373,6 +373,7 @@ function mapTMTrip(j, cid, rawKey) {
     duration: j.durationLabel || j.duration || '',
     tmTripCategory: j.tmTripCategory || '',
     tmHoistCount: tmHoistCount,
+    tmHoists: Array.isArray(j.tmHoists) ? j.tmHoists : [],
     tmPassengerCount: allCardNums.length || 1,
     tmCouncilAmountApp: +(j.tmCouncilAmount || 0),   // as-calculated by passenger app (single-cap)
     tmPassengerAmountApp: +(j.tmPassengerAmount || 0), // passenger share as-calculated by app
@@ -533,6 +534,14 @@ function viewTT(id) {
     (t.tmPassengerCount > 1 ? frow(t.tmPassengerCount + ' TM passengers — fare split $' + (t.meterFare/t.tmPassengerCount).toFixed(2) + '/card', '', '#1565C0') : '') +
     frow('Line 1 — Meter subsidy (' + subPct + '% of meter' + (t.tmPassengerCount > 1 ? ', per card' : '') + ')' + capNote, '<span style="color:#2E7D32;font-weight:600">$' + parseFloat(t.tmSubsidyFare || 0).toFixed(2) + '</span>') +
     frow('Line 2 — Hoist fee (100% council, not in meter split)', '<span style="color:#2E7D32;font-weight:600">$' + parseFloat(t.tmSubsidyHoist || t.hoistTotal || 0).toFixed(2) + '</span>') +
+    (function() {
+      var hoists = Array.isArray(t.tmHoists) ? t.tmHoists : [];
+      if (!hoists.length) return '';
+      return hoists.map(function(h, i) {
+        return frow('&nbsp;&nbsp;Hoist ' + (i + 1) + ' · card ' + (h.cardNumber || '—'),
+          '$' + parseFloat(h.amount || 0).toFixed(2), '#555');
+      }).join('');
+    })() +
     '<tr style="border-top:2px solid #ccc"><td style="padding:6px 0"><strong>Total Council Pays</strong></td>' +
     '<td style="text-align:right"><strong style="color:#2E7D32;font-size:15px">$' + parseFloat(t.totalCouncilPays || 0).toFixed(2) + '</strong></td></tr>' +
     '<tr><td style="padding:2px 0;font-size:12px;color:#555">&nbsp;&nbsp;= Meter subsidy + hoist (separate line items)</td><td></td></tr>' +
