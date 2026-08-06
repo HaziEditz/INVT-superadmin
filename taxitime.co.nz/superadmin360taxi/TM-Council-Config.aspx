@@ -198,21 +198,65 @@ var ccData = {}, ccAccess = {}, ccEid = null;
 
 window._fbOnLogin = function() { loadCC(); };
 
-function loadCC() {
-  adminRead('tmCouncilAccess').then(function(a) { ccAccess = a || {}; });
-  adminListen('tmConfig', function(d) {
-    ccData = d || {};
-    adminRead('tmCouncilAccess').then(function(a) { ccAccess = a || {}; renderCC(); });
+/** Keep only real council objects (ignore null / scalar junk under tmConfig). */
+function normalizeCouncilMap(raw) {
+  var out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  Object.keys(raw).forEach(function(k) {
+    var v = raw[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)) out[k] = v;
   });
+  return out;
+}
+
+/** Merge portal-access rows that have no tmConfig yet so the list never "loses" a council after auth setup. */
+function mergeAccessOrphans(configMap, accessMap) {
+  var out = Object.assign({}, configMap || {});
+  Object.keys(accessMap || {}).forEach(function(id) {
+    if (out[id]) return;
+    var acc = accessMap[id] || {};
+    out[id] = {
+      name: acc.name || id.replace(/^cncl_/, '').replace(/_/g, ' '),
+      approverEmail: acc.email || '',
+      active: acc.active !== false,
+      capAmount: 0,
+      subsidyPercent: 0,
+      hoistRatePerUse: 0,
+      _orphanAccess: true,
+      notes: 'Restored from portal access — re-save to set subsidy/cap/hoist.'
+    };
+  });
+  return out;
+}
+
+function loadCC() {
+  adminListen('tmConfig', function(d) {
+    adminRead('tmCouncilAccess').then(function(a) {
+      ccAccess = a || {};
+      ccData = mergeAccessOrphans(normalizeCouncilMap(d), ccAccess);
+      renderCC();
+    }).catch(function(err) {
+      ccAccess = {};
+      ccData = normalizeCouncilMap(d);
+      renderCC();
+      console.warn('[TM Council Config] tmCouncilAccess read failed:', err && err.message);
+    });
+  }, 6000);
 }
 function refreshCC() {
   document.getElementById('cc-tb').innerHTML = '<tr><td colspan="12" style="text-align:center;padding:30px;color:#9e9e9e">Refreshing\u2026</td></tr>';
   Promise.all([adminRead('tmConfig'), adminRead('tmCouncilAccess')]).then(function(res) {
-    ccData = res[0] || {}; ccAccess = res[1] || {}; renderCC();
+    ccAccess = res[1] || {};
+    ccData = mergeAccessOrphans(normalizeCouncilMap(res[0]), ccAccess);
+    renderCC();
+  }).catch(function(err) {
+    document.getElementById('cc-tb').innerHTML = '<tr><td colspan="12" style="text-align:center;padding:40px;color:#C62828">Failed to load councils: ' +
+      String((err && err.message) || err) + '</td></tr>';
+    document.getElementById('cc-count').textContent = 'load error';
   });
 }
 function renderCC() {
-  var e = Object.entries(ccData);
+  var e = Object.entries(ccData).filter(function(kv) { return kv[1] && typeof kv[1] === 'object'; });
   document.getElementById('cc-count').textContent = e.length + ' council(s)';
   if (!e.length) { document.getElementById('cc-tb').innerHTML = '<tr><td colspan="12" style="text-align:center;padding:40px;color:#9e9e9e">No councils configured yet.</td></tr>'; return; }
   document.getElementById('cc-tb').innerHTML = e.map(function(kv) {
@@ -220,7 +264,8 @@ function renderCC() {
     var eid = id.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
     var acc = ccAccess[id] || {};
     var portalEmail = acc.email || c.approverEmail || '';
-    var hasAccess = !!(acc.email && acc.passwordHash);
+    // Portal auth is Firebase Auth (uid/email) — not a local passwordHash field.
+    var hasAccess = !!(acc.email && (acc.uid || acc.passwordHash));
     var lastLogin = acc.lastLogin ? new Date(acc.lastLogin).toLocaleString('en-NZ', {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '\u2014';
     var portalCell = hasAccess
       ? '<span style="font-size:12px">' + portalEmail + '</span><br><span class="bx bx-g" style="font-size:10px;margin-top:2px">&#x2713; Access Set</span>'
@@ -294,7 +339,7 @@ function editCC(id) {
   ccClearPwFields();
   var portalEmailEl = document.getElementById('cc-portal-email');
   portalEmailEl.value = acc.email || c.approverEmail || '';
-  var hasAccess = !!(acc.email && acc.passwordHash);
+  var hasAccess = !!(acc.email && (acc.uid || acc.passwordHash));
   var lastLogin = acc.lastLogin ? new Date(acc.lastLogin).toLocaleString('en-NZ') : null;
   var statusNote = hasAccess
     ? '&#x2713; Portal access is set. Leave password blank to keep current password.' + (lastLogin ? ' Last login: ' + lastLogin + '.' : '')
@@ -322,6 +367,10 @@ function saveCC() {
   var email = document.getElementById('cc-email').value.trim();
   if (pw && !email) { ccMsg('Please enter an Approver Email \u2014 this becomes the portal login username.', false); ccHighlight('cc-email'); return; }
   var key = ccEid || ('cncl_' + nm.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''));
+  if (!key || key === 'cncl_' || key.indexOf('/') >= 0) {
+    ccMsg('Invalid council id — please re-open the form and try again.', false);
+    return;
+  }
   var prev = ccData[key] || {};
   var data = {
     name: nm, region: document.getElementById('cc-region').value.trim(),
@@ -335,6 +384,7 @@ function saveCC() {
     notes: document.getElementById('cc-notes').value.trim(), updatedAt: Date.now()
   };
   adminWrite('tmConfig/' + key, 'PUT', data).then(function() {
+    delete data._orphanAccess;
     ccData[key] = data;
     // Simple audit trail (SA vs council portal) for shared financial fields.
     try {

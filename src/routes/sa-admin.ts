@@ -48,10 +48,19 @@ function isBlockedFbPath(p: string): boolean {
   return FB_PROXY_BLOCKLIST.includes(head);
 }
 
+/** Reject paths with empty segments (e.g. `tmConfig/`) — Firebase treats those as the parent node and a PUT/DELETE can wipe the whole tree. */
+function isUnsafeFbPath(p: string): boolean {
+  const clean = String(p || '').replace(/^\/+/, '').replace(/\/+$/, '');
+  if (!clean) return true;
+  const segs = clean.split('/');
+  return segs.some((s) => !String(s || '').trim());
+}
+
 router.get('/api/fb', (req, res) => {
   let p = ((req.query.path as string) || '').replace(/^\/+/, '');
   if (!p) return res.status(400).json({ error: 'missing path' });
   if (isBlockedFbPath(p)) return res.status(403).json({ error: 'Path not accessible via /api/fb — use the dedicated admin endpoint' });
+  if (isUnsafeFbPath(p)) return res.status(400).json({ error: 'Invalid Firebase path' });
   const limitToLast = req.query.limitToLast ? parseInt(req.query.limitToLast as string, 10) : null;
   const orderBy = (req.query.orderBy as string) || null;
   let fbPath = p;
@@ -73,6 +82,16 @@ router.post('/api/fb', (req, res) => {
   let data = req.body.data;
   if (!p) return res.status(400).json({ error: 'missing path' });
   if (isBlockedFbPath(p)) return res.status(403).json({ error: 'Path not writable via /api/fb — use the dedicated admin endpoint' });
+  if (isUnsafeFbPath(p)) return res.status(400).json({ error: 'Invalid Firebase path' });
+  // Never allow replacing/deleting an entire top-level TM config tree in one shot.
+  const root = p.split(/[\/?]/)[0].toLowerCase();
+  const depth = p.replace(/\/+$/, '').split('/').filter(Boolean).length;
+  if ((method === 'PUT' || method === 'DELETE') && root === 'tmconfig' && depth < 2) {
+    return res.status(400).json({ error: 'Refusing to write/delete entire tmConfig root — use tmConfig/{councilId}' });
+  }
+  if (method === 'PUT' && (data === null || data === undefined)) {
+    return res.status(400).json({ error: 'PUT requires a non-null body' });
+  }
   if (isDriversFbPath(p) && data != null) data = sanitizeDriverPayload(data);
   fbWrite(method, p, data, (err, result) => {
     if (err) return res.status(500).json({ error: String(err) });
