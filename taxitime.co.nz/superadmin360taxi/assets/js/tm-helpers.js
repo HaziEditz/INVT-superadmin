@@ -120,6 +120,64 @@ var db = { ref: function(path) { return _makeRef(path); } };
 /* Public helpers used by some pages */
 window.adminRead  = function(p) { return _fbGet(p); };
 window.adminWrite = function(p, method, data) { return _fbPost(p, method, data); };
+
+/**
+ * Phase 1 — single source of truth for driver TM split:
+ * Council `tmConfig/{councilId}` is authoritative for subsidy % / cap / hoist.
+ * Approved companies get a mirrored copy at `companySettings/{cid}/tmConfig`
+ * (what the driver app + dispatch console read).
+ */
+window.companyTmConfigFromCouncil = function(councilId, council) {
+  council = council || {};
+  var pct = parseFloat(council.subsidyPercent);
+  if (isNaN(pct)) pct = 0;
+  var cap = parseFloat(council.capAmount);
+  if (isNaN(cap)) cap = 0;
+  var hoist = parseFloat(council.hoistRatePerUse);
+  if (isNaN(hoist)) hoist = 0;
+  return {
+    // Driver app (INVT-APP2 loadTmConfig)
+    councilSubsidyPercent: pct,
+    councilCapAmount: cap,
+    hoistCostPerUnit: hoist,
+    // Dispatch CreateJobModal aliases (historically different names)
+    councilPercent: pct,
+    passengerPercent: Math.max(0, 100 - pct),
+    capAmount: cap,
+    hoistUnitCost: hoist,
+    sourceCouncilId: String(councilId || ''),
+    syncedFromCouncilAt: Date.now(),
+    updatedAt: Date.now()
+  };
+};
+
+/** Push council economics to every company approved for that council. */
+window.syncCouncilTmConfigToApprovedCompanies = function(councilId, council) {
+  var payload = window.companyTmConfigFromCouncil(councilId, council);
+  return adminRead('tmCompanyAccess').then(function(access) {
+    access = access || {};
+    var writes = [];
+    Object.keys(access).forEach(function(cid) {
+      var row = access[cid] && access[cid][councilId];
+      if (row && row.approved === true) {
+        writes.push(adminWrite('companySettings/' + cid + '/tmConfig', 'PUT', payload));
+      }
+    });
+    return Promise.all(writes).then(function() { return writes.length; });
+  });
+};
+
+/** Push one council's economics to a single company (e.g. on approve). */
+window.syncCouncilTmConfigToCompany = function(cid, councilId) {
+  if (!cid || !councilId) return Promise.resolve(0);
+  return adminRead('tmConfig/' + councilId).then(function(council) {
+    if (!council || typeof council !== 'object') return 0;
+    var payload = window.companyTmConfigFromCouncil(councilId, council);
+    return adminWrite('companySettings/' + cid + '/tmConfig', 'PUT', payload).then(function() {
+      return 1;
+    });
+  });
+};
 window.adminListen = function(p, cb, ms) {
   var iv = setInterval(function() {
     _fbGet(p).then(cb).catch(function(){});

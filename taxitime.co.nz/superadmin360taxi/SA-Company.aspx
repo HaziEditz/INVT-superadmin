@@ -299,15 +299,18 @@
   </div>
 </div>
 
-<!-- TM Configuration — per company -->
+<!-- TM Configuration — per company (driver-facing mirror; prefer Council Config) -->
 <div class="sa-card" id="tm-config-card">
   <div class="sa-bar" style="background:#00695C"><h3>&#9855; Total Mobility (TM) Configuration</h3>
-    <span style="font-size:11px;opacity:.7">Written to <code>companySettings/{companyId}/tmConfig</code></span>
+    <span style="font-size:11px;opacity:.7">Driver mirror: <code>companySettings/{companyId}/tmConfig</code></span>
   </div>
   <div style="padding:16px 18px">
-    <p style="font-size:12px;color:#888;margin:0 0 14px">
-      Driver app reads these values when processing TM payments. Council subsidy and hoist rates are <strong>not hardcoded</strong> — set per company here.
+    <p style="font-size:12px;color:#455a64;margin:0 0 10px;line-height:1.45;background:#E0F2F1;border:1px solid #B2DFDB;border-radius:6px;padding:10px 12px">
+      <strong>Prefer TM Council Config</strong> as the source of truth. Saving a council (or approving company access)
+      auto-syncs subsidy %, cap, and hoist into this company node for the driver app.
+      Use this form only as a manual fallback (e.g. no council approved yet).
     </p>
+    <p id="tm-config-source" style="font-size:11px;color:#888;margin:0 0 14px"></p>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;max-width:720px">
       <div>
         <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:5px">Council Subsidy %</label>
@@ -1153,9 +1156,18 @@ function loadTmConfig(){
     var pct = document.getElementById('tm-subsidy-pct');
     var cap = document.getElementById('tm-cap-amount');
     var hoist = document.getElementById('tm-hoist-cost');
-    if(pct) pct.value = data.councilSubsidyPercent != null ? data.councilSubsidyPercent : 65;
-    if(cap) cap.value = data.councilCapAmount != null ? data.councilCapAmount : 37.40;
-    if(hoist) hoist.value = data.hoistCostPerUnit != null ? data.hoistCostPerUnit : 11.50;
+    if(pct) pct.value = data.councilSubsidyPercent != null ? data.councilSubsidyPercent : (data.councilPercent != null ? data.councilPercent : 65);
+    if(cap) cap.value = data.councilCapAmount != null ? data.councilCapAmount : (data.capAmount != null ? data.capAmount : 37.40);
+    if(hoist) hoist.value = data.hoistCostPerUnit != null ? data.hoistCostPerUnit : (data.hoistUnitCost != null ? data.hoistUnitCost : 11.50);
+    var src = document.getElementById('tm-config-source');
+    if (src) {
+      if (data.sourceCouncilId) {
+        src.textContent = 'Last synced from council ' + data.sourceCouncilId +
+          (data.syncedFromCouncilAt ? (' at ' + new Date(data.syncedFromCouncilAt).toLocaleString()) : '') + '.';
+      } else {
+        src.textContent = 'No council sync recorded yet — values may be a manual fallback.';
+      }
+    }
   }).catch(function(){});
 }
 
@@ -1164,10 +1176,20 @@ function saveTmConfig(){
   var capEl = document.getElementById('tm-cap-amount');
   var hoistEl = document.getElementById('tm-hoist-cost');
   var msg = document.getElementById('tm-config-msg');
+  var pct = parseFloat(pctEl && pctEl.value) || 65;
+  var cap = parseFloat(capEl && capEl.value) || 37.40;
+  var hoist = parseFloat(hoistEl && hoistEl.value) || 11.50;
   var payload = {
-    councilSubsidyPercent: parseFloat(pctEl && pctEl.value) || 65,
-    councilCapAmount: parseFloat(capEl && capEl.value) || 37.40,
-    hoistCostPerUnit: parseFloat(hoistEl && hoistEl.value) || 11.50,
+    councilSubsidyPercent: pct,
+    councilCapAmount: cap,
+    hoistCostPerUnit: hoist,
+    // Dispatch CreateJobModal aliases
+    councilPercent: pct,
+    passengerPercent: Math.max(0, 100 - pct),
+    capAmount: cap,
+    hoistUnitCost: hoist,
+    sourceCouncilId: null,
+    manualOverrideAt: Date.now(),
     updatedAt: Date.now()
   };
   db.ref('companySettings/'+CID+'/tmConfig').set(payload).then(function(){
@@ -1175,9 +1197,11 @@ function saveTmConfig(){
     var rand = Math.random().toString(36).slice(2,7);
     db.ref('superAuditLog/LOG'+Date.now()+'_'+rand).set({
       action:'tm_config_updated',actor:saEmail,cid:CID,cidName:(companyData&&companyData.name)||CID,
-      detail:'TM config: '+payload.councilSubsidyPercent+'% cap $'+payload.councilCapAmount+' hoist $'+payload.hoistCostPerUnit,ts:Date.now()
+      detail:'TM config (manual): '+payload.councilSubsidyPercent+'% cap $'+payload.councilCapAmount+' hoist $'+payload.hoistCostPerUnit,ts:Date.now()
     });
-    if(msg) msg.innerHTML='<span style="color:#2e7d32">&#10003; Saved — Driver app will use '+payload.councilSubsidyPercent+'% / $'+payload.councilCapAmount.toFixed(2)+' cap / $'+payload.hoistCostPerUnit.toFixed(2)+' hoist.</span>';
+    if(msg) msg.innerHTML='<span style="color:#2e7d32">&#10003; Saved manual fallback — Driver app will use '+payload.councilSubsidyPercent+'% / $'+payload.councilCapAmount.toFixed(2)+' cap / $'+payload.hoistCostPerUnit.toFixed(2)+' hoist. Prefer Council Config when possible.</span>';
+    var src = document.getElementById('tm-config-source');
+    if (src) src.textContent = 'Manual override saved at ' + new Date().toLocaleString() + '.';
   }).catch(function(e){
     if(msg) msg.innerHTML='<span style="color:#c00">Error: '+esc(e.message)+'</span>';
   });

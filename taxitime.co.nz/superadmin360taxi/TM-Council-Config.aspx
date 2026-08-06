@@ -331,17 +331,32 @@ function saveCC() {
   };
   adminWrite('tmConfig/' + key, 'PUT', data).then(function() {
     ccData[key] = data;
-    if (pw) {
-      return fetch('/api/set-council-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ councilId: key, email: email, password: pw })
-      }).then(function(r) { return r.json(); }).then(function(res) {
-        if (res.error) { ccMsg('Council saved but portal password failed: ' + res.error, false); }
-        else { ccMsg('Council saved + portal access set!', true); setTimeout(function() { renderCC(); closeCC(); }, 1800); }
-      }).catch(function(e) { ccMsg('Council saved but portal password error: ' + e.message, false); });
-    }
-    renderCC(); closeCC();
+    // Keep driver/dispatch companySettings/tmConfig in sync for approved companies.
+    var syncP = (typeof syncCouncilTmConfigToApprovedCompanies === 'function')
+      ? syncCouncilTmConfigToApprovedCompanies(key, data).catch(function(e) {
+          console.warn('[TM] company sync failed:', e && e.message);
+          return -1;
+        })
+      : Promise.resolve(0);
+    return syncP.then(function(syncedCount) {
+      var syncNote = syncedCount < 0
+        ? ' (company driver-split sync failed — check console)'
+        : (syncedCount > 0
+          ? (' — synced driver split to ' + syncedCount + ' approved company(ies)')
+          : ' — no approved companies to sync');
+      if (pw) {
+        return fetch('/api/set-council-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ councilId: key, email: email, password: pw })
+        }).then(function(r) { return r.json(); }).then(function(res) {
+          if (res.error) { ccMsg('Council saved but portal password failed: ' + res.error + syncNote, false); }
+          else { ccMsg('Council saved + portal access set!' + syncNote, true); setTimeout(function() { renderCC(); closeCC(); }, 1800); }
+        }).catch(function(e) { ccMsg('Council saved but portal password error: ' + e.message + syncNote, false); });
+      }
+      ccMsg('Council saved' + syncNote, true);
+      renderCC(); closeCC();
+    });
   }).catch(function(e) { ccMsg('Save failed: ' + e.message, false); });
 }
 function delCC(id) {

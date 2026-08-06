@@ -177,32 +177,22 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
   </div>
 </div>
 
-<!-- ── Section 2: TM Tariffs per Company ──────────────────────────────────── -->
+<!-- ── Section 2: TM Tariffs (LEGACY — unused) ─────────────────────────────── -->
 <div class="tm-card">
-  <div class="tm-bar">
-    <h3>&#128667; TM Fare Tariffs <small style="opacity:.75;font-size:12px">(per company)</small></h3>
-    <button class="tm-btn tm-btn-wh" onclick="renderTariffs()">&#8635; Refresh</button>
+  <div class="tm-bar" style="background:#78909C">
+    <h3>&#128667; TM Fare Tariffs <small style="opacity:.9;font-size:12px">(legacy / unused)</small></h3>
   </div>
-  <p style="padding:10px 18px 0;font-size:12.5px;color:#888">Set the metered rates used to calculate TM fares. Each company can have different car and wheelchair van rates. The passenger app uses these to show the fare estimate and split.</p>
-  <div style="overflow-x:auto">
-    <table class="tm-tbl">
-      <thead><tr>
-        <th>Company</th>
-        <th>&#128665; Car — Base</th>
-        <th>&#128665; Car — /km</th>
-        <th>&#128665; Car — /min</th>
-        <th>&#128665; Car — Stop</th>
-        <th>&#9855; Van — Base</th>
-        <th>&#9855; Van — /km</th>
-        <th>&#9855; Van — /min</th>
-        <th>&#9855; Van — Stop</th>
-        <th>Last Updated</th>
-        <th>Action</th>
-      </tr></thead>
-      <tbody id="tariff-tb">
-        <tr class="empty-row"><td colspan="11">Loading&#8230;</td></tr>
-      </tbody>
-    </table>
+  <div style="padding:16px 18px;font-size:13px;color:#455a64;line-height:1.5">
+    <p style="margin:0 0 10px"><strong>Legacy — not used by live metering.</strong></p>
+    <p style="margin:0 0 8px">
+      Dispatch and the driver app meter TM trips with the company&#8217;s <em>normal</em> tariffs
+      (<code>tariffs/{companyId}</code> / day-night / vehicle variants). Subsidy % and cap come from
+      <strong>TM Council Config</strong> (synced to <code>companySettings/.../tmConfig</code> for the driver).
+    </p>
+    <p style="margin:0;color:#78909C;font-size:12px">
+      The old <code>tmTariffs/{cid}</code> node is retained for historical data only. Editing it here is disabled
+      so it cannot compete with real company tariffs.
+    </p>
   </div>
 </div>
 
@@ -263,16 +253,14 @@ function loadAll() {
   Promise.all([
     adminRead('superClients'),
     adminRead('tmConfig'),
-    adminRead('tmCompanyAccess'),
-    adminRead('tmTariffs')
+    adminRead('tmCompanyAccess')
   ]).then(function(res) {
     allCompanies = res[0] || {};
     allCouncils  = res[1] || {};
     allAccess    = res[2] || {};
-    allTariffs   = res[3] || {};
+    allTariffs   = {}; // legacy tmTariffs UI removed — not loaded
     populateCouncilFilter();
     renderApproval();
-    renderTariffs();
   }).catch(function(e) {
     showNotice('Failed to load data: ' + e.message, 'err');
   });
@@ -359,10 +347,18 @@ function setAccess(cid, councilId, approve) {
       if (!allAccess[cid]) allAccess[cid] = {};
       allAccess[cid][councilId] = patch;
       renderApproval();
-      showNotice(
-        (co.name || cid) + (approve ? ' approved for TM under ' : ' TM access revoked for ') + (council.name || councilId) + '.',
-        approve ? 'ok' : 'warn'
-      );
+      var finish = function(extra) {
+        showNotice(
+          (co.name || cid) + (approve ? ' approved for TM under ' : ' TM access revoked for ') + (council.name || councilId) + '.' + (extra || ''),
+          approve ? 'ok' : 'warn'
+        );
+      };
+      if (approve && typeof syncCouncilTmConfigToCompany === 'function') {
+        return syncCouncilTmConfigToCompany(cid, councilId)
+          .then(function() { finish(' Driver-split subsidy rates synced from council.'); })
+          .catch(function(e) { finish(' (driver-split sync failed: ' + (e && e.message) + ')'); });
+      }
+      finish();
     })
     .catch(function(e) { showNotice('Error: ' + e.message, 'err'); });
 }
