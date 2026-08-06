@@ -373,9 +373,9 @@ function saveCC() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ councilId: key, email: email, password: pw })
         }).then(function(r) { return r.json(); }).then(function(res) {
-          if (res.error) { ccMsg('Council saved but portal password failed: ' + res.error + syncNote, false); }
+          if (res.error) { ccMsg('Council saved but portal password failed: ' + res.error + '. ' + syncNote.replace(/^ — /, ''), false); }
           else { ccMsg('Council saved + portal access set!' + syncNote, true); setTimeout(function() { renderCC(); closeCC(); }, 1800); }
-        }).catch(function(e) { ccMsg('Council saved but portal password error: ' + e.message + syncNote, false); });
+        }).catch(function(e) { ccMsg('Council saved but portal password error: ' + e.message + '. ' + syncNote.replace(/^ — /, ''), false); });
       }
       ccMsg('Council saved' + syncNote, true);
       renderCC(); closeCC();

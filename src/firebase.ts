@@ -3,8 +3,13 @@ const https = require('https');
 export const DB_HOSTNAME = 'bookawaka2026-564e1-default-rtdb.firebaseio.com';
 export const DB_SECRET   = process.env.FIREBASE_DB_SECRET || '';
 
+/** Web API key for Identity Toolkit (bookawaka2026). Env overrides when set. */
 export const FIREBASE_WEB_API_KEY = 'AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ';
 export const DB_BASE_STRIPE = 'https://bookawaka2026-564e1-default-rtdb.firebaseio.com';
+
+function resolveWebApiKey(): string {
+  return String(process.env.FIREBASE_WEB_API_KEY || FIREBASE_WEB_API_KEY || '').trim();
+}
 
 // ── Core Firebase REST helpers ────────────────────────────────────────────────
 export function firebaseRequest(method, nodePath, data, cb) {
@@ -74,7 +79,7 @@ export function isSuperAdmin(uid, cb) {
 
 // ── Firebase Auth REST API helpers ────────────────────────────────────────────
 export function fbAuthCreate(email, password, cb) {
-  const key = process.env.FIREBASE_WEB_API_KEY;
+  const key = resolveWebApiKey();
   if (!key) return cb(new Error('FIREBASE_WEB_API_KEY not set'));
   const body = JSON.stringify({ email, password, returnSecureToken: true });
   const opts = { hostname: 'identitytoolkit.googleapis.com', path: '/v1/accounts:signUp?key=' + key, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } };
@@ -83,7 +88,7 @@ export function fbAuthCreate(email, password, cb) {
 }
 
 export function fbAuthSignIn(email, password, cb) {
-  const key = process.env.FIREBASE_WEB_API_KEY;
+  const key = resolveWebApiKey();
   if (!key) return cb(new Error('FIREBASE_WEB_API_KEY not set'));
   const body = JSON.stringify({ email, password, returnSecureToken: true });
   const opts = { hostname: 'identitytoolkit.googleapis.com', path: '/v1/accounts:signInWithPassword?key=' + key, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } };
@@ -92,7 +97,7 @@ export function fbAuthSignIn(email, password, cb) {
 }
 
 export function fbAuthSendReset(email, cb) {
-  const key = process.env.FIREBASE_WEB_API_KEY;
+  const key = resolveWebApiKey();
   if (!key) return cb(new Error('FIREBASE_WEB_API_KEY not set'));
   const body = JSON.stringify({ requestType: 'PASSWORD_RESET', email });
   const opts = { hostname: 'identitytoolkit.googleapis.com', path: '/v1/accounts:sendOobCode?key=' + key, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } };
@@ -107,7 +112,7 @@ export function authRestPost(endpoint, body) {
     const opts = {
       hostname: 'identitytoolkit.googleapis.com',
       port: 443,
-      path: '/v1/accounts:' + endpoint + '?key=' + FIREBASE_WEB_API_KEY,
+      path: '/v1/accounts:' + endpoint + '?key=' + resolveWebApiKey(),
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyStr) }
     };
@@ -143,7 +148,7 @@ export function getUidByEmail(email): Promise<string | null> {
     const opts = {
       hostname: 'identitytoolkit.googleapis.com',
       port: 443,
-      path: '/v1/accounts:lookup?key=' + FIREBASE_WEB_API_KEY,
+      path: '/v1/accounts:lookup?key=' + resolveWebApiKey(),
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
     };
