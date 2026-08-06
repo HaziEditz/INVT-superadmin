@@ -790,7 +790,7 @@ function loadModuleActivity(){
         Object.values(dispatchedJobs).forEach(function(j){
           var jSt = (j.status || j.Status || '').toLowerCase();
           if(jSt !== 'completed' && jSt !== 'done') return;
-          if(j.paymentType === 'total_mobility') return;
+          if(typeof isTmCompletedJob==='function'?isTmCompletedJob(j):j.paymentType==='total_mobility') return;
           var ts = j.completedAt_ISO || j.CompletedAt_ISO || j.completedAt || '';
           if(ts && _tzToDate(ts)===todayStr){
             taxiCount++;
@@ -1046,7 +1046,7 @@ function loadTmStats(){
           });
 
           Object.values(allJobs).forEach(function(j){
-            if(j.paymentType !== 'total_mobility') return;
+            if(typeof isTmCompletedJob==='function'?!isTmCompletedJob(j):j.paymentType!=='total_mobility') return;
             // Historical allbookings used CompletedAt_ISO and FinalFare (PascalCase)
             var dateStr = _tzToMonth(j.startedAt_ISO||j.completedAt_ISO||j.CompletedAt_ISO||j.completedAt||'');
             if(dateStr !== curMonth) return;

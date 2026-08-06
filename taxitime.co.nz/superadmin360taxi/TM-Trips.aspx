@@ -394,7 +394,7 @@ function loadTT() {
         var cid = cidEntry[0], jobs = cidEntry[1] || {};
         Object.entries(jobs).forEach(function(jobEntry) {
           var rawKey = jobEntry[0], j = jobEntry[1];
-          if (j.paymentType !== 'total_mobility') return;
+          if (typeof isTmCompletedJob === 'function' ? !isTmCompletedJob(j) : j.paymentType !== 'total_mobility') return;
           var id = j.bookingId || rawKey;
           ttData[id] = mapTMTrip(j, cid, rawKey);
         });

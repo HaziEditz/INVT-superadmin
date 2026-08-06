@@ -489,13 +489,18 @@ function renderAll(range){
       var ts=rawTs?(typeof rawTs==='number'?rawTs:new Date(rawTs).getTime()):0;
       if(ts<from||ts>to) return;
       var fare=+(j.fare||j.FinalFare||j.meterFare||0);
-      var isTM=(j.paymentType||j.paymentMethod||j.PaymentType||'').toLowerCase()==='total_mobility';
+      var isTM=typeof isTmCompletedJob==='function'
+        ? isTmCompletedJob(j)
+        : (j.paymentType||j.paymentMethod||j.PaymentType||'').toLowerCase()==='total_mobility'
+          || j.isTotalMobility===true || j.tmCouncilPays!=null || !!(j.tmCardNumber||j.tmVoucherNo);
       if(isTM){
         var t=tmByCompany[cid];
         t.trips++; t.fare+=fare;
-        t.sub+=+(j.tmSubsidy||j.tmSubsidyFare||0);
-        t.hoist+=+(j.tmHoistFeeTotal||j.tmSubsidyHoist||0);
-        t.claim+=+(j.tmSubsidy||j.tmSubsidyFare||0)+(+(j.tmHoistFeeTotal||j.tmSubsidyHoist||0));
+        var councilAmt=+(j.tmCouncilPays!=null?j.tmCouncilPays:(j.tmSubsidy||j.tmSubsidyFare||0));
+        var hoistAmt=+(j.tmHoistFeeTotal||j.tmSubsidyHoist||0);
+        t.sub+=+(j.tmSubsidyFare!=null?j.tmSubsidyFare:Math.max(0,councilAmt-hoistAmt));
+        t.hoist+=hoistAmt;
+        t.claim+=councilAmt;
         t.pax+=+(j.tmPassengerAmount||j.tmPassengerPays||j.passengerPays||0);
         var tx=taxiByCompany[cid];
         tx.trips++; tx.gross+=fare; tx.com+=fare*commPct/100; tx.net+=fare*(1-commPct/100); tx.tmFare+=fare;

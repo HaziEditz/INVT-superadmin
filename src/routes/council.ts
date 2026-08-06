@@ -106,11 +106,17 @@ function statusBadge(s: string): string {
 
 function isTmCompletedJob(job: any): boolean {
   if (!job || typeof job !== 'object') return false;
-  const pt = String(job.paymentType || job.PaymentType || job.paymentMethod || '').toLowerCase();
-  if (pt === 'total_mobility' || pt === 'tm' || pt.includes('total mobility')) return true;
+  if (job.isTotalMobility === true || job.tmUsed === true) return true;
+  const pt = String(job.paymentType || job.PaymentType || job.paymentMethod || '')
+    .toLowerCase()
+    .replace(/[_\s-]/g, '');
+  if (pt === 'totalmobility' || pt === 'tm') return true;
+  if (job.tmPaymentType === 'total_mobility' || job.paymentCategory === 'total_mobility') return true;
   // Driver app stores remainder method as paymentType but writes TM economics separately.
   if (job.tmCouncilPays != null || job.councilPays != null || job.tmSubsidyFare != null) return true;
+  if (job.tmSubsidy != null && Number(job.tmSubsidy) > 0) return true;
   if (job.tmCardNumber || job.tmVoucherNo) return true;
+  if (Array.isArray(job.tmHoists) && job.tmHoists.length > 0) return true;
   return false;
 }
 

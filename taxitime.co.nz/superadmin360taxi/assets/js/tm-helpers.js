@@ -127,6 +127,21 @@ window.adminWrite = function(p, method, data) { return _fbPost(p, method, data);
  * Approved companies get a mirrored copy at `companySettings/{cid}/tmConfig`
  * (what the driver app + dispatch console read).
  */
+/** True when a completed job carries Total Mobility economics (remainder may be Cash/Card). */
+window.isTmCompletedJob = function(j) {
+  if (!j || typeof j !== 'object') return false;
+  if (j.isTotalMobility === true || j.tmUsed === true) return true;
+  var pt = String(j.paymentType || j.PaymentType || j.paymentMethod || '')
+    .toLowerCase().replace(/[_\s-]/g, '');
+  if (pt === 'totalmobility' || pt === 'tm') return true;
+  if (j.tmPaymentType === 'total_mobility' || j.paymentCategory === 'total_mobility') return true;
+  if (j.tmCouncilPays != null || j.councilPays != null || j.tmSubsidyFare != null) return true;
+  if (j.tmSubsidy != null && Number(j.tmSubsidy) > 0) return true;
+  if (j.tmCardNumber || j.tmVoucherNo) return true;
+  if (Array.isArray(j.tmHoists) && j.tmHoists.length > 0) return true;
+  return false;
+};
+
 window.companyTmConfigFromCouncil = function(councilId, council) {
   council = council || {};
   var pct = parseFloat(council.subsidyPercent);

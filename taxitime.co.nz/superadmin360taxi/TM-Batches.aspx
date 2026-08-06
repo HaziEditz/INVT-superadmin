@@ -404,7 +404,7 @@ function loadAll(){
       var cid=cidEntry[0], jobs=cidEntry[1]||{};
       Object.entries(jobs).forEach(function(je){
         var rawKey=je[0], j=je[1];
-        if(j.paymentType!=='total_mobility') return;
+        if(typeof isTmCompletedJob==='function'?!isTmCompletedJob(j):j.paymentType!=='total_mobility') return;
         var id=j.bookingId||rawKey;
         var t={
           _cid:cid, _rawKey:rawKey,
@@ -417,11 +417,11 @@ function loadAll(){
           pickup:     j.pickupAddress||j.pickup||'',
           dropoff:    j.dropAddress||j.dropoff||'',
           meterFare:  +(j.fare||j.meterFare||0),
-          tmSubsidyFare: +(j.tmSubsidy||j.tmSubsidyFare||0),
+          tmSubsidyFare: +(j.tmSubsidyFare!=null?j.tmSubsidyFare:(j.tmSubsidy||0)),
           tmSubsidyHoist: +(j.tmSubsidyHoist||0),
           hoistTotal: +(j.hoistTotal||0),
           passengerPays: +(j.tmPassengerPays||j.passengerPays||0),
-          totalCouncilPays: +(j.tmSubsidy||j.totalCouncilPays||j.fare||0),
+          totalCouncilPays: +(j.tmCouncilPays!=null?j.tmCouncilPays:(j.tmSubsidy||j.totalCouncilPays||0)),
           waitingCharge: +(j.waitingCost||j.WaitingCost||0),
           distance:   j.distanceKm||'',
           status:'pending', flagReasons:[]
