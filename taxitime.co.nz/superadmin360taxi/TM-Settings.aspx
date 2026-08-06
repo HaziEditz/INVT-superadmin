@@ -247,44 +247,61 @@ var _tariffCid   = null;
 
 window._fbOnLogin = function() { loadAll(); };
 
+/** Keep object maps only (Firebase null / scalars must not break Object.entries). */
+function asObjectMap(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  return raw;
+}
+
 function loadAll() {
-  document.getElementById('approval-tb').innerHTML  = '<tr class="empty-row"><td colspan="6">Loading&#8230;</td></tr>';
-  document.getElementById('tariff-tb').innerHTML    = '<tr class="empty-row"><td colspan="11">Loading&#8230;</td></tr>';
+  var tb = document.getElementById('approval-tb');
+  if (tb) tb.innerHTML = '<tr class="empty-row"><td colspan="6">Loading&#8230;</td></tr>';
+  // Note: legacy #tariff-tb was removed — do not write to it (throws and freezes Loading…).
   Promise.all([
     adminRead('superClients'),
     adminRead('tmConfig'),
     adminRead('tmCompanyAccess')
   ]).then(function(res) {
-    allCompanies = res[0] || {};
-    allCouncils  = res[1] || {};
-    allAccess    = res[2] || {};
+    allCompanies = asObjectMap(res[0]);
+    allCouncils  = asObjectMap(res[1]);
+    allAccess    = asObjectMap(res[2]);
     allTariffs   = {}; // legacy tmTariffs UI removed — not loaded
     populateCouncilFilter();
     renderApproval();
   }).catch(function(e) {
-    showNotice('Failed to load data: ' + e.message, 'err');
+    var msg = (e && e.message) ? e.message : String(e);
+    showNotice('Failed to load data: ' + msg, 'err');
+    if (tb) {
+      tb.innerHTML = '<tr class="empty-row"><td colspan="6" style="color:#C62828">Failed to load: ' +
+        String(msg).replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</td></tr>';
+    }
   });
 }
 
 function populateCouncilFilter() {
   var sel = document.getElementById('f-council');
+  if (!sel) return;
   var cur = sel.value;
   sel.innerHTML = '<option value="">All Councils</option>';
   Object.entries(allCouncils).forEach(function(kv) {
+    var id = kv[0], c = kv[1];
+    if (!c || typeof c !== 'object') return;
     var opt = document.createElement('option');
-    opt.value = kv[0];
-    opt.textContent = kv[1].name || kv[0];
-    if (kv[0] === cur) opt.selected = true;
+    opt.value = id;
+    opt.textContent = c.name || id;
+    if (id === cur) opt.selected = true;
     sel.appendChild(opt);
   });
 }
 
 // ── Approval Section ──────────────────────────────────────────────────────────
 function renderApproval() {
-  var filterCouncil = document.getElementById('f-council').value;
-  var companies = Object.entries(allCompanies);
+  var filterCouncil = document.getElementById('f-council') ? document.getElementById('f-council').value : '';
+  var companies = Object.entries(allCompanies).filter(function(kv) {
+    return kv[1] && typeof kv[1] === 'object';
+  });
   var councils  = Object.entries(allCouncils).filter(function(kv) {
-    return !filterCouncil || kv[0] === filterCouncil;
+    return kv[1] && typeof kv[1] === 'object' && (!filterCouncil || kv[0] === filterCouncil);
   });
 
   if (!companies.length) {
@@ -363,11 +380,13 @@ function setAccess(cid, councilId, approve) {
     .catch(function(e) { showNotice('Error: ' + e.message, 'err'); });
 }
 
-// ── Tariff Section ────────────────────────────────────────────────────────────
+// ── Tariff Section (legacy UI removed; keep helpers no-op safe) ───────────────
 function renderTariffs() {
+  var el = document.getElementById('tariff-tb');
+  if (!el) return;
   var companies = Object.entries(allCompanies);
   if (!companies.length) {
-    document.getElementById('tariff-tb').innerHTML = '<tr class="empty-row"><td colspan="11">No companies registered yet.</td></tr>';
+    el.innerHTML = '<tr class="empty-row"><td colspan="11">No companies registered yet.</td></tr>';
     return;
   }
   var rows = companies.map(function(ckv) {
@@ -393,7 +412,7 @@ function renderTariffs() {
       '<td><button class="tm-btn tm-btn-blue" onclick="openTariffModal(\'' + cidE + '\')">' + (hasRates ? '&#9998; Edit' : '+ Set Rates') + '</button></td>' +
       '</tr>';
   }).join('');
-  document.getElementById('tariff-tb').innerHTML = rows;
+  el.innerHTML = rows;
 }
 
 function openTariffModal(cid) {
