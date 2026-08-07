@@ -428,6 +428,15 @@ function loadTT() {
           t.archivedBy = st.archivedBy || null;
           t.archivedFromStatus = st.archivedFromStatus || null;
           t.archiveNote = st.archiveNote || null;
+          t.events = st.events || null;
+          t.submittedAt = st.submittedAt || t.submittedAt;
+          t.flaggedAt = st.flaggedAt || null;
+          t.sentBackAt = st.sentBackAt || null;
+          t.resubmittedAt = st.resubmittedAt || null;
+          t.approvedAt = st.approvedAt || null;
+          t.rejectedAt = st.rejectedAt || null;
+          t.anomalyDetail = st.anomalyDetail || null;
+          t.revisionNote = st.revisionNote || st.revisionNotes || t.revisionNote || '';
         }
       });
       renderTT();
@@ -600,6 +609,10 @@ function viewTT(id) {
     }, 120);
   }
 
+  var histHtml = ttTripHistoryHtml(t);
+  document.getElementById('tt-detail-body').innerHTML =
+    document.getElementById('tt-detail-body').innerHTML + histHtml;
+
   var sid2 = "'" + String(id).replace(/\\/g,'\\\\').replace(/'/g,"\\'") + "'";
   var footBtns = '<button class="tm-btn" style="background:#eee;color:#333" onclick="closeTTDetail()">Close</button>';
   if (t.status === 'archived') {
@@ -622,6 +635,65 @@ function closeTTDetail() {
 }
 function row2(l, v) { return '<div class="tm-ff"><label>' + l + '</label><div style="padding:6px 0;font-weight:500">' + v + '</div></div>'; }
 function frow(l, v, c) { return '<tr><td style="padding:3px 0;color:' + (c || '#333') + '">' + l + '</td><td style="text-align:right;color:' + (c || '#333') + '">' + v + '</td></tr>'; }
+function ttNormalizeEvents(t) {
+  var listed = [];
+  if (t && t.events && typeof t.events === 'object') {
+    Object.keys(t.events).forEach(function(k) {
+      var e = t.events[k];
+      if (!e || typeof e !== 'object') return;
+      listed.push({
+        at: Number(e.at) || 0, type: e.type || 'event', by: e.by || null, note: e.note || null,
+        reasons: Array.isArray(e.reasons) ? e.reasons : null, fromStatus: e.fromStatus || null, toStatus: e.toStatus || null
+      });
+    });
+  }
+  if (listed.length) { listed.sort(function(a,b){ return a.at - b.at; }); return listed; }
+  var synth = [];
+  function push(type, at, extra) {
+    var n = Number(at); if (!n) return;
+    synth.push(Object.assign({ at: n, type: type, by: null, note: null, reasons: null }, extra || {}));
+  }
+  if (!t) return synth;
+  push('submitted', t.submittedAt);
+  push('flagged', t.flaggedAt, { reasons: t.flagReasons || null, note: t.anomalyDetail || null });
+  push('returned', t.sentBackAt, { note: t.revisionNote || null });
+  push('resubmitted', t.resubmittedAt);
+  push('approved', t.approvedAt);
+  push('rejected', t.rejectedAt);
+  push('archived', t.archivedAt, { fromStatus: t.archivedFromStatus || null, note: t.archiveNote || null });
+  synth.sort(function(a,b){ return a.at - b.at; });
+  return synth;
+}
+function ttFormatEventLabel(e) {
+  var labels = {
+    submitted:'Submitted to council', flagged:'Flagged', returned:'Returned to company',
+    owner_edited:'Edited by owner', resubmitted:'Resubmitted', approved:'Approved',
+    rejected:'Rejected', archived:'Archived', restored:'Restored', council_edited:'Edited by council'
+  };
+  var line = labels[e.type] || e.type || 'Event';
+  if (e.reasons && e.reasons.length) line += ' (' + e.reasons.join(', ') + ')';
+  if (e.note) line += ' — ' + e.note;
+  return line;
+}
+function ttTripHistoryHtml(t) {
+  var events = ttNormalizeEvents(t);
+  if (!events.length) return '';
+  var rows = events.map(function(e) {
+    var when = e.at ? new Date(e.at).toLocaleString('en-NZ') : '—';
+    return '<div style="padding:8px 0 8px 12px;border-left:3px solid #1565C0;margin:0 0 6px 4px">' +
+      '<div style="font-size:11px;color:#888">' + when + (e.by ? ' · ' + e.by : '') + '</div>' +
+      '<div style="font-size:13px;font-weight:500;margin-top:2px">' + ttFormatEventLabel(e) + '</div></div>';
+  }).join('');
+  return '<div style="margin-top:16px"><strong style="font-size:13px;color:#1565C0">Trip history</strong>' + rows + '</div>';
+}
+function ttAppendEvent(t, ev) {
+  if (!t) return Promise.resolve();
+  var ek = '-e' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+  return adminWrite('tmTripStatus/' + t._cid + '/' + t._rawKey + '/events/' + ek, 'PUT', ev).then(function() {
+    if (!t.events) t.events = {};
+    t.events[ek] = ev;
+  }).catch(function() {});
+}
 function approveTT(id) {
   if (!confirm('Mark trip ' + id + ' as Company Approved?')) return;
   var t = ttData[id]; if (!t) return;
@@ -655,6 +727,11 @@ function submitToCouncil(id) {
     .then(function() {
       ttData[id].status = 'submitted';
       ttData[id].councilId = chosenCouncilId;
+      return ttAppendEvent(ttData[id], {
+        at: Date.now(), type: 'submitted', by: 'SA', byRole: 'sa', toStatus: 'submitted'
+      });
+    })
+    .then(function() {
       renderTT();
       toastr.success('Trip submitted to ' + councilName + '.');
       // Phase 3: immediate anomaly scan (portal also re-scans on load)
@@ -690,7 +767,14 @@ function saveSendBack() {
   var t = ttData[id]; if (!t) return;
   var path = 'tmTripStatus/' + t._cid + '/' + t._rawKey;
   adminWrite(path, 'PATCH', { status: 'revision_needed', revisionNotes: notes, sentBackAt: new Date().toISOString(), sentBackBy: 'SA' })
-    .then(function() { ttData[id].status = 'revision_needed'; renderTT(); closeSendBack(); toastr.success('Trip sent back to company for revision.'); })
+    .then(function() {
+      ttData[id].status = 'revision_needed';
+      ttData[id].revisionNote = notes;
+      return ttAppendEvent(ttData[id], {
+        at: Date.now(), type: 'returned', by: 'SA', byRole: 'sa', toStatus: 'revision_needed', note: notes
+      });
+    })
+    .then(function() { renderTT(); closeSendBack(); toastr.success('Trip sent back to company for revision.'); })
     .catch(function(e) { toastr.error('Error: ' + e); });
 }
 function ttMatchingIds() {
@@ -751,6 +835,12 @@ function archiveTT(id) {
   adminWrite(path, 'PATCH', patch)
     .then(function() {
       Object.keys(patch).forEach(function(k) { ttData[id][k] = patch[k]; });
+      return ttAppendEvent(ttData[id], {
+        at: Date.now(), type: 'archived', by: 'SA', byRole: 'sa',
+        fromStatus: patch.archivedFromStatus, toStatus: 'archived', note: patch.archiveNote
+      });
+    })
+    .then(function() {
       renderTT();
       toastr.success('Trip archived.');
     })
@@ -768,6 +858,11 @@ function restoreTT(id) {
       ttData[id].archivedBy = null;
       ttData[id].archivedFromStatus = null;
       ttData[id].archiveNote = null;
+      return ttAppendEvent(ttData[id], {
+        at: Date.now(), type: 'restored', by: 'SA', byRole: 'sa', toStatus: patch.status
+      });
+    })
+    .then(function() {
       renderTT();
       toastr.success('Trip restored.');
     })

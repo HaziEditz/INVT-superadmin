@@ -26,6 +26,13 @@ import {
   archivePatch,
   restorePatch,
 } from '../lib/tmArchive';
+import { tripMatchesSearch } from '../lib/tmTripSearch';
+import {
+  buildTripEvent,
+  newEventKey,
+  normalizeTripEvents,
+  formatEventLabel,
+} from '../lib/tmTripEvents';
 
 const router = Router();
 
@@ -95,6 +102,12 @@ a{color:inherit;text-decoration:none}
 .cp-edit-grid input,.cp-edit-grid select,.cp-edit-grid textarea{width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:12.5px}
 .cp-ref-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;background:#FFF8E1;color:#E65100;border:1px solid #FFE082}
 .cp-chip{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10.5px;font-weight:600;background:#FFEBEE;color:#C62828;margin:1px 2px 1px 0;border:1px solid #FFCDD2}
+.cp-timeline{margin-top:14px}
+.cp-timeline-hd{font-size:12px;font-weight:700;color:#555;margin-bottom:8px}
+.cp-timeline-item{border-left:3px solid #A5D6A7;padding:4px 0 10px 12px;margin-left:4px}
+.cp-timeline-item:last-child{padding-bottom:2px}
+.cp-timeline-when{font-size:11px;color:#888}
+.cp-timeline-label{font-size:12.5px;color:#333;margin-top:1px}
 `;
 
 function renderNav(session: any, token: string, activePage: string): string {
@@ -102,6 +115,7 @@ function renderNav(session: any, token: string, activePage: string): string {
   const pages: [string, string][] = [
     ['dashboard', '&#128202; Dashboard'],
     ['trips', '&#128661; Trips'],
+    ['search', '&#128269; Search'],
     ['pending', '&#128681; Pending Approval'],
     ['anomalies', '&#128680; Flagged'],
     ['archived', '&#128193; Archived'],
@@ -237,16 +251,95 @@ function loadCouncilTrips(councilId: string, cb: (err: any, trips: any[]) => voi
             flaggedAt: st.flaggedAt || null,
             rejectNote: st.rejectNote || null,
             sentBackAt: st.sentBackAt || null,
+            sentBackBy: st.sentBackBy || null,
             archivedAt: st.archivedAt || null,
             archivedBy: st.archivedBy || null,
             archivedFromStatus: st.archivedFromStatus || null,
             archiveNote: st.archiveNote || null,
+            resubmittedAt: st.resubmittedAt || null,
+            resubmittedBy: st.resubmittedBy || null,
+            restoredAt: st.restoredAt || null,
+            events: st.events || null,
           });
         });
       });
       cb(null, result);
     }
   });
+}
+
+function appendTripEvent(
+  cid: string,
+  rawKey: string,
+  event: ReturnType<typeof buildTripEvent>,
+  cb?: () => void,
+): void {
+  const key = newEventKey();
+  fbWrite('PUT', 'tmTripStatus/' + cid + '/' + rawKey + '/events/' + key, event, () => {
+    if (cb) cb();
+  });
+}
+
+/** Newest-last chronological timeline (escapes all user-facing text). */
+function tripHistoryHtml(stOrTrip: any): string {
+  const events = normalizeTripEvents(stOrTrip);
+  if (!events.length) {
+    return `<div class="cp-timeline"><div class="cp-timeline-hd">History</div><div class="cp-empty" style="padding:12px">No events yet.</div></div>`;
+  }
+  const items = events
+    .map((e) => {
+      const when = e.at ? new Date(e.at).toLocaleString('en-NZ') : '—';
+      const by = e.by ? ` · ${esc(String(e.by))}` : '';
+      const label = formatEventLabel(e);
+      return `<div class="cp-timeline-item">
+  <div class="cp-timeline-when">${esc(when)}${by}</div>
+  <div class="cp-timeline-label">${esc(label)}</div>
+</div>`;
+    })
+    .join('');
+  return `<div class="cp-timeline"><div class="cp-timeline-hd">History</div>${items}</div>`;
+}
+
+function companyFilterOptionsHtml(trips: any[], selected: string): string {
+  const map: Record<string, string> = {};
+  (trips || []).forEach((t) => {
+    if (t && t._cid) map[String(t._cid)] = String(t._companyName || 'Operator ' + t._cid);
+  });
+  return Object.keys(map)
+    .sort((a, b) => map[a].localeCompare(map[b]))
+    .map(
+      (cid) =>
+        `<option value="${esc(cid)}"${cid === selected ? ' selected' : ''}>${esc(map[cid])}</option>`,
+    )
+    .join('');
+}
+
+function inlineTripSearchFormHtml(
+  actionPath: string,
+  token: string,
+  q: string,
+  company: string,
+  companyOpts: string,
+  extrasHtml = '',
+): string {
+  const te = encodeURIComponent(token);
+  return `<form method="GET" action="${actionPath}" class="cp-month-row" style="margin-bottom:14px">
+  <input type="hidden" name="t" value="${esc(token)}"/>
+  <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">Search</label>
+    <input type="search" name="q" class="cp-input" value="${esc(q)}" placeholder="Voucher, passenger, driver, job id…" style="min-width:220px"/></div>
+  <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">Company</label>
+    <select name="company" class="cp-input"><option value="">All</option>${companyOpts}</select></div>
+  ${extrasHtml}
+  <button type="submit" class="cp-btn cp-btn-g">&#128269; Search</button>
+  ${q || company ? `<a href="${actionPath}?t=${te}" class="cp-btn" style="background:#eee;color:#333">Clear</a>` : ''}
+</form>`;
+}
+
+function filterTripsBySearchAndCompany(trips: any[], q: string, company: string): any[] {
+  let rows = trips || [];
+  if (company) rows = rows.filter((t) => String(t._cid) === company);
+  if (q) rows = rows.filter((t) => tripMatchesSearch(t, q));
+  return rows;
 }
 
 function loadTariffsForCids(cids: string[], cb: (map: Record<string, any>) => void): void {
@@ -267,7 +360,27 @@ function persistAnomalyPatches(patches: AnomalyStatusPatch[], done: () => void):
   let left = patches.length;
   patches.forEach((p) => {
     fbWrite('PATCH', 'tmTripStatus/' + p.cid + '/' + p.rawKey, p.patch, () => {
-      if (--left === 0) done();
+      const finishOne = () => {
+        if (--left === 0) done();
+      };
+      if (String(p.patch.status || '') === 'flagged') {
+        const reasons = Array.isArray(p.patch.flagReasons)
+          ? (p.patch.flagReasons as string[]).map(String)
+          : null;
+        appendTripEvent(
+          p.cid,
+          p.rawKey,
+          buildTripEvent('flagged', {
+            byRole: 'system',
+            toStatus: 'flagged',
+            reasons,
+            note: p.patch.anomalyDetail != null ? String(p.patch.anomalyDetail) : null,
+          }),
+          finishOne,
+        );
+      } else {
+        finishOne();
+      }
     });
   });
 }
@@ -513,9 +626,11 @@ router.post('/api/council-approve', (req, res) => {
     const who = sess.name || sess.councilId;
     let patch: any;
     let msg: string;
+    let eventType: 'approved' | 'rejected' | 'returned';
     if (action === 'approve') {
       patch = { status: 'approved', approvedAt: now, approvedBy: who };
       msg = 'Trip approved successfully.';
+      eventType = 'approved';
     } else if (action === 'reject') {
       const reason = flagReason || 'other';
       patch = {
@@ -527,6 +642,7 @@ router.post('/api/council-approve', (req, res) => {
         revisionNote: note,
       };
       msg = 'Trip rejected / red-flagged.';
+      eventType = 'rejected';
     } else {
       patch = {
         status: 'revision_needed',
@@ -537,10 +653,21 @@ router.post('/api/council-approve', (req, res) => {
         anomalyDetail: st.anomalyDetail || null,
       };
       msg = 'Trip returned to company for revision.';
+      eventType = 'returned';
     }
     fbWrite('PATCH', 'tmTripStatus/' + tripCid + '/' + tripRawKey, patch, (err: any) => {
       if (err) return res.redirect(base + '&msg=Update+failed&mt=err');
-      res.redirect(base + '&msg=' + encodeURIComponent(msg) + '&mt=ok');
+      const ev = buildTripEvent(eventType, {
+        by: who,
+        byRole: 'council',
+        note: note || null,
+        reasons: eventType === 'rejected' ? [flagReason || 'other'] : null,
+        fromStatus: st.status || null,
+        toStatus: patch.status,
+      });
+      appendTripEvent(tripCid, tripRawKey, ev, () => {
+        res.redirect(base + '&msg=' + encodeURIComponent(msg) + '&mt=ok');
+      });
     });
   });
 });
@@ -618,9 +745,25 @@ router.post('/api/council-trip-edit', (req, res) => {
     if (patch.dropAddress != null && patch.destination === undefined) patch.destination = patch.dropAddress;
     if (patch.durationLabel != null && patch.duration === undefined) patch.duration = patch.durationLabel;
     if (patch.paymentMethod != null && patch.paymentType === undefined) patch.paymentType = patch.paymentMethod;
+    const fieldsChanged = Object.keys(patch);
+    const who = sess.name || sess.councilId;
+    const emitEditedAndRedirect = (okMsg: string) => {
+      appendTripEvent(
+        tripCid,
+        tripRawKey,
+        buildTripEvent('council_edited', {
+          by: who,
+          byRole: 'council',
+          fieldsChanged: fieldsChanged.length ? fieldsChanged : null,
+        }),
+        () => {
+          res.redirect(base + '&msg=' + encodeURIComponent(okMsg) + '&mt=ok');
+        },
+      );
+    };
     const finish = () => {
       if (!resubmit) {
-        return res.redirect(base + '&msg=' + encodeURIComponent('Trip fields updated.') + '&mt=ok');
+        return emitEditedAndRedirect('Trip fields updated.');
       }
       fbWrite(
         'PATCH',
@@ -628,11 +771,11 @@ router.post('/api/council-trip-edit', (req, res) => {
         {
           status: 'submitted',
           resubmittedAt: Date.now(),
-          resubmittedBy: sess.name || sess.councilId,
+          resubmittedBy: who,
         },
         (e2: any) => {
           if (e2) return res.redirect(base + '&msg=Job+saved+but+status+update+failed&mt=err');
-          res.redirect(base + '&msg=' + encodeURIComponent('Trip updated and marked submitted.') + '&mt=ok');
+          emitEditedAndRedirect('Trip updated and marked submitted.');
         },
       );
     };
@@ -919,18 +1062,117 @@ function cpBulkRestoreAll(n){
 }
 </script>`;
 
+// ── Hybrid search ──────────────────────────────────────────────────────────────
+router.get('/council-portal/search', requirePortalAuth, (req, res) => {
+  const sess = (req as any).cpSession;
+  const token = (req as any).cpToken;
+  const te = encodeURIComponent(token);
+  const q = String(req.query.q || '').trim();
+  const filterCompany = String(req.query.company || '').trim();
+  const filterStatus = String(req.query.status || '').trim().toLowerCase();
+  loadCouncilTrips(sess.councilId, (_err: any, myTrips: any[]) => {
+    const companyOpts = companyFilterOptionsHtml(myTrips, filterCompany);
+    const statusOpts = [
+      '',
+      'submitted',
+      'flagged',
+      'approved',
+      'rejected',
+      'revision_needed',
+      'archived',
+      'paid',
+      'pending',
+      'company_approved',
+    ]
+      .map((s) => {
+        const label = s ? s : 'All (incl. archived)';
+        return `<option value="${esc(s)}"${filterStatus === s ? ' selected' : ''}>${esc(label)}</option>`;
+      })
+      .join('');
+    let results: any[] = [];
+    if (q) {
+      results = myTrips.slice();
+      if (filterCompany) results = results.filter((t) => String(t._cid) === filterCompany);
+      if (filterStatus) {
+        results = results.filter((t) => String(t.status || '').toLowerCase() === filterStatus);
+      }
+      results = results.filter((t) => tripMatchesSearch(t, q));
+      results.sort((a, b) => (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || ''));
+    }
+    const rows = results
+      .map((t) => {
+        const d = buildTmTripDetail(t);
+        const dt = d.dateTime || '—';
+        const cards = d.allCards || d.voucherNo || '—';
+        return `<tr>
+<td>${statusBadge(String(t.status || ''))}</td>
+<td style="font-family:monospace;font-size:11px">${esc(d.voucherNo)}</td>
+<td>${esc(d.passengerName)}</td>
+<td>${esc(d.driverName)}</td>
+<td style="font-size:12px;color:#555">${esc(d.companyName)}</td>
+<td>${esc(dt)}</td>
+<td style="font-family:monospace;font-size:11px">${esc(cards)}</td>
+<td><a href="/council-portal/reports?t=${te}&company=${encodeURIComponent(String(t._cid || ''))}&q=${encodeURIComponent(q)}" class="cp-btn-sm">Details</a></td>
+</tr>`;
+      })
+      .join('');
+    const body = `
+<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Search Trips</h2>
+<p style="font-size:13px;color:#666;margin-bottom:12px">Search by voucher / card number, passenger, driver, or job / booking id. Optionally filter by company and status.</p>
+<form method="GET" action="/council-portal/search" class="cp-month-row" style="margin-bottom:16px">
+  <input type="hidden" name="t" value="${esc(token)}"/>
+  <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">Search</label>
+    <input type="search" name="q" class="cp-input" value="${esc(q)}" placeholder="Voucher, passenger, driver, job id…" style="min-width:260px" autofocus/></div>
+  <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">Company</label>
+    <select name="company" class="cp-input"><option value="">All</option>${companyOpts}</select></div>
+  <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">Status</label>
+    <select name="status" class="cp-input">${statusOpts}</select></div>
+  <button type="submit" class="cp-btn cp-btn-g">&#128269; Search</button>
+  ${q || filterCompany || filterStatus ? `<a href="/council-portal/search?t=${te}" class="cp-btn" style="background:#eee;color:#333">Clear</a>` : ''}
+</form>
+<div class="cp-card" style="overflow-x:auto">
+${!q
+  ? '<div class="cp-empty">Enter a search term to find trips across all statuses (including archived).</div>'
+  : results.length
+    ? `<div class="cp-card-hd"><h3>Results</h3><span style="font-size:12px;color:#888">${results.length} match(es)</span></div>
+<table class="cp-tbl">
+<thead><tr><th>Status</th><th>Voucher</th><th>Passenger</th><th>Driver</th><th>Company</th><th>Date</th><th>Cards</th><th></th></tr></thead>
+<tbody>${rows}</tbody></table>`
+    : '<div class="cp-empty">No trips matched your search.</div>'}
+</div>`;
+    res.send(portalPage('Search', renderNav(sess, token, 'search'), body));
+  });
+});
+
 // ── Pending Approval (clean submitted) ─────────────────────────────────────────
 router.get('/council-portal/pending', requirePortalAuth, (req, res) => {
   const sess = (req as any).cpSession;
   const token = (req as any).cpToken;
   const msg = (req.query.msg as string) || '';
   const mt = (req.query.mt as string) || '';
+  const q = String(req.query.q || '').trim();
+  const filterCompany = String(req.query.company || '').trim();
   const te = encodeURIComponent(token);
+  const qKeep =
+    (q ? '&q=' + encodeURIComponent(q) : '') +
+    (filterCompany ? '&company=' + encodeURIComponent(filterCompany) : '');
   loadCouncilTrips(sess.councilId, (_err: any, myTrips: any[]) => {
     scanAndRefreshTrips(myTrips, (scanned) => {
       const { cleanSubmitted } = partitionCleanAndFlagged(scanned);
-      const pending = cleanSubmitted.slice().sort((a, b) =>
-        (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || ''),
+      const pending = filterTripsBySearchAndCompany(
+        cleanSubmitted.slice().sort((a, b) =>
+          (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || ''),
+        ),
+        q,
+        filterCompany,
+      );
+      const companyOpts = companyFilterOptionsHtml(scanned, filterCompany);
+      const searchForm = inlineTripSearchFormHtml(
+        '/council-portal/pending',
+        token,
+        q,
+        filterCompany,
+        companyOpts,
       );
       const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
       const rows = pending.map((t) => {
@@ -1013,7 +1255,8 @@ router.get('/council-portal/pending', requirePortalAuth, (req, res) => {
       const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Pending Approval (${pending.length})</h2>
 ${noticeHtml}
-<p style="font-size:13px;color:#666;margin-bottom:12px">Clean submitted trips (no anomaly flags). Approve, reject, return, or archive individually — or approve / archive all clean trips at once. Flagged trips appear under <a href="/council-portal/anomalies?t=${te}" style="color:#2E7D32;font-weight:600">Flagged</a>.</p>
+${searchForm}
+<p style="font-size:13px;color:#666;margin-bottom:12px">Clean submitted trips (no anomaly flags). Approve, reject, return, or archive individually — or approve / archive all clean trips at once. Flagged trips appear under <a href="/council-portal/anomalies?t=${te}${qKeep}" style="color:#2E7D32;font-weight:600">Flagged</a>.</p>
 ${approveAllForm || archiveToolbar ? `<div style="margin-bottom:14px">${approveAllForm}${archiveToolbar}</div>` : ''}
 <div class="cp-card" style="overflow-x:auto">
 ${pending.length ? `<table class="cp-tbl">
@@ -1032,12 +1275,29 @@ router.get('/council-portal/anomalies', requirePortalAuth, (req, res) => {
   const token = (req as any).cpToken;
   const msg = (req.query.msg as string) || '';
   const mt = (req.query.mt as string) || '';
+  const q = String(req.query.q || '').trim();
+  const filterCompany = String(req.query.company || '').trim();
   const te = encodeURIComponent(token);
+  const qKeep =
+    (q ? '&q=' + encodeURIComponent(q) : '') +
+    (filterCompany ? '&company=' + encodeURIComponent(filterCompany) : '');
   loadCouncilTrips(sess.councilId, (_err: any, myTrips: any[]) => {
     scanAndRefreshTrips(myTrips, (scanned) => {
       const { flagged } = partitionCleanAndFlagged(scanned);
-      const rowsList = flagged.slice().sort((a, b) =>
-        (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || ''),
+      const rowsList = filterTripsBySearchAndCompany(
+        flagged.slice().sort((a, b) =>
+          (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || ''),
+        ),
+        q,
+        filterCompany,
+      );
+      const companyOpts = companyFilterOptionsHtml(scanned, filterCompany);
+      const searchForm = inlineTripSearchFormHtml(
+        '/council-portal/anomalies',
+        token,
+        q,
+        filterCompany,
+        companyOpts,
       );
       const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
       const rows = rowsList.map((t) => {
@@ -1086,7 +1346,8 @@ router.get('/council-portal/anomalies', requirePortalAuth, (req, res) => {
       const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Flagged / Anomalies (${rowsList.length})</h2>
 ${noticeHtml}
-<p style="font-size:13px;color:#666;margin-bottom:12px">Trips automatically flagged for fare mismatch or card reuse. Return selected trips to the company with a note, archive, or reject individually. Clean trips are under <a href="/council-portal/pending?t=${te}" style="color:#2E7D32;font-weight:600">Pending Approval</a>.</p>
+${searchForm}
+<p style="font-size:13px;color:#666;margin-bottom:12px">Trips automatically flagged for fare mismatch or card reuse. Return selected trips to the company with a note, archive, or reject individually. Clean trips are under <a href="/council-portal/pending?t=${te}${qKeep}" style="color:#2E7D32;font-weight:600">Pending Approval</a>.</p>
 ${rowsList.length ? `<form id="cp-bulk-return" method="POST" action="/api/council-bulk-return" style="margin-bottom:12px" onsubmit="return cpBulkReturn(this)">
   <input type="hidden" name="_token" value="${esc(token)}"/>
   <input type="hidden" name="returnTo" value="anomalies"/>
@@ -1186,16 +1447,30 @@ router.post('/api/council-bulk-approve', (req, res) => {
           'tmTripStatus/' + t._cid + '/' + t._rawKey,
           { status: 'approved', approvedAt: now, approvedBy: who },
           (err: any) => {
-            if (!err) ok++;
-            if (--left === 0) {
-              res.redirect(
-                base +
-                  '&msg=' +
-                  encodeURIComponent('Approved ' + ok + ' trip(s).') +
-                  '&mt=' +
-                  (ok ? 'ok' : 'err'),
-              );
-            }
+            const finishOne = () => {
+              if (--left === 0) {
+                res.redirect(
+                  base +
+                    '&msg=' +
+                    encodeURIComponent('Approved ' + ok + ' trip(s).') +
+                    '&mt=' +
+                    (ok ? 'ok' : 'err'),
+                );
+              }
+            };
+            if (err) return finishOne();
+            ok++;
+            appendTripEvent(
+              t._cid,
+              t._rawKey,
+              buildTripEvent('approved', {
+                by: who,
+                byRole: 'council',
+                fromStatus: t.status || 'submitted',
+                toStatus: 'approved',
+              }),
+              finishOne,
+            );
           },
         );
       });
@@ -1239,12 +1514,27 @@ router.post('/api/council-bulk-return', (req, res) => {
         anomalyDetail: st.anomalyDetail || null,
       };
       fbWrite('PATCH', 'tmTripStatus/' + cid + '/' + rawKey, patch, (err: any) => {
-        if (!err) ok++;
-        if (--left === 0) {
-          res.redirect(
-            base + '&msg=' + encodeURIComponent('Returned ' + ok + ' trip(s).') + '&mt=' + (ok ? 'ok' : 'err'),
-          );
-        }
+        const finishOne = () => {
+          if (--left === 0) {
+            res.redirect(
+              base + '&msg=' + encodeURIComponent('Returned ' + ok + ' trip(s).') + '&mt=' + (ok ? 'ok' : 'err'),
+            );
+          }
+        };
+        if (err) return finishOne();
+        ok++;
+        appendTripEvent(
+          cid,
+          rawKey,
+          buildTripEvent('returned', {
+            by: who,
+            byRole: 'council',
+            note,
+            fromStatus: st.status || null,
+            toStatus: 'revision_needed',
+          }),
+          finishOne,
+        );
       });
     });
   });
@@ -1274,7 +1564,20 @@ router.post('/api/council-archive', (req, res) => {
     const patch = archivePatch(st.status, who, note || null);
     fbWrite('PATCH', 'tmTripStatus/' + tripCid + '/' + tripRawKey, patch, (err: any) => {
       if (err) return res.redirect(base + '&msg=Archive+failed&mt=err');
-      res.redirect(base + '&msg=' + encodeURIComponent('Trip archived.') + '&mt=ok');
+      appendTripEvent(
+        tripCid,
+        tripRawKey,
+        buildTripEvent('archived', {
+          by: who,
+          byRole: 'council',
+          fromStatus: String(patch.archivedFromStatus || st.status || ''),
+          toStatus: 'archived',
+          note: note || null,
+        }),
+        () => {
+          res.redirect(base + '&msg=' + encodeURIComponent('Trip archived.') + '&mt=ok');
+        },
+      );
     });
   });
 });
@@ -1305,16 +1608,31 @@ router.post('/api/council-bulk-archive', (req, res) => {
     toArchive.forEach((t) => {
       const patch = archivePatch(t.status, who, note || null);
       fbWrite('PATCH', 'tmTripStatus/' + t._cid + '/' + t._rawKey, patch, (err: any) => {
-        if (!err) ok++;
-        if (--left === 0) {
-          res.redirect(
-            base +
-              '&msg=' +
-              encodeURIComponent('Archived ' + ok + ' trip(s).') +
-              '&mt=' +
-              (ok ? 'ok' : 'err'),
-          );
-        }
+        const finishOne = () => {
+          if (--left === 0) {
+            res.redirect(
+              base +
+                '&msg=' +
+                encodeURIComponent('Archived ' + ok + ' trip(s).') +
+                '&mt=' +
+                (ok ? 'ok' : 'err'),
+            );
+          }
+        };
+        if (err) return finishOne();
+        ok++;
+        appendTripEvent(
+          t._cid,
+          t._rawKey,
+          buildTripEvent('archived', {
+            by: who,
+            byRole: 'council',
+            fromStatus: String(patch.archivedFromStatus || t.status || ''),
+            toStatus: 'archived',
+            note: note || null,
+          }),
+          finishOne,
+        );
       });
     });
   };
@@ -1373,9 +1691,22 @@ router.post('/api/council-restore', (req, res) => {
       return res.redirect(base + '&msg=' + encodeURIComponent('Trip is not archived.') + '&mt=err');
     }
     const patch = restorePatch(st);
+    const who = sess.name || sess.councilId;
     fbWrite('PATCH', 'tmTripStatus/' + tripCid + '/' + tripRawKey, patch, (err: any) => {
       if (err) return res.redirect(base + '&msg=Restore+failed&mt=err');
-      res.redirect(base + '&msg=' + encodeURIComponent('Trip restored.') + '&mt=ok');
+      appendTripEvent(
+        tripCid,
+        tripRawKey,
+        buildTripEvent('restored', {
+          by: who,
+          byRole: 'council',
+          fromStatus: 'archived',
+          toStatus: String(patch.status || ''),
+        }),
+        () => {
+          res.redirect(base + '&msg=' + encodeURIComponent('Trip restored.') + '&mt=ok');
+        },
+      );
     });
   });
 });
@@ -1401,21 +1732,36 @@ router.post('/api/council-bulk-restore', (req, res) => {
     if (candidates.length === 0) {
       return res.redirect(base + '&msg=' + encodeURIComponent('No archived trips to restore.') + '&mt=err');
     }
+    const who = sess.name || sess.councilId;
     let left = candidates.length;
     let ok = 0;
     candidates.forEach((t) => {
       const patch = restorePatch(t);
       fbWrite('PATCH', 'tmTripStatus/' + t._cid + '/' + t._rawKey, patch, (err: any) => {
-        if (!err) ok++;
-        if (--left === 0) {
-          res.redirect(
-            base +
-              '&msg=' +
-              encodeURIComponent('Restored ' + ok + ' trip(s).') +
-              '&mt=' +
-              (ok ? 'ok' : 'err'),
-          );
-        }
+        const finishOne = () => {
+          if (--left === 0) {
+            res.redirect(
+              base +
+                '&msg=' +
+                encodeURIComponent('Restored ' + ok + ' trip(s).') +
+                '&mt=' +
+                (ok ? 'ok' : 'err'),
+            );
+          }
+        };
+        if (err) return finishOne();
+        ok++;
+        appendTripEvent(
+          t._cid,
+          t._rawKey,
+          buildTripEvent('restored', {
+            by: who,
+            byRole: 'council',
+            fromStatus: 'archived',
+            toStatus: String(patch.status || ''),
+          }),
+          finishOne,
+        );
       });
     });
   });
@@ -1427,17 +1773,31 @@ router.get('/council-portal/archived', requirePortalAuth, (req, res) => {
   const token = (req as any).cpToken;
   const msg = (req.query.msg as string) || '';
   const mt = (req.query.mt as string) || '';
+  const q = String(req.query.q || '').trim();
+  const filterCompany = String(req.query.company || '').trim();
   const te = encodeURIComponent(token);
   loadCouncilTrips(sess.councilId, (_err: any, myTrips: any[]) => {
-    const archived = myTrips
-      .filter((t) => isArchivedStatus(t.status))
-      .slice()
-      .sort((a, b) => {
-        const aAt = Number(a.archivedAt) || 0;
-        const bAt = Number(b.archivedAt) || 0;
-        if (bAt !== aAt) return bAt - aAt;
-        return (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || '');
-      });
+    const archived = filterTripsBySearchAndCompany(
+      myTrips
+        .filter((t) => isArchivedStatus(t.status))
+        .slice()
+        .sort((a, b) => {
+          const aAt = Number(a.archivedAt) || 0;
+          const bAt = Number(b.archivedAt) || 0;
+          if (bAt !== aAt) return bAt - aAt;
+          return (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || '');
+        }),
+      q,
+      filterCompany,
+    );
+    const companyOpts = companyFilterOptionsHtml(myTrips, filterCompany);
+    const searchForm = inlineTripSearchFormHtml(
+      '/council-portal/archived',
+      token,
+      q,
+      filterCompany,
+      companyOpts,
+    );
     const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
     const rows = archived.map((t) => {
       const d = buildTmTripDetail(t);
@@ -1479,6 +1839,7 @@ router.get('/council-portal/archived', requirePortalAuth, (req, res) => {
     const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Archived (${archived.length})</h2>
 ${noticeHtml}
+${searchForm}
 <p style="font-size:13px;color:#666;margin-bottom:12px">Soft-archived trips are hidden from Pending, Flagged, Trips, and default Reports. Restore to return them to their prior status.</p>
 ${toolbar}
 <div class="cp-card" style="overflow-x:auto">
@@ -1556,7 +1917,7 @@ function hasValidTripCoords(d: TmTripDetail): boolean {
 }
 
 /** Static trip detail body (map placeholder + fare/expected meter). Client adds Leaflet + actions. */
-function tripDetailModalHtml(d: TmTripDetail): string {
+function tripDetailModalHtml(d: TmTripDetail, stOrTrip?: any): string {
   const money = (n: number) => '$' + n.toFixed(2);
   const row = (l: string, v: string) =>
     `<div><div style="font-size:11px;color:#888;font-weight:600;margin-bottom:2px">${l}</div><div style="font-size:13px;font-weight:500">${v}</div></div>`;
@@ -1621,6 +1982,7 @@ ${d.waitingCharge > 0 ? frow('+ Waiting Charge', money(d.waitingCharge)) : ''}
 <td style="text-align:right"><strong style="font-size:15px">${money(d.passengerPays)}</strong>
  <span class="cp-bdg-b">${esc(d.paymentMethod)}</span></td></tr>
 </table></div>
+${stOrTrip ? tripHistoryHtml(stOrTrip) : ''}
 </div>`;
 }
 
@@ -1630,6 +1992,7 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
   const filterCompany = String(req.query.company || '').trim();
   const filterFrom = String(req.query.from || '').trim();
   const filterTo = String(req.query.to || '').trim();
+  const filterQ = String(req.query.q || '').trim();
   const includeArchived = String(req.query.includeArchived || '') === '1';
   const te = encodeURIComponent(token);
   loadCouncilTrips(sess.councilId, (err: any, myTrips: any[]) => {
@@ -1653,12 +2016,13 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
       );
       let pendingNames = needNames.length;
       const finish = () => {
-        const displayTrips = filterTripsForReports(myTrips, {
+        let displayTrips = filterTripsForReports(myTrips, {
           companyId: filterCompany || undefined,
           from: filterFrom || undefined,
           to: filterTo || undefined,
           includeArchived,
         });
+        if (filterQ) displayTrips = displayTrips.filter((t) => tripMatchesSearch(t, filterQ));
         const tariffCids = Array.from(
           new Set(
             displayTrips
@@ -1695,6 +2059,7 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
             `&company=${encodeURIComponent(filterCompany)}` +
             `&from=${encodeURIComponent(filterFrom)}` +
             `&to=${encodeURIComponent(filterTo)}` +
+            `&q=${encodeURIComponent(filterQ)}` +
             (includeArchived ? '&includeArchived=1' : '');
           const summaryRows = details
             .map((d, idx) => {
@@ -1739,7 +2104,7 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
             const chipBlock = chips
               ? `<div style="margin:10px 0 0;padding:8px 10px;border-radius:6px;background:#FFEBEE;font-size:12px"><strong style="color:#C62828">Anomaly flags</strong><div style="margin-top:4px">${chips}</div>${src.anomalyDetail ? `<div style="margin-top:4px;color:#888">${esc(String(src.anomalyDetail))}</div>` : ''}</div>`
               : '';
-            return tripDetailModalHtml(d) + chipBlock;
+            return tripDetailModalHtml(d) + chipBlock + tripHistoryHtml(src);
           });
           const tripsJson = JSON.stringify(details).replace(/</g, '\\u003c');
           const bodiesJson = JSON.stringify(bodyHtmlByIdx).replace(/</g, '\\u003c');
@@ -1751,10 +2116,12 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
           const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:6px">Reports</h2>
 ${noticeHtml}
-<p style="font-size:13px;color:#666;margin-bottom:14px">Filter by company and date range. Click a row for full trip detail, map, fare check, and council actions. Archived trips are hidden unless included below.</p>
+<p style="font-size:13px;color:#666;margin-bottom:14px">Filter by company, date range, and text search. Click a row for full trip detail, map, fare check, history, and council actions. Archived trips are hidden unless included below.</p>
 <div class="cp-month-row">
   <form method="GET" action="/council-portal/reports" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
     <input type="hidden" name="t" value="${esc(token)}"/>
+    <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">Search</label>
+      <input type="search" name="q" class="cp-input" value="${esc(filterQ)}" placeholder="Voucher, passenger, driver…" style="min-width:200px"/></div>
     <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">Company</label>
       <select name="company" class="cp-input"><option value="">All Companies</option>${companyOpts}</select></div>
     <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">From</label>
@@ -1765,7 +2132,7 @@ ${noticeHtml}
       <input type="checkbox" name="includeArchived" value="1"${includeArchived ? ' checked' : ''}/> Include archived
     </label>
     <button type="submit" class="cp-btn cp-btn-g">Apply</button>
-    ${filterCompany || filterFrom || filterTo || includeArchived ? `<a href="/council-portal/reports?t=${te}" class="cp-btn" style="background:#eee;color:#333">Clear</a>` : ''}
+    ${filterCompany || filterFrom || filterTo || filterQ || includeArchived ? `<a href="/council-portal/reports?t=${te}" class="cp-btn" style="background:#eee;color:#333">Clear</a>` : ''}
   </form>
   <a href="/council-portal/export?t=${te}${exportQs}" class="cp-btn cp-btn-g" style="margin-left:auto">&#11015; Download full CSV</a>
 </div>
