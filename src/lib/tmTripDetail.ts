@@ -1,6 +1,6 @@
 /**
  * Full TM trip detail fields for council Reports (summary + modal + CSV).
- * Aligns with SA TM-Trips viewTT / mapTMTrip completeness.
+ * Passenger display name = cardholder name from TM card entry (tmCardName / tmPassengers.cardholderName).
  */
 
 function num(v: unknown, fallback = 0): number {
@@ -13,6 +13,84 @@ function str(v: unknown, fallback = ''): string {
   return String(v).trim() || fallback;
 }
 
+/** Format ISO string or epoch ms/seconds to NZ-readable local datetime. */
+export function formatTmDateTime(raw: unknown): string {
+  if (raw == null || raw === '') return '';
+  if (typeof raw === 'number' || (typeof raw === 'string' && /^\d{10,13}$/.test(raw.trim()))) {
+    let ms = Number(raw);
+    if (!Number.isFinite(ms) || ms <= 0) return '';
+    if (ms < 1e12) ms *= 1000;
+    try {
+      return new Intl.DateTimeFormat('en-NZ', {
+        timeZone: 'Pacific/Auckland',
+        year: 'numeric',
+        month: 'short',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(new Date(ms));
+    } catch {
+      return new Date(ms).toISOString().slice(0, 16).replace('T', ' ');
+    }
+  }
+  const s = String(raw).trim();
+  const parsed = Date.parse(s);
+  if (Number.isFinite(parsed)) {
+    try {
+      return new Intl.DateTimeFormat('en-NZ', {
+        timeZone: 'Pacific/Auckland',
+        year: 'numeric',
+        month: 'short',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(new Date(parsed));
+    } catch {
+      return s.slice(0, 16).replace('T', ' ');
+    }
+  }
+  return s.slice(0, 16).replace('T', ' ');
+}
+
+export function formatTmDuration(job: Record<string, any>): string {
+  const label = str(job.durationLabel || job.DurationLabel);
+  if (label) return label;
+  const min = job.durationMin ?? job.DurationMin ?? job.minutes;
+  if (min != null && min !== '' && Number.isFinite(Number(min))) {
+    return `${Number(min)} min`;
+  }
+  const dur = job.duration ?? job.Duration;
+  if (dur != null && dur !== '') {
+    const n = Number(dur);
+    if (Number.isFinite(n)) {
+      // Heuristic: large values are ms; medium are seconds; small are minutes
+      if (n > 1e6) return `${Math.round(n / 60000)} min`;
+      if (n > 300) return `${Math.round(n / 60)} min`;
+      return `${n} min`;
+    }
+    return String(dur);
+  }
+  const startMs = toMs(job.startedAt_ISO || job.startedAt);
+  const endMs = toMs(job.completedAt_ISO || job.completedAt);
+  if (startMs && endMs && endMs > startMs) {
+    return `${Math.round((endMs - startMs) / 60000)} min`;
+  }
+  return '';
+}
+
+function toMs(raw: unknown): number {
+  if (raw == null || raw === '') return 0;
+  if (typeof raw === 'number' || (typeof raw === 'string' && /^\d{10,13}$/.test(String(raw).trim()))) {
+    let ms = Number(raw);
+    if (ms < 1e12) ms *= 1000;
+    return Number.isFinite(ms) ? ms : 0;
+  }
+  const p = Date.parse(String(raw));
+  return Number.isFinite(p) ? p : 0;
+}
+
 function addr(job: Record<string, any>, ...keys: string[]): string {
   for (const k of keys) {
     const v = job[k];
@@ -21,10 +99,53 @@ function addr(job: Record<string, any>, ...keys: string[]): string {
   const pickupLoc = job.pickupLocation || job.startLocation || {};
   const dropLoc = job.dropLocation || job.endLocation || job.dropoffLocation || {};
   if (keys[0] && keys[0].toLowerCase().includes('pick') && pickupLoc.address) return String(pickupLoc.address);
-  if (keys[0] && (keys[0].toLowerCase().includes('drop') || keys[0].toLowerCase().includes('dest')) && dropLoc.address) {
+  if (
+    keys[0] &&
+    (keys[0].toLowerCase().includes('drop') || keys[0].toLowerCase().includes('dest')) &&
+    dropLoc.address
+  ) {
     return String(dropLoc.address);
   }
   return '';
+}
+
+function extractCoords(job: Record<string, any>): {
+  pickupLat: number;
+  pickupLng: number;
+  dropLat: number;
+  dropLng: number;
+} {
+  const pickupLoc = job.pickupLocation || job.startLocation || {};
+  const dropLoc = job.dropLocation || job.endLocation || job.dropoffLocation || {};
+  return {
+    pickupLat: num(
+      job.pickupLat ?? job.startLat ?? pickupLoc.latitude ?? pickupLoc.lat,
+    ),
+    pickupLng: num(
+      job.pickupLng ?? job.pickupLon ?? job.startLng ?? job.startLon ?? pickupLoc.longitude ?? pickupLoc.lng,
+    ),
+    dropLat: num(job.dropLat ?? job.endLat ?? job.dropoffLat ?? dropLoc.latitude ?? dropLoc.lat),
+    dropLng: num(
+      job.dropLng ?? job.dropLon ?? job.endLng ?? job.endLon ?? job.dropoffLng ?? dropLoc.longitude ?? dropLoc.lng,
+    ),
+  };
+}
+
+/** Cardholder name from TM card entry — preferred passenger display. */
+export function resolveCardholderName(job: Record<string, any>): string {
+  const passengers = Array.isArray(job.tmPassengers) ? job.tmPassengers : [];
+  const fromList = passengers
+    .map((p: any) => str(p.cardholderName || p.cardHolderName || p.name))
+    .filter(Boolean);
+  if (fromList.length) return fromList.join(' + ');
+  return (
+    str(job.tmCardName) ||
+    str(job.cardholderName) ||
+    str(job.tmPassengerName) ||
+    str(job.passengerName) ||
+    str(job.customerName) ||
+    ''
+  );
 }
 
 export type TmTripDetail = {
@@ -39,6 +160,9 @@ export type TmTripDetail = {
   tripCategory: string;
   dateTime: string;
   endTime: string;
+  /** Raw values for edit forms (ISO or epoch) — avoid round-tripping display strings. */
+  startedAtRaw: string;
+  completedAtRaw: string;
   pickup: string;
   dropoff: string;
   distanceKm: string;
@@ -56,16 +180,49 @@ export type TmTripDetail = {
   passengerPays: number;
   passengerCount: number;
   splitNote: string;
+  pickupLat: number;
+  pickupLng: number;
+  dropLat: number;
+  dropLng: number;
+  revisionNote: string;
+  expectedMeter: number | null;
+  fareMismatch: boolean;
 };
 
-export function buildTmTripDetail(t: Record<string, any>): TmTripDetail {
+export type RefTariff = {
+  base?: number;
+  perKm?: number;
+  perMin?: number;
+  stopFee?: number;
+};
+
+/** Expected meter from reference price list (car rates by default). */
+export function expectedMeterFromTariff(
+  tariff: RefTariff | null | undefined,
+  distanceKm: number,
+  durationMin: number,
+  waitingMin = 0,
+): number | null {
+  if (!tariff || typeof tariff !== 'object') return null;
+  const base = num(tariff.base);
+  const perKm = num(tariff.perKm);
+  const perMin = num(tariff.perMin);
+  const stop = num(tariff.stopFee);
+  if (!base && !perKm && !perMin && !stop) return null;
+  return +(base + distanceKm * perKm + durationMin * perMin + waitingMin * stop).toFixed(2);
+}
+
+export function buildTmTripDetail(
+  t: Record<string, any>,
+  opts?: { refTariff?: RefTariff | null },
+): TmTripDetail {
   const passengers = Array.isArray(t.tmPassengers) ? t.tmPassengers : [];
   const vouchers = Array.isArray(t.tmVoucherNumbers) ? t.tmVoucherNumbers : [];
   const cardNums = passengers.length
     ? passengers.map((p: any) => p.cardNumber || '').filter(Boolean)
     : vouchers.length
       ? vouchers.map(String)
-      : [str(t.tmVoucherNo || t.cardNumber)].filter(Boolean);
+      : [str(t.tmVoucherNo || t.tmCardNumber || t.cardNumber)].filter(Boolean);
 
   const waiting = num(t.waitingCost ?? t.WaitingCost ?? t.waitingCharge ?? t.waitingFee);
   const meterFare = num(t.fare ?? t.tmMeterFare ?? t.meterFare);
@@ -85,10 +242,23 @@ export function buildTmTripDetail(t: Record<string, any>): TmTripDetail {
       ? `Hoist total $${hoist.toFixed(2)}`
       : '';
 
-  const start = str(t.startedAt_ISO || t.startedAt || t.completedAt_ISO || '');
-  const end = str(t.completedAt_ISO || t.completedAt || '');
   const distRaw = t.distanceKm || t.distance || t.distanceTravelled || t.tripDistanceKm || '';
-  const distanceKm = distRaw !== '' && distRaw != null ? String(parseFloat(String(distRaw)).toFixed(2)) : '';
+  const distanceKmNum =
+    distRaw !== '' && distRaw != null && Number.isFinite(Number(distRaw)) ? Number(distRaw) : 0;
+  const distanceKm = distanceKmNum ? distanceKmNum.toFixed(2) : '';
+  const durationStr = formatTmDuration(t) || '';
+  const durationMinMatch = durationStr.match(/([\d.]+)\s*min/i);
+  const durationMin = durationMinMatch ? Number(durationMinMatch[1]) : num(t.durationMin);
+
+  const coords = extractCoords(t);
+  let expected: number | null = null;
+  if (opts?.refTariff) {
+    const stopFee = num(opts.refTariff.stopFee);
+    const waitMin = stopFee > 0 && waiting > 0 ? waiting / stopFee : 0;
+    expected = expectedMeterFromTariff(opts.refTariff, distanceKmNum, durationMin, waitMin);
+  }
+  const fareMismatch =
+    expected != null && meterFare > 0 && Math.abs(meterFare - expected) > Math.max(1, expected * 0.15);
 
   const driverName =
     str(t.driverFullName || t.driverDisplayName || t.driverName || t.driver_name || t.driverEmail) || '—';
@@ -99,16 +269,18 @@ export function buildTmTripDetail(t: Record<string, any>): TmTripDetail {
     rawKey: str(t._rawKey),
     companyName: str(t._companyName || '—'),
     status: str(t.status || 'pending'),
-    passengerName: str(t.tmPassengerName || t.passengerName || '—'),
-    voucherNo: str(t.tmVoucherNo || cardNums[0] || '—'),
-    allCards: cardNums.join(', ') || str(t.tmVoucherNo) || '—',
+    passengerName: resolveCardholderName(t) || '—',
+    voucherNo: str(t.tmVoucherNo || t.tmCardNumber || cardNums[0] || '—'),
+    allCards: cardNums.join(', ') || str(t.tmVoucherNo || t.tmCardNumber) || '—',
     tripCategory: str(t.tmTripCategory || '—'),
-    dateTime: start ? start.slice(0, 16).replace('T', ' ') : '—',
-    endTime: end ? end.slice(0, 16).replace('T', ' ') : '—',
+    dateTime: formatTmDateTime(t.startedAt_ISO || t.startedAt || t.completedAt_ISO || t.completedAt) || '—',
+    endTime: formatTmDateTime(t.completedAt_ISO || t.completedAt) || '—',
+    startedAtRaw: str(t.startedAt_ISO || t.startedAt || ''),
+    completedAtRaw: str(t.completedAt_ISO || t.completedAt || ''),
     pickup: addr(t, 'pickupAddress', 'pickup', 'source', 'pickupLocation_address') || '—',
     dropoff: addr(t, 'dropAddress', 'dropoff', 'destination', 'dropLocation_address') || '—',
     distanceKm,
-    duration: str(t.durationLabel || t.duration || '—'),
+    duration: durationStr || '—',
     driverName,
     vehicleId: str(t.vehicleId || t.vehicle || t.taxiNumber || '—'),
     paymentMethod: str(
@@ -127,6 +299,13 @@ export function buildTmTripDetail(t: Record<string, any>): TmTripDetail {
       paxCount > 1
         ? `${paxCount} TM passengers — meter split $${(meterFare / paxCount).toFixed(2)}/card`
         : '',
+    pickupLat: coords.pickupLat,
+    pickupLng: coords.pickupLng,
+    dropLat: coords.dropLat,
+    dropLng: coords.dropLng,
+    revisionNote: str(t.revisionNote || t.revisionNotes || ''),
+    expectedMeter: expected,
+    fareMismatch,
   };
 }
 
@@ -136,7 +315,7 @@ export const TM_TRIP_CSV_HEADERS = [
   'Operator',
   'Driver',
   'Vehicle',
-  'Passenger',
+  'Passenger (cardholder)',
   'Voucher / Cards',
   'Trip Category',
   'Pickup',
@@ -144,6 +323,7 @@ export const TM_TRIP_CSV_HEADERS = [
   'Distance km',
   'Duration',
   'Meter Fare',
+  'Expected Meter',
   'Waiting',
   'Meter Subsidy',
   'Hoist (council)',
@@ -172,6 +352,7 @@ export function tmTripDetailToCsvRow(d: TmTripDetail): string[] {
     d.distanceKm,
     d.duration,
     d.meterFare.toFixed(2),
+    d.expectedMeter != null ? d.expectedMeter.toFixed(2) : '',
     d.waitingCharge.toFixed(2),
     d.meterSubsidy.toFixed(2),
     d.hoistCouncil.toFixed(2),

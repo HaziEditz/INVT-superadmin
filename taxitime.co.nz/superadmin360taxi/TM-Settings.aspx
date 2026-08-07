@@ -153,7 +153,7 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
 </div>
 
 <h2 style="font-size:18px;font-weight:700;margin-bottom:4px;color:#37474F">&#9881; TM Settings <span style="font-size:12px;font-weight:500;color:#888">(Advanced)</span></h2>
-<p style="font-size:13px;color:#888;margin-bottom:20px">Approve companies to operate Total Mobility under each council, and set per-company TM fare tariffs (car &amp; wheelchair van). These are read by the Passenger App and Driver App in real time.</p>
+<p style="font-size:13px;color:#888;margin-bottom:20px">Approve companies to operate Total Mobility under each council, and maintain an optional per-company reference price list for fare-mismatch checks (not live metering).</p>
 
 <div id="pg-notice" style="display:none" class="notice"></div>
 
@@ -184,22 +184,32 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
   </div>
 </div>
 
-<!-- ── Section 2: TM Tariffs (LEGACY — unused) ─────────────────────────────── -->
+<!-- ── Section 2: Reference price list (fare-mismatch checks) ──────────────── -->
 <div class="tm-card">
-  <div class="tm-bar" style="background:#78909C">
-    <h3>&#128667; TM Fare Tariffs <small style="opacity:.9;font-size:12px">(legacy / unused)</small></h3>
+  <div class="tm-bar" style="background:#546E7A">
+    <h3>&#128667; Reference price list <small style="opacity:.9;font-size:12px">(not live metering)</small></h3>
   </div>
-  <div style="padding:16px 18px;font-size:13px;color:#455a64;line-height:1.5">
-    <p style="margin:0 0 10px"><strong>Legacy — not used by live metering.</strong></p>
+  <div style="padding:12px 18px 0;font-size:12.5px;color:#455a64;line-height:1.45">
     <p style="margin:0 0 8px">
-      Dispatch and the driver app meter TM trips with the company&#8217;s <em>normal</em> tariffs
-      (<code>tariffs/{companyId}</code> / day-night / vehicle variants). Subsidy % and cap come from
-      <strong>TM Council Config</strong> (synced to <code>companySettings/.../tmConfig</code> for the driver).
+      Optional per-company car/van rates stored in <code>tmTariffs/{cid}</code> for
+      <strong>fare-mismatch checks</strong> in the council portal. This is
+      <strong>not</strong> the live meter source of truth — dispatch/driver apps meter with company
+      <code>tariffs/{companyId}</code>; subsidy %/cap come from TM Council Config.
     </p>
-    <p style="margin:0;color:#78909C;font-size:12px">
-      The old <code>tmTariffs/{cid}</code> node is retained for historical data only. Editing it here is disabled
-      so it cannot compete with real company tariffs.
-    </p>
+  </div>
+  <div style="overflow-x:auto;padding:0 0 8px">
+    <table class="tm-tbl">
+      <thead><tr>
+        <th>Company</th>
+        <th>Car Base</th><th>Car /km</th><th>Car /min</th><th>Car Stop</th>
+        <th>Van Base</th><th>Van /km</th><th>Van /min</th><th>Van Stop</th>
+        <th>Updated</th>
+        <th>Action</th>
+      </tr></thead>
+      <tbody id="tariff-tb">
+        <tr class="empty-row"><td colspan="11">Loading&#8230;</td></tr>
+      </tbody>
+    </table>
   </div>
 </div>
 
@@ -208,7 +218,7 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
 <!-- ── Tariff Edit Modal ──────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="tariff-modal">
 <div class="modal-box">
-  <h3>&#128667; Set TM Tariffs</h3>
+  <h3>&#128667; Edit reference price list</h3>
   <div class="modal-sub" id="tariff-modal-sub">Company name</div>
 
   <div class="tariff-section">
@@ -234,7 +244,7 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
   <div class="modal-msg" id="tariff-modal-msg"></div>
   <div class="modal-actions">
     <button class="tm-btn tm-btn-n" onclick="closeTariffModal()">Cancel</button>
-    <button class="tm-btn tm-btn-p" id="tariff-save-btn" onclick="saveTariff()">Save Tariffs</button>
+    <button class="tm-btn tm-btn-p" id="tariff-save-btn" onclick="saveTariff()">Save reference prices</button>
   </div>
 </div>
 </div>
@@ -262,25 +272,31 @@ function asObjectMap(raw) {
 
 function loadAll() {
   var tb = document.getElementById('approval-tb');
+  var ttb = document.getElementById('tariff-tb');
   if (tb) tb.innerHTML = '<tr class="empty-row"><td colspan="6">Loading&#8230;</td></tr>';
-  // Note: legacy #tariff-tb was removed — do not write to it (throws and freezes Loading…).
+  if (ttb) ttb.innerHTML = '<tr class="empty-row"><td colspan="11">Loading&#8230;</td></tr>';
   Promise.all([
     adminRead('superClients'),
     adminRead('tmConfig'),
-    adminRead('tmCompanyAccess')
+    adminRead('tmCompanyAccess'),
+    adminRead('tmTariffs')
   ]).then(function(res) {
     allCompanies = asObjectMap(res[0]);
     allCouncils  = asObjectMap(res[1]);
     allAccess    = asObjectMap(res[2]);
-    allTariffs   = {}; // legacy tmTariffs UI removed — not loaded
+    allTariffs   = asObjectMap(res[3]);
     populateCouncilFilter();
     renderApproval();
+    renderTariffs();
   }).catch(function(e) {
     var msg = (e && e.message) ? e.message : String(e);
     showNotice('Failed to load data: ' + msg, 'err');
     if (tb) {
       tb.innerHTML = '<tr class="empty-row"><td colspan="6" style="color:#C62828">Failed to load: ' +
         String(msg).replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</td></tr>';
+    }
+    if (ttb) {
+      ttb.innerHTML = '<tr class="empty-row"><td colspan="11" style="color:#C62828">Failed to load</td></tr>';
     }
   });
 }
@@ -387,11 +403,13 @@ function setAccess(cid, councilId, approve) {
     .catch(function(e) { showNotice('Error: ' + e.message, 'err'); });
 }
 
-// ── Tariff Section (legacy UI removed; keep helpers no-op safe) ───────────────
+// ── Reference price list (tmTariffs — fare-mismatch checks, not live meter) ───
 function renderTariffs() {
   var el = document.getElementById('tariff-tb');
   if (!el) return;
-  var companies = Object.entries(allCompanies);
+  var companies = Object.entries(allCompanies).filter(function(kv) {
+    return kv[1] && typeof kv[1] === 'object';
+  });
   if (!companies.length) {
     el.innerHTML = '<tr class="empty-row"><td colspan="11">No companies registered yet.</td></tr>';
     return;
@@ -469,7 +487,7 @@ function saveTariff() {
       allTariffs[_tariffCid] = data;
       renderTariffs();
       closeTariffModal();
-      showNotice('Tariffs saved for ' + esc((allCompanies[_tariffCid] || {}).name || _tariffCid) + '. Passenger app will pick these up immediately.', 'ok');
+      showNotice('Reference price list saved for ' + esc((allCompanies[_tariffCid] || {}).name || _tariffCid) + '. Used for fare-mismatch checks (not live metering).', 'ok');
     })
     .catch(function(e) {
       document.getElementById('tariff-modal-msg').textContent = 'Save failed: ' + e.message;

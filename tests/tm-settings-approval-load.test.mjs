@@ -13,9 +13,8 @@ const page = readFileSync(
   'utf8',
 );
 
-test('loadAll does not write removed tariff-tb (that froze Loading…)', () => {
+test('loadAll keeps approval table safe (no removed tariff-tb write)', () => {
   assert.match(page, /function loadAll/);
-  assert.match(page, /do not write to it/);
   assert.doesNotMatch(
     page,
     /function loadAll\([\s\S]*?getElementById\('tariff-tb'\)\.innerHTML/,
@@ -23,8 +22,10 @@ test('loadAll does not write removed tariff-tb (that froze Loading…)', () => {
   assert.match(page, /adminRead\('superClients'\)/);
   assert.match(page, /adminRead\('tmConfig'\)/);
   assert.match(page, /adminRead\('tmCompanyAccess'\)/);
+  assert.match(page, /adminRead\('tmTariffs'\)/);
   assert.match(page, /function asObjectMap/);
   assert.match(page, /renderApproval\(\)/);
+  assert.match(page, /Reference price list/);
 });
 
 test('approval UI still present for Approve/Revoke', () => {

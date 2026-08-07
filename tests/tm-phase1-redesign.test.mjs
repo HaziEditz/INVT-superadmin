@@ -97,7 +97,8 @@ test('classifyTmConfig distinguishes synced vs manual', () => {
     councilSubsidyPercent: 50,
   });
   assert.equal(manual.kind, 'manual');
-  assert.equal(legacyTariffProvenance().kind, 'legacy');
+  assert.equal(legacyTariffProvenance().kind, 'manual');
+  assert.match(provenanceBadgeHtml(legacyTariffProvenance()), /reference|Reference|Manual/i);
   assert.match(provenanceBadgeHtml(synced), /Synced/);
   assert.match(setupHubBannerHtml('Council Config'), /TM Setup Hub/);
 });

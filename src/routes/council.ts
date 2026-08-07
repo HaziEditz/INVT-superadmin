@@ -77,6 +77,12 @@ a{color:inherit;text-decoration:none}
 .cp-modal-bd{padding:18px}
 .cp-modal-ft{padding:12px 18px;border-top:1px solid #eee;display:flex;justify-content:flex-end;gap:8px}
 .cp-input{padding:7px 10px;border:1px solid #ddd;border-radius:4px;font-size:13px}
+#cp-trip-map{height:220px;border-radius:6px;margin-top:12px;z-index:1}
+.cp-bdg-mismatch{background:#FFEBEE;color:#C62828;display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700}
+.cp-edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;margin-top:10px}
+.cp-edit-grid label{display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:2px}
+.cp-edit-grid input,.cp-edit-grid select,.cp-edit-grid textarea{width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:12.5px}
+.cp-ref-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;background:#FFF8E1;color:#E65100;border:1px solid #FFE082}
 `;
 
 function renderNav(session: any, token: string, activePage: string): string {
@@ -109,6 +115,8 @@ function portalPage(title: string, nav: string, body: string): string {
   return `<!DOCTYPE html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)} — Council Portal</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHryRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <style>${PORTAL_CSS}</style></head>
 <body>${nav}<div class="cp-main">${body}</div></body></html>`;
 }
@@ -363,27 +371,215 @@ router.post('/api/set-council-password', (req, res) => {
   });
 });
 
-// ── Approve/reject individual trip ────────────────────────────────────────────
+function councilReturnPath(returnTo: string, te: string): string {
+  const page = returnTo === 'reports' ? 'reports' : 'flagged';
+  return '/council-portal/' + page + '?t=' + te;
+}
+
+// ── Approve / reject / return individual trip ─────────────────────────────────
 router.post('/api/council-approve', (req, res) => {
   const token = (req.body._token as string) || '';
   const tripCid = (req.body.tripCid as string) || '';
   const tripRawKey = (req.body.tripRawKey as string) || '';
   const action = (req.body.action as string) || '';
+  const returnTo = String(req.body.returnTo || 'flagged').trim() === 'reports' ? 'reports' : 'flagged';
+  const flagReason = String(req.body.flagReason || '').trim();
+  const note = String(req.body.note || req.body.revisionNote || '').trim();
   const sess = cpGetSession(token);
   const te = encodeURIComponent(token);
-  if (!sess || !tripCid || !tripRawKey || !['approve', 'reject'].includes(action)) {
-    return res.redirect('/council-portal/flagged?t=' + te + '&msg=Invalid+request&mt=err');
+  const base = councilReturnPath(returnTo, te);
+  if (!sess || !tripCid || !tripRawKey || !['approve', 'reject', 'return'].includes(action)) {
+    return res.redirect(base + '&msg=Invalid+request&mt=err');
   }
-  const newStatus = action === 'approve' ? 'approved' : 'rejected';
-  const patch: any = {
-    status: newStatus,
-    [action === 'approve' ? 'approvedAt' : 'rejectedAt']: Date.now(),
-    [action === 'approve' ? 'approvedBy' : 'rejectedBy']: sess.name || sess.councilId
-  };
-  fbWrite('PATCH', 'tmTripStatus/' + tripCid + '/' + tripRawKey, patch, (err: any) => {
-    if (err) return res.redirect('/council-portal/flagged?t=' + te + '&msg=Update+failed&mt=err');
-    const msg = action === 'approve' ? 'Trip approved successfully.' : 'Trip rejected.';
-    res.redirect('/council-portal/flagged?t=' + te + '&msg=' + encodeURIComponent(msg) + '&mt=ok');
+  // Verify trip belongs to this council
+  fbRead('tmTripStatus/' + tripCid + '/' + tripRawKey, (e0: any, st: any) => {
+    if (e0 || !st || st.councilId !== sess.councilId) {
+      return res.redirect(base + '&msg=Trip+not+found+for+this+council&mt=err');
+    }
+    if (action === 'return' && !note) {
+      return res.redirect(base + '&msg=Revision+note+is+required&mt=err');
+    }
+    if (action === 'reject' && !note) {
+      return res.redirect(base + '&msg=Reject+note+is+required&mt=err');
+    }
+    const now = Date.now();
+    const who = sess.name || sess.councilId;
+    let patch: any;
+    let msg: string;
+    if (action === 'approve') {
+      patch = { status: 'approved', approvedAt: now, approvedBy: who };
+      msg = 'Trip approved successfully.';
+    } else if (action === 'reject') {
+      const reason = flagReason || 'other';
+      patch = {
+        status: 'rejected',
+        rejectedAt: now,
+        rejectedBy: who,
+        flagReasons: [reason],
+        rejectNote: note,
+        revisionNote: note,
+      };
+      msg = 'Trip rejected / red-flagged.';
+    } else {
+      patch = {
+        status: 'revision_needed',
+        revisionNote: note,
+        sentBackAt: now,
+        sentBackBy: who,
+      };
+      msg = 'Trip returned to company for revision.';
+    }
+    fbWrite('PATCH', 'tmTripStatus/' + tripCid + '/' + tripRawKey, patch, (err: any) => {
+      if (err) return res.redirect(base + '&msg=Update+failed&mt=err');
+      res.redirect(base + '&msg=' + encodeURIComponent(msg) + '&mt=ok');
+    });
+  });
+});
+
+/** Whitelist for council trip field edits (completedJobs PATCH). */
+const COUNCIL_TRIP_EDIT_FIELDS: string[] = [
+  'tmCardName', 'cardholderName', 'tmPassengerName', 'passengerName', 'customerName',
+  'tmVoucherNo', 'tmCardNumber', 'cardNumber',
+  'pickupAddress', 'source', 'pickup',
+  'dropAddress', 'dropoff', 'destination',
+  'fare', 'tmMeterFare', 'meterFare',
+  'waitingCost', 'waitingCharge', 'WaitingCost',
+  'tmSubsidyFare', 'tmSubsidyHoist', 'tmSubsidy', 'tmPassengerPays', 'tmCouncilPays',
+  'startedAt_ISO', 'completedAt_ISO', 'startedAt', 'completedAt',
+  'paymentType', 'paymentMethod', 'PaymentMethod', 'payMethod', 'tmPaymentType',
+  'distanceKm', 'distance', 'distanceTravelled', 'tripDistanceKm',
+  'duration', 'durationMin', 'durationLabel', 'DurationMin',
+  'tmTripCategory', 'driverName', 'driverFullName', 'vehicleId', 'taxiNumber',
+];
+
+// ── Council edit completed job fields ─────────────────────────────────────────
+router.post('/api/council-trip-edit', (req, res) => {
+  const token = (req.body._token as string) || '';
+  const tripCid = (req.body.tripCid as string) || '';
+  const tripRawKey = (req.body.tripRawKey as string) || '';
+  const returnTo = String(req.body.returnTo || 'reports').trim() === 'flagged' ? 'flagged' : 'reports';
+  const resubmit = String(req.body.resubmit || '') === '1';
+  const sess = cpGetSession(token);
+  const te = encodeURIComponent(token);
+  const base = councilReturnPath(returnTo, te);
+  if (!sess || !tripCid || !tripRawKey) {
+    return res.redirect(base + '&msg=Invalid+request&mt=err');
+  }
+  fbRead('tmTripStatus/' + tripCid + '/' + tripRawKey, (e0: any, st: any) => {
+    if (e0 || !st || st.councilId !== sess.councilId) {
+      return res.redirect(base + '&msg=Trip+not+found+for+this+council&mt=err');
+    }
+    const patch: Record<string, any> = {};
+    COUNCIL_TRIP_EDIT_FIELDS.forEach((k) => {
+      if (req.body[k] === undefined) return;
+      const raw = req.body[k];
+      if (raw === '') {
+        patch[k] = '';
+        return;
+      }
+      // numeric fare / distance fields
+      if (
+        /^(fare|tmMeterFare|meterFare|waitingCost|waitingCharge|WaitingCost|tmSubsidyFare|tmSubsidyHoist|tmSubsidy|tmPassengerPays|tmCouncilPays|distanceKm|distance|distanceTravelled|tripDistanceKm|durationMin|DurationMin)$/.test(
+          k,
+        )
+      ) {
+        const n = parseFloat(String(raw));
+        if (Number.isFinite(n)) patch[k] = n;
+        return;
+      }
+      patch[k] = String(raw);
+    });
+    // Convenience aliases from the edit form
+    if (req.body.passengerName != null && patch.tmCardName === undefined) {
+      patch.tmCardName = String(req.body.passengerName);
+    }
+    if (req.body.voucherNo != null && patch.tmVoucherNo === undefined) {
+      patch.tmVoucherNo = String(req.body.voucherNo);
+    }
+    // Keep meter aliases in sync when council edits the primary fare field
+    if (patch.fare != null && patch.tmMeterFare === undefined) patch.tmMeterFare = patch.fare;
+    if (patch.waitingCost != null && patch.waitingCharge === undefined) patch.waitingCharge = patch.waitingCost;
+    if (patch.pickupAddress != null && patch.source === undefined) patch.source = patch.pickupAddress;
+    if (patch.dropAddress != null && patch.destination === undefined) patch.destination = patch.dropAddress;
+    if (patch.durationLabel != null && patch.duration === undefined) patch.duration = patch.durationLabel;
+    if (patch.paymentMethod != null && patch.paymentType === undefined) patch.paymentType = patch.paymentMethod;
+    const finish = () => {
+      if (!resubmit) {
+        return res.redirect(base + '&msg=' + encodeURIComponent('Trip fields updated.') + '&mt=ok');
+      }
+      fbWrite(
+        'PATCH',
+        'tmTripStatus/' + tripCid + '/' + tripRawKey,
+        {
+          status: 'submitted',
+          resubmittedAt: Date.now(),
+          resubmittedBy: sess.name || sess.councilId,
+        },
+        (e2: any) => {
+          if (e2) return res.redirect(base + '&msg=Job+saved+but+status+update+failed&mt=err');
+          res.redirect(base + '&msg=' + encodeURIComponent('Trip updated and marked submitted.') + '&mt=ok');
+        },
+      );
+    };
+    if (Object.keys(patch).length === 0 && !resubmit) {
+      return res.redirect(base + '&msg=No+fields+to+update&mt=err');
+    }
+    if (Object.keys(patch).length === 0) return finish();
+    fbWrite('PATCH', 'completedJobs/' + tripCid + '/' + tripRawKey, patch, (err: any) => {
+      if (err) return res.redirect(base + '&msg=Update+failed&mt=err');
+      finish();
+    });
+  });
+});
+
+// ── Save reference price list (tmTariffs) for approved operators ──────────────
+router.post('/api/council-tariff-save', (req, res) => {
+  const token = (req.body._token as string) || '';
+  const cid = String(req.body.cid || '').trim();
+  const sess = cpGetSession(token);
+  const te = encodeURIComponent(token);
+  if (!sess || !cid) {
+    return res.redirect('/council-portal/operators?t=' + te + '&msg=Invalid+request&mt=err');
+  }
+  fbRead('tmCompanyAccess/' + cid + '/' + sess.councilId, (e0: any, acc: any) => {
+    if (e0 || !acc || acc.approved !== true) {
+      return res.redirect(
+        '/council-portal/operators?t=' + te + '&msg=Company+not+approved+under+your+council&mt=err',
+      );
+    }
+    const num = (k: string) => {
+      const n = parseFloat(String(req.body[k] ?? ''));
+      return Number.isFinite(n) ? n : 0;
+    };
+    const data = {
+      car: {
+        base: num('car_base'),
+        perKm: num('car_perKm'),
+        perMin: num('car_perMin'),
+        stopFee: num('car_stopFee'),
+      },
+      van: {
+        base: num('van_base'),
+        perKm: num('van_perKm'),
+        perMin: num('van_perMin'),
+        stopFee: num('van_stopFee'),
+      },
+      updatedAt: Date.now(),
+      updatedBy: sess.name || sess.councilId,
+      updatedByCouncilId: sess.councilId,
+    };
+    fbWrite('PUT', 'tmTariffs/' + cid, data, (err: any) => {
+      if (err) {
+        return res.redirect('/council-portal/operators?t=' + te + '&msg=Save+failed&mt=err');
+      }
+      res.redirect(
+        '/council-portal/operators?t=' +
+          te +
+          '&msg=' +
+          encodeURIComponent('Reference price list saved.') +
+          '&mt=ok',
+      );
+    });
   });
 });
 
@@ -536,18 +732,19 @@ router.get('/council-portal/flagged', requirePortalAuth, (req, res) => {
     pending.sort((a, b) => (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || ''));
     const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
     const rows = pending.map(t => {
-      const dt = t.startedAt_ISO ? t.startedAt_ISO.slice(0, 16).replace('T', ' ') : '—';
+      const d = buildTmTripDetail(t);
+      const dt = d.dateTime || '—';
       const submittedDt = t.submittedAt ? new Date(t.submittedAt).toLocaleString('en-NZ') : '—';
       return `<tr>
-<td style="font-family:monospace;font-size:11px">${esc(t.tmVoucherNo || '—')}</td>
-<td>${esc(t.tmPassengerName || '—')}</td>
-<td style="font-size:12px;color:#555">${esc(t._companyName || '—')}</td>
-<td>${esc(t.tmTripCategory || '—')}</td>
-<td>${dt}</td>
-<td>${esc(t.source || '—')}</td>
-<td>$${parseFloat(t.fare || 0).toFixed(2)}</td>
-<td style="font-weight:700;color:#2E7D32">$${parseFloat(t.tmSubsidy || 0).toFixed(2)}</td>
-<td>$${parseFloat(t.tmPassengerPays || 0).toFixed(2)}</td>
+<td style="font-family:monospace;font-size:11px">${esc(d.voucherNo)}</td>
+<td>${esc(d.passengerName)}</td>
+<td style="font-size:12px;color:#555">${esc(d.companyName)}</td>
+<td>${esc(d.tripCategory)}</td>
+<td>${esc(dt)}</td>
+<td>${esc(d.pickup)}</td>
+<td>$${d.meterFare.toFixed(2)}</td>
+<td style="font-weight:700;color:#2E7D32">$${d.totalCouncil.toFixed(2)}</td>
+<td>$${d.passengerPays.toFixed(2)}</td>
 <td style="font-size:11px;color:#888">${submittedDt}</td>
 <td style="white-space:nowrap">
   <form method="POST" action="/api/council-approve" style="display:inline">
@@ -555,26 +752,63 @@ router.get('/council-portal/flagged', requirePortalAuth, (req, res) => {
     <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
     <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
     <input type="hidden" name="action" value="approve"/>
-    <button type="submit" class="cp-btn cp-btn-g" style="margin-right:6px">&#10003; Approve</button>
+    <input type="hidden" name="returnTo" value="flagged"/>
+    <button type="submit" class="cp-btn cp-btn-g" style="margin-right:4px">&#10003; Approve</button>
   </form>
-  <form method="POST" action="/api/council-approve" style="display:inline" onsubmit="return confirm('Reject this trip?')">
+  <form method="POST" action="/api/council-approve" style="display:inline" onsubmit="return cpRejectTrip(this)">
     <input type="hidden" name="_token" value="${esc(token)}"/>
     <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
     <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
     <input type="hidden" name="action" value="reject"/>
-    <button type="submit" class="cp-btn cp-btn-r">&#10007; Reject</button>
+    <input type="hidden" name="returnTo" value="flagged"/>
+    <input type="hidden" name="flagReason" value=""/>
+    <input type="hidden" name="note" value=""/>
+    <button type="submit" class="cp-btn cp-btn-r" style="margin-right:4px">&#10007; Reject</button>
+  </form>
+  <form method="POST" action="/api/council-approve" style="display:inline" onsubmit="return cpReturnTrip(this)">
+    <input type="hidden" name="_token" value="${esc(token)}"/>
+    <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
+    <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
+    <input type="hidden" name="action" value="return"/>
+    <input type="hidden" name="returnTo" value="flagged"/>
+    <input type="hidden" name="note" value=""/>
+    <button type="submit" class="cp-btn" style="background:#E65100;color:#fff">&#8617; Return</button>
   </form>
 </td></tr>`;
     }).join('');
     const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Pending Approval (${pending.length})</h2>
 ${noticeHtml}
-<p style="font-size:13px;color:#666;margin-bottom:16px">These trips have been reviewed and submitted to your council by BookaWaka. Please approve or reject each trip.</p>
+<p style="font-size:13px;color:#666;margin-bottom:16px">These trips have been reviewed and submitted to your council by BookaWaka. Approve, reject (with reason), or return to the company for revision.</p>
 <div class="cp-card" style="overflow-x:auto">
 ${pending.length ? `<table class="cp-tbl">
 <thead><tr><th>Voucher No.</th><th>Passenger</th><th>Operator</th><th>Category</th><th>Date</th><th>Pickup</th><th>Fare</th><th>Council Pays</th><th>Pax Pays</th><th>Submitted</th><th>Action</th></tr></thead>
 <tbody>${rows}</tbody></table>` : '<div class="cp-empty">No trips pending your approval. All clear!</div>'}
-</div>`;
+</div>
+<script>
+function cpRejectTrip(form){
+  var reason = prompt('Flag reason:\\nfare_mismatch, waiting_charged, hoist_rate_mismatch, or other','other');
+  if(reason===null) return false;
+  reason = String(reason||'').trim() || 'other';
+  var allowed = {fare_mismatch:1,waiting_charged:1,hoist_rate_mismatch:1,other:1};
+  if(!allowed[reason]) reason = 'other';
+  var note = prompt('Reject note (required):','');
+  if(note===null) return false;
+  note = String(note||'').trim();
+  if(!note){ alert('A reject note is required.'); return false; }
+  form.flagReason.value = reason;
+  form.note.value = note;
+  return true;
+}
+function cpReturnTrip(form){
+  var note = prompt('Revision comment for the company (required):','');
+  if(note===null) return false;
+  note = String(note||'').trim();
+  if(!note){ alert('A revision comment is required.'); return false; }
+  form.note.value = note;
+  return true;
+}
+</script>`;
     res.send(portalPage('Pending Approval', renderNav(sess, token, 'flagged'), body));
   });
 });
@@ -604,13 +838,41 @@ function filterTripsForReports(
   return rows;
 }
 
+function hasValidTripCoords(d: TmTripDetail): boolean {
+  return (
+    Number.isFinite(d.pickupLat) &&
+    Number.isFinite(d.pickupLng) &&
+    d.pickupLat !== 0 &&
+    d.pickupLng !== 0
+  );
+}
+
+/** Static trip detail body (map placeholder + fare/expected meter). Client adds Leaflet + actions. */
 function tripDetailModalHtml(d: TmTripDetail): string {
   const money = (n: number) => '$' + n.toFixed(2);
   const row = (l: string, v: string) =>
     `<div><div style="font-size:11px;color:#888;font-weight:600;margin-bottom:2px">${l}</div><div style="font-size:13px;font-weight:500">${v}</div></div>`;
   const frow = (l: string, v: string, c = '#333') =>
     `<tr><td style="padding:3px 0;color:${c}">${l}</td><td style="text-align:right;color:${c}">${v}</td></tr>`;
+  const showMap = hasValidTripCoords(d);
+  const expectedBlock =
+    d.expectedMeter != null
+      ? `<div style="margin:10px 0 0;padding:10px 12px;border-radius:6px;background:${d.fareMismatch ? '#FFEBEE' : '#E8F5E9'};font-size:13px">
+  <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;justify-content:space-between">
+    <span>Expected meter (ref list): <strong>$${d.expectedMeter.toFixed(2)}</strong>
+      &nbsp;·&nbsp; Actual: <strong>$${d.meterFare.toFixed(2)}</strong></span>
+    ${d.fareMismatch ? '<span class="cp-bdg-mismatch">Fare mismatch</span>' : '<span class="cp-bdg-g">Within tolerance</span>'}
+  </div>
+</div>`
+      : '';
+  const revisionBlock = d.revisionNote
+    ? `<div style="margin:12px 0 0;padding:10px 12px;border-radius:6px;background:#FFF8E1;border-left:4px solid #E65100;font-size:13px">
+  <strong>Revision note</strong>
+  <div style="margin-top:4px;color:#5d4037">${esc(d.revisionNote)}</div>
+</div>`
+    : '';
   return `
+<div data-cid="${esc(d.cid)}" data-rawkey="${esc(d.rawKey)}" data-status="${esc(d.status)}">
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 18px;margin-bottom:14px">
   ${row('Job / Booking', esc(d.id))}
   ${row('Status', statusBadge(d.status))}
@@ -618,7 +880,7 @@ function tripDetailModalHtml(d: TmTripDetail): string {
   ${row('Driver', esc(d.driverName))}
   ${row('Vehicle / Cab', esc(d.vehicleId))}
   ${row('Trip Category', esc(d.tripCategory))}
-  ${row('Passenger', esc(d.passengerName))}
+  ${row('Passenger (cardholder)', esc(d.passengerName))}
   ${row('Voucher / Cards', esc(d.allCards))}
   ${row('Pickup', esc(d.pickup))}
   ${row('Dropoff', esc(d.dropoff))}
@@ -629,10 +891,14 @@ function tripDetailModalHtml(d: TmTripDetail): string {
   ${row('Payment Method', esc(d.paymentMethod))}
   ${row('Passengers (TM)', String(d.passengerCount))}
 </div>
-<div style="background:#F1F8E9;border-radius:6px;padding:14px;font-size:13px">
+${revisionBlock}
+${showMap ? '<div id="cp-trip-map"></div>' : ''}
+${expectedBlock}
+<div style="background:#F1F8E9;border-radius:6px;padding:14px;font-size:13px;margin-top:12px">
 <strong>Fare Breakdown</strong>
 <table style="width:100%;margin-top:8px">
 ${frow('Meter Fare (trip only)', money(d.meterFare))}
+${d.expectedMeter != null ? frow('Expected meter (ref list)', money(d.expectedMeter), d.fareMismatch ? '#C62828' : '#2E7D32') : ''}
 ${d.waitingCharge > 0 ? frow('Waiting Charge (passenger pays, not TM)', money(d.waitingCharge), '#9e9e9e') : ''}
 <tr><td colspan="2" style="padding:4px 0;border-top:1px dashed #ccc"></td></tr>
 ${d.splitNote ? frow(esc(d.splitNote), '', '#1565C0') : ''}
@@ -646,7 +912,8 @@ ${d.waitingCharge > 0 ? frow('+ Waiting Charge', money(d.waitingCharge)) : ''}
 <tr style="border-top:2px solid #1B5E20"><td style="padding:6px 0"><strong>Passenger Total Pays</strong></td>
 <td style="text-align:right"><strong style="font-size:15px">${money(d.passengerPays)}</strong>
  <span class="cp-bdg-b">${esc(d.paymentMethod)}</span></td></tr>
-</table></div>`;
+</table></div>
+</div>`;
 }
 
 router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
@@ -682,50 +949,74 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
           from: filterFrom || undefined,
           to: filterTo || undefined,
         });
-        const details = displayTrips.map((t) => buildTmTripDetail(t));
-        let totTrips = details.length,
-          totFare = 0,
-          totCouncil = 0,
-          totPax = 0;
-        details.forEach((d) => {
-          totFare += d.meterFare;
-          totCouncil += d.totalCouncil;
-          totPax += d.passengerPays;
-        });
-        const companyOpts = approvedCids
-          .concat(Object.keys(nameByCid).filter((c) => approvedCids.indexOf(c) === -1))
-          .filter((c, i, a) => a.indexOf(c) === i)
-          .sort((a, b) => (nameByCid[a] || a).localeCompare(nameByCid[b] || b))
-          .map(
-            (cid) =>
-              `<option value="${esc(cid)}" ${cid === filterCompany ? 'selected' : ''}>${esc(nameByCid[cid] || cid)}</option>`,
-          )
-          .join('');
-        const exportQs =
-          `&company=${encodeURIComponent(filterCompany)}` +
-          `&from=${encodeURIComponent(filterFrom)}` +
-          `&to=${encodeURIComponent(filterTo)}`;
-        const summaryRows = details
-          .map((d, idx) => {
-            return `<tr class="cp-row-click" data-idx="${idx}" onclick="openRptDetail(${idx})">
+        const tariffCids = Array.from(
+          new Set(
+            displayTrips
+              .map((t) => String(t._cid || ''))
+              .concat(approvedCids)
+              .filter(Boolean),
+          ),
+        );
+        const tariffByCid: Record<string, any> = {};
+        let pendingTariffs = tariffCids.length;
+        const renderReports = () => {
+          const details = displayTrips.map((t) =>
+            buildTmTripDetail(t, { refTariff: (tariffByCid[t._cid] || {}).car || null }),
+          );
+          let totTrips = details.length,
+            totFare = 0,
+            totCouncil = 0,
+            totPax = 0;
+          details.forEach((d) => {
+            totFare += d.meterFare;
+            totCouncil += d.totalCouncil;
+            totPax += d.passengerPays;
+          });
+          const companyOpts = approvedCids
+            .concat(Object.keys(nameByCid).filter((c) => approvedCids.indexOf(c) === -1))
+            .filter((c, i, a) => a.indexOf(c) === i)
+            .sort((a, b) => (nameByCid[a] || a).localeCompare(nameByCid[b] || b))
+            .map(
+              (cid) =>
+                `<option value="${esc(cid)}" ${cid === filterCompany ? 'selected' : ''}>${esc(nameByCid[cid] || cid)}</option>`,
+            )
+            .join('');
+          const exportQs =
+            `&company=${encodeURIComponent(filterCompany)}` +
+            `&from=${encodeURIComponent(filterFrom)}` +
+            `&to=${encodeURIComponent(filterTo)}`;
+          const summaryRows = details
+            .map((d, idx) => {
+              const mismatchMark = d.fareMismatch
+                ? ' <span class="cp-bdg-mismatch" title="Fare mismatch vs reference">!</span>'
+                : '';
+              return `<tr class="cp-row-click" data-idx="${idx}" onclick="openRptDetail(${idx})">
 <td>${esc(d.dateTime)}</td>
 <td>${esc(d.companyName)}</td>
 <td>${esc(d.passengerName)}</td>
 <td style="font-family:monospace;font-size:11px">${esc(d.voucherNo)}</td>
 <td>${esc(d.pickup)}</td>
 <td>${esc(d.dropoff)}</td>
-<td>$${d.meterFare.toFixed(2)}</td>
+<td>$${d.meterFare.toFixed(2)}${mismatchMark}</td>
 <td style="font-weight:700;color:#1B5E20">$${d.totalCouncil.toFixed(2)}</td>
 <td>$${d.passengerPays.toFixed(2)}</td>
 <td>${statusBadge(d.status)}</td>
 <td><button type="button" class="cp-btn-sm" onclick="event.stopPropagation();openRptDetail(${idx})">Details</button></td>
 </tr>`;
-          })
-          .join('');
-        const detailsJson = JSON.stringify(details.map(tripDetailModalHtml)).replace(/</g, '\\u003c');
-        const body = `
+            })
+            .join('');
+          const bodyHtmlByIdx = details.map((d) => tripDetailModalHtml(d));
+          const tripsJson = JSON.stringify(details).replace(/</g, '\\u003c');
+          const bodiesJson = JSON.stringify(bodyHtmlByIdx).replace(/</g, '\\u003c');
+          const msg = (req.query.msg as string) || '';
+          const mt = (req.query.mt as string) || '';
+          const noticeHtml = msg
+            ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>`
+            : '';
+          const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:6px">Reports</h2>
-<p style="font-size:13px;color:#666;margin-bottom:14px">Filter by company and date range. Click a row for full trip detail (fare breakdown, split, hoist, cards, payment method).</p>
+${noticeHtml}
+<p style="font-size:13px;color:#666;margin-bottom:14px">Filter by company and date range. Click a row for full trip detail, map, fare check, and council actions.</p>
 <div class="cp-month-row">
   <form method="GET" action="/council-portal/reports" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
     <input type="hidden" name="t" value="${esc(token)}"/>
@@ -758,21 +1049,135 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
     <div class="cp-modal-hd"><h3 id="rpt-dtitle">Trip detail</h3>
       <button type="button" onclick="closeRptDetail()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:20px;line-height:1">&#x2715;</button></div>
     <div class="cp-modal-bd" id="rpt-detail-body"></div>
-    <div class="cp-modal-ft"><button type="button" class="cp-btn" style="background:#eee;color:#333" onclick="closeRptDetail()">Close</button></div>
+    <div class="cp-modal-ft" id="rpt-detail-ft" style="flex-wrap:wrap;justify-content:space-between;align-items:flex-start">
+      <div id="rpt-actions" style="flex:1;display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start"></div>
+      <button type="button" class="cp-btn" style="background:#eee;color:#333" onclick="closeRptDetail()">Close</button>
+    </div>
   </div>
 </div>
 <script>
-var _rptDetails = ${detailsJson};
-function openRptDetail(i){
-  var html = _rptDetails[i];
-  if(!html) return;
-  document.getElementById('rpt-detail-body').innerHTML = html;
-  document.getElementById('rpt-dtitle').textContent = 'Trip detail';
-  document.getElementById('rpt-ov').classList.add('open');
+var _rptTrips = ${tripsJson};
+var _rptBodies = ${bodiesJson};
+var _rptToken = ${JSON.stringify(token)};
+var _rptMap = null;
+var _ACTIONABLE = {submitted:1,company_approved:1,flagged:1,pending:1};
+function _escAttr(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+function _fld(name,label,val,full){
+  return '<div'+(full?' style="grid-column:1/-1"':'')+'><label>'+label+'</label><input class="cp-input" name="'+name+'" value="'+_escAttr(val)+'"/></div>';
 }
-function closeRptDetail(){ document.getElementById('rpt-ov').classList.remove('open'); }
+function buildEditPanel(d){
+  var html = '<details style="margin-top:14px;border:1px solid #FFE082;border-radius:6px;padding:10px 12px;background:#FFFDE7" '+(d.status==='revision_needed'?'open':'')+'>';
+  html += '<summary style="cursor:pointer;font-weight:700;color:#E65100">Edit all fields</summary>';
+  html += '<form method="POST" action="/api/council-trip-edit" style="margin-top:10px">';
+  html += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
+  html += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
+  html += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
+  html += '<input type="hidden" name="returnTo" value="reports"/>';
+  html += '<div class="cp-edit-grid">';
+  html += _fld('tmCardName','Passenger / cardholder',d.passengerName);
+  html += _fld('tmVoucherNo','Voucher / card no',d.voucherNo);
+  html += _fld('pickupAddress','Pickup',d.pickup,true);
+  html += _fld('dropAddress','Dropoff',d.dropoff,true);
+  html += _fld('fare','Meter fare',d.meterFare);
+  html += _fld('waitingCost','Waiting charge',d.waitingCharge);
+  html += _fld('tmSubsidyFare','Meter subsidy',d.meterSubsidy);
+  html += _fld('tmSubsidyHoist','Hoist (council)',d.hoistCouncil);
+  html += _fld('tmSubsidy','Total council',d.totalCouncil);
+  html += _fld('tmPassengerPays','Passenger pays',d.passengerPays);
+  html += _fld('startedAt_ISO','Start (ISO or epoch ms)',d.startedAtRaw||'');
+  html += _fld('completedAt_ISO','End (ISO or epoch ms)',d.completedAtRaw||'');
+  html += _fld('paymentMethod','Payment method',d.paymentMethod);
+  html += _fld('distanceKm','Distance km',d.distanceKm);
+  html += _fld('durationLabel','Duration',d.duration);
+  html += _fld('tmTripCategory','Trip category',d.tripCategory);
+  html += _fld('driverName','Driver',d.driverName);
+  html += _fld('vehicleId','Vehicle / cab',d.vehicleId);
+  html += '</div>';
+  html += '<label style="display:flex;align-items:center;gap:6px;margin:12px 0 8px;font-size:12.5px"><input type="checkbox" name="resubmit" value="1"/> Mark status as submitted after save</label>';
+  html += '<button type="submit" class="cp-btn cp-btn-g">Save trip fields</button>';
+  html += '</form></details>';
+  return html;
+}
+function buildActionForms(d){
+  if(!_ACTIONABLE[d.status] && d.status!=='revision_needed') return '';
+  if(!_ACTIONABLE[d.status]) return '';
+  var h = '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start;width:100%">';
+  h += '<form method="POST" action="/api/council-approve">';
+  h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
+  h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
+  h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
+  h += '<input type="hidden" name="action" value="approve"/>';
+  h += '<input type="hidden" name="returnTo" value="reports"/>';
+  h += '<button type="submit" class="cp-btn cp-btn-g">&#10003; Approve</button></form>';
+  h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFCDD2;border-radius:6px;background:#FFEBEE" onsubmit="return !!this.note.value.trim()||(alert(\'Reject note required\'),false)">';
+  h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
+  h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
+  h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
+  h += '<input type="hidden" name="action" value="reject"/>';
+  h += '<input type="hidden" name="returnTo" value="reports"/>';
+  h += '<select name="flagReason" class="cp-input" style="width:auto">';
+  h += '<option value="fare_mismatch">fare_mismatch</option>';
+  h += '<option value="waiting_charged">waiting_charged</option>';
+  h += '<option value="hoist_rate_mismatch">hoist_rate_mismatch</option>';
+  h += '<option value="other">other</option></select>';
+  h += '<input name="note" class="cp-input" placeholder="Reject note (required)" style="min-width:160px" required/>';
+  h += '<button type="submit" class="cp-btn cp-btn-r">&#10007; Reject / Red-flag</button></form>';
+  h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFE082;border-radius:6px;background:#FFF8E1" onsubmit="return !!this.note.value.trim()||(alert(\'Revision note required\'),false)">';
+  h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
+  h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
+  h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
+  h += '<input type="hidden" name="action" value="return"/>';
+  h += '<input type="hidden" name="returnTo" value="reports"/>';
+  h += '<input name="note" class="cp-input" placeholder="Revision note (required)" style="min-width:160px" required/>';
+  h += '<button type="submit" class="cp-btn" style="background:#E65100;color:#fff">&#8617; Return to company</button></form>';
+  h += '</div>';
+  return h;
+}
+function initRptMap(d){
+  if(_rptMap){ try{_rptMap.remove();}catch(e){} _rptMap=null; }
+  var el = document.getElementById('cp-trip-map');
+  if(!el || typeof L==='undefined') return;
+  var plat = Number(d.pickupLat), plng = Number(d.pickupLng);
+  var dlat = Number(d.dropLat), dlng = Number(d.dropLng);
+  if(!plat && !plng) return;
+  _rptMap = L.map(el).setView([plat, plng], 13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '&copy; OpenStreetMap'
+  }).addTo(_rptMap);
+  var bounds = [];
+  var m1 = L.marker([plat, plng]).addTo(_rptMap).bindPopup('Pickup');
+  bounds.push([plat, plng]);
+  if(dlat && dlng){
+    L.marker([dlat, dlng]).addTo(_rptMap).bindPopup('Dropoff');
+    bounds.push([dlat, dlng]);
+    L.polyline([[plat,plng],[dlat,dlng]], {color:'#1B5E20',weight:3}).addTo(_rptMap);
+  }
+  if(bounds.length>1) _rptMap.fitBounds(bounds, {padding:[24,24]});
+  setTimeout(function(){ if(_rptMap) _rptMap.invalidateSize(); }, 120);
+}
+function openRptDetail(i){
+  var d = _rptTrips[i], html = _rptBodies[i];
+  if(!d || !html) return;
+  document.getElementById('rpt-detail-body').innerHTML = html + buildEditPanel(d);
+  document.getElementById('rpt-dtitle').textContent = 'Trip detail — ' + (d.id || '');
+  document.getElementById('rpt-actions').innerHTML = buildActionForms(d);
+  document.getElementById('rpt-ov').classList.add('open');
+  initRptMap(d);
+}
+function closeRptDetail(){
+  document.getElementById('rpt-ov').classList.remove('open');
+  if(_rptMap){ try{_rptMap.remove();}catch(e){} _rptMap=null; }
+}
 </script>`;
-        res.send(portalPage('Reports', renderNav(sess, token, 'reports'), body));
+          res.send(portalPage('Reports', renderNav(sess, token, 'reports'), body));
+        };
+        if (pendingTariffs === 0) return renderReports();
+        tariffCids.forEach((cid) => {
+          fbRead('tmTariffs/' + cid, (eT: any, tar: any) => {
+            tariffByCid[cid] = tar || {};
+            if (--pendingTariffs <= 0) renderReports();
+          });
+        });
       };
       if (pendingNames === 0) return finish();
       needNames.forEach((cid) => {
@@ -921,6 +1326,9 @@ router.post('/api/council-batch-action', (req, res) => {
 router.get('/council-portal/operators', requirePortalAuth, (req, res) => {
   const sess = (req as any).cpSession;
   const token = (req as any).cpToken;
+  const msg = (req.query.msg as string) || '';
+  const mt = (req.query.mt as string) || '';
+  const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
   fbRead('tmCompanyAccess', (err: any, allAccess: any) => {
     const approvedCids: string[] = [];
     if (allAccess) {
@@ -966,28 +1374,37 @@ router.get('/council-portal/operators', requirePortalAuth, (req, res) => {
         const drivers = listDriversForCompany(driversRoot, cid, { activeOnly: true });
         const tarCar = tar.car || {};
         const tarVan = tar.van || {};
+        const inp = (name: string, val: any) =>
+          `<input class="cp-input" type="number" step="0.01" min="0" name="${name}" value="${esc(String(parseFloat(val || 0).toFixed(2)))}" style="width:90px;text-align:right"/>`;
         const tarHtml = `
+<form method="POST" action="/api/council-tariff-save">
+<input type="hidden" name="_token" value="${esc(token)}"/>
+<input type="hidden" name="cid" value="${esc(cid)}"/>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
   <div style="background:#F1F8E9;border-radius:6px;padding:12px">
     <div style="font-size:12px;font-weight:700;color:#33691E;margin-bottom:8px">&#128664; Standard Car Rates</div>
     <table style="font-size:12px;width:100%">
-      <tr><td style="color:#666;padding:2px 0">Base Fare</td><td style="font-weight:600;text-align:right">$${parseFloat(tarCar.base||0).toFixed(2)}</td></tr>
-      <tr><td style="color:#666;padding:2px 0">Per km</td><td style="font-weight:600;text-align:right">$${parseFloat(tarCar.perKm||0).toFixed(2)}</td></tr>
-      <tr><td style="color:#666;padding:2px 0">Per min</td><td style="font-weight:600;text-align:right">$${parseFloat(tarCar.perMin||0).toFixed(2)}</td></tr>
-      <tr><td style="color:#666;padding:2px 0">Stop/Wait</td><td style="font-weight:600;text-align:right">$${parseFloat(tarCar.stopFee||0).toFixed(2)}</td></tr>
+      <tr><td style="color:#666;padding:4px 0">Base Fare</td><td style="text-align:right">${inp('car_base', tarCar.base)}</td></tr>
+      <tr><td style="color:#666;padding:4px 0">Per km</td><td style="text-align:right">${inp('car_perKm', tarCar.perKm)}</td></tr>
+      <tr><td style="color:#666;padding:4px 0">Per min</td><td style="text-align:right">${inp('car_perMin', tarCar.perMin)}</td></tr>
+      <tr><td style="color:#666;padding:4px 0">Stop/Wait</td><td style="text-align:right">${inp('car_stopFee', tarCar.stopFee)}</td></tr>
     </table>
   </div>
   <div style="background:#E8F5E9;border-radius:6px;padding:12px">
     <div style="font-size:12px;font-weight:700;color:#1B5E20;margin-bottom:8px">♿ Wheelchair Van Rates</div>
     <table style="font-size:12px;width:100%">
-      <tr><td style="color:#666;padding:2px 0">Base Fare</td><td style="font-weight:600;text-align:right">$${parseFloat(tarVan.base||0).toFixed(2)}</td></tr>
-      <tr><td style="color:#666;padding:2px 0">Per km</td><td style="font-weight:600;text-align:right">$${parseFloat(tarVan.perKm||0).toFixed(2)}</td></tr>
-      <tr><td style="color:#666;padding:2px 0">Per min</td><td style="font-weight:600;text-align:right">$${parseFloat(tarVan.perMin||0).toFixed(2)}</td></tr>
-      <tr><td style="color:#666;padding:2px 0">Stop/Wait</td><td style="font-weight:600;text-align:right">$${parseFloat(tarVan.stopFee||0).toFixed(2)}</td></tr>
+      <tr><td style="color:#666;padding:4px 0">Base Fare</td><td style="text-align:right">${inp('van_base', tarVan.base)}</td></tr>
+      <tr><td style="color:#666;padding:4px 0">Per km</td><td style="text-align:right">${inp('van_perKm', tarVan.perKm)}</td></tr>
+      <tr><td style="color:#666;padding:4px 0">Per min</td><td style="text-align:right">${inp('van_perMin', tarVan.perMin)}</td></tr>
+      <tr><td style="color:#666;padding:4px 0">Stop/Wait</td><td style="text-align:right">${inp('van_stopFee', tarVan.stopFee)}</td></tr>
     </table>
   </div>
 </div>
-${tar.updatedAt ? `<div style="font-size:11px;color:#aaa;margin-top:6px">Tariffs last updated: ${new Date(tar.updatedAt).toLocaleDateString('en-NZ')}</div>` : ''}`;
+<div style="display:flex;align-items:center;gap:12px;margin-top:10px;flex-wrap:wrap">
+  <button type="submit" class="cp-btn cp-btn-g">Save reference prices</button>
+  ${tar.updatedAt ? `<span style="font-size:11px;color:#aaa">Last updated: ${new Date(tar.updatedAt).toLocaleString('en-NZ')}</span>` : ''}
+</div>
+</form>`;
         const driverRows = drivers.length ? drivers.map(d => {
           const name = [d.firstName, d.lastName].filter(Boolean).join(' ') || String(d.name || '—');
           const veh = resolveDriverVehicle(vehiclesRoot, cid, d as Record<string, unknown>);
@@ -1025,8 +1442,11 @@ ${tar.updatedAt ? `<div style="font-size:11px;color:#aaa;margin-top:6px">Tariffs
     </div>` : ''}
     <div style="font-size:13px;font-weight:700;color:#1B5E20;margin-bottom:4px">Live TM economics ${provenanceBadgeHtml(syncProv)}</div>
     <p style="font-size:11.5px;color:#666;margin:0 0 8px">${esc(syncProv.detail)} — subsidy ${pct != null ? esc(String(pct)) + '%' : '—'}, cap $${cap != null ? Number(cap).toFixed(2) : '—'}, hoist $${hoist != null ? Number(hoist).toFixed(2) : '—'}/use</p>
-    <div style="font-size:13px;font-weight:700;color:#1B5E20;margin:14px 0 6px">TM Tariffs ${provenanceBadgeHtml(legacyProv)}</div>
-    <p style="font-size:11.5px;color:#888;margin:0 0 6px;line-height:1.4">Not used for live metering or claims. Drivers fare against the company tariff on the trip; council subsidy comes from council TM config.</p>
+    <div style="font-size:13px;font-weight:700;color:#1B5E20;margin:14px 0 6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      Reference price list ${provenanceBadgeHtml(legacyProv)}
+      <span class="cp-ref-badge" title="Not live meter source of truth">Manual reference (not live meter SoT)</span>
+    </div>
+    <p style="font-size:11.5px;color:#888;margin:0 0 6px;line-height:1.4">Optional council-maintained rates for fare-mismatch checks in Reports. Not used for live metering or claims — drivers fare against the company tariff; subsidy comes from council TM config.</p>
     ${tarHtml}
     <div style="font-size:13px;font-weight:700;color:#1B5E20;margin:14px 0 6px">Drivers &amp; Vehicles (${drivers.length})</div>
     <div style="overflow-x:auto">
@@ -1040,6 +1460,7 @@ ${tar.updatedAt ? `<div style="font-size:11px;color:#aaa;margin-top:6px">Tariffs
       }).join('');
       const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:4px">Approved Operators</h2>
+${noticeHtml}
 <p style="font-size:13px;color:#666;margin-bottom:16px">${approvedCids.length} operator(s) approved under your council for Total Mobility. Registration and cab number come from the company vehicle registry.</p>
 ${sections}`;
       res.send(portalPage('Approved Operators', renderNav(sess, token, 'operators'), body));
@@ -1190,23 +1611,40 @@ router.get('/council-portal/export', requirePortalAuth, (req, res) => {
     } else {
       filtered.sort((a, b) => (a.startedAt_ISO || '').localeCompare(b.startedAt_ISO || ''));
     }
-    const esc2 = (v: any) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
-    const rows = filtered.map((t) => tmTripDetailToCsvRow(buildTmTripDetail(t)).map(esc2).join(','));
-    const csv = [TM_TRIP_CSV_HEADERS.map(esc2).join(','), ...rows].join('\r\n');
-    const rangeLabel =
-      filterFrom || filterTo
-        ? `${filterFrom || 'start'}_${filterTo || 'end'}`
-        : filterMonth || 'All';
-    const fname =
-      'TM-Trips-' +
-      rangeLabel +
-      (filterCompany ? '-' + filterCompany : '') +
-      '-' +
-      sess.councilId +
-      '.csv';
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename="' + fname + '"');
-    res.send(csv);
+    const tariffCids = Array.from(new Set(filtered.map((t) => String(t._cid || '')).filter(Boolean)));
+    const tariffByCid: Record<string, any> = {};
+    let left = tariffCids.length;
+    const emit = () => {
+      const esc2 = (v: any) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+      const rows = filtered
+        .map((t) =>
+          tmTripDetailToCsvRow(
+            buildTmTripDetail(t, { refTariff: (tariffByCid[t._cid] || {}).car || null }),
+          ).map(esc2).join(','),
+        );
+      const csv = [TM_TRIP_CSV_HEADERS.map(esc2).join(','), ...rows].join('\r\n');
+      const rangeLabel =
+        filterFrom || filterTo
+          ? `${filterFrom || 'start'}_${filterTo || 'end'}`
+          : filterMonth || 'All';
+      const fname =
+        'TM-Trips-' +
+        rangeLabel +
+        (filterCompany ? '-' + filterCompany : '') +
+        '-' +
+        sess.councilId +
+        '.csv';
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename="' + fname + '"');
+      res.send(csv);
+    };
+    if (left === 0) return emit();
+    tariffCids.forEach((cid) => {
+      fbRead('tmTariffs/' + cid, (eT: any, tar: any) => {
+        tariffByCid[cid] = tar || {};
+        if (--left <= 0) emit();
+      });
+    });
   });
 });
 

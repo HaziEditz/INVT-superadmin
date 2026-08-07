@@ -55,9 +55,9 @@ export function classifyTmConfig(tmConfig: Record<string, unknown> | null | unde
 
 export function legacyTariffProvenance(): TmProvenance {
   return {
-    kind: 'legacy',
-    label: 'Legacy',
-    detail: 'tmTariffs — unused for live metering / claims',
+    kind: 'manual',
+    label: 'Manual reference',
+    detail: 'Reference price list — fare-mismatch checks only; not live meter SoT',
   };
 }
 
