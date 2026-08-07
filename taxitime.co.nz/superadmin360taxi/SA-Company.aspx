@@ -517,6 +517,7 @@
 <script src="assets/js/common.min.js"></script>
 <script src="assets/js/altair_admin_common.min.js"></script>
 <script src="assets/js/tm-helpers.js"></script>
+<script src="assets/js/driver-list.js"></script>
 <script>
 var CID = new URLSearchParams(window.location.search).get('cid') || '';
 var companyData = {};
@@ -780,24 +781,13 @@ function activateCompany(){
 }
 
 function _loadDriversForCID(){
-  return Promise.all([
-    _fbGet('drivers/'+CID),
-    _fbGet('drivers')
-  ]).then(function(results){
-    var nested = results[0] || {};
-    var root   = results[1] || {};
-    var seen   = {};
-    var list   = [];
-    Object.entries(nested).forEach(function(e){
-      if(e[1] && typeof e[1]==='object'){ seen[e[0]]=true; list.push([e[0],e[1]]); }
-    });
-    Object.entries(root).forEach(function(e){
-      var key=e[0], val=e[1];
-      if(!seen[key] && val && typeof val==='object' && String(val.companyId||val.company_id||'')===String(CID)){
-        list.push([key,val]);
-      }
-    });
-    return list;
+  return _fbGet('drivers').then(function(root){
+    var raw = root || {};
+    var deduped = (window.BWDriverList && BWDriverList.listDriversForCompany)
+      ? BWDriverList.listDriversForCompany(raw, CID)
+      : [];
+    // Preserve [key, record] shape used by _renderDriverTable
+    return deduped.map(function(d){ return [d._uid || d.uid || '', d]; });
   });
 }
 var _driversCache = null;

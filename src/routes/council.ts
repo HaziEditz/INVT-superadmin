@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { fbRead, fbWrite, fbAuthCreate, fbAuthSignIn, fbAuthSendReset } from '../firebase';
 import { esc } from '../utils';
 import { cpGetSession, cpSetSession, cpDeleteSession, councilSessions } from '../sessions';
+import { isDriverWav, listDriversForCompany } from '../lib/driverList';
 
 const router = Router();
 
@@ -780,29 +781,26 @@ router.get('/council-portal/operators', requirePortalAuth, (req, res) => {
     const emptyBody = `<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Approved Operators</h2>
 <div class="cp-card"><div class="cp-empty">No operators are currently approved under your council.</div></div>`;
     if (approvedCids.length === 0) return res.send(portalPage('Approved Operators', renderNav(sess, token, 'operators'), emptyBody));
-    let pending3 = approvedCids.length * 3;
+    let pending3 = approvedCids.length * 2 + 1; // clients + tariffs per cid, plus one drivers root read
     const clientMap: Record<string, any> = {};
     const tariffMap: Record<string, any> = {};
-    const driverMap: Record<string, any[]> = {};
+    let driversRoot: Record<string, unknown> | null = null;
     function done3() {
       if (--pending3 === 0) buildOperatorsPage();
     }
+    fbRead('drivers', (e: any, allDrivers: any) => {
+      driversRoot = allDrivers && typeof allDrivers === 'object' ? allDrivers : {};
+      done3();
+    });
     approvedCids.forEach(cid => {
       fbRead('superClients/' + cid, (e: any, sc: any) => { clientMap[cid] = sc || {}; done3(); });
       fbRead('tmTariffs/' + cid, (e: any, t: any) => { tariffMap[cid] = t || {}; done3(); });
-      fbRead('drivers', (e: any, allDrivers: any) => {
-        if (!allDrivers) { driverMap[cid] = []; return done3(); }
-        driverMap[cid] = Object.entries(allDrivers)
-          .filter(([, d]: [string, any]) => d && d.companyId === cid)
-          .map(([uid, d]: [string, any]) => ({ uid, ...d }));
-        done3();
-      });
     });
     function buildOperatorsPage() {
       const sections = approvedCids.map(cid => {
         const sc = clientMap[cid] || {};
         const tar = tariffMap[cid] || {};
-        const drivers = driverMap[cid] || [];
+        const drivers = listDriversForCompany(driversRoot, cid, { activeOnly: true });
         const tarCar = tar.car || {};
         const tarVan = tar.van || {};
         const tarHtml = `
@@ -828,11 +826,11 @@ router.get('/council-portal/operators', requirePortalAuth, (req, res) => {
 </div>
 ${tar.updatedAt ? `<div style="font-size:11px;color:#aaa;margin-top:6px">Tariffs last updated: ${new Date(tar.updatedAt).toLocaleDateString('en-NZ')}</div>` : ''}`;
         const driverRows = drivers.length ? drivers.map(d => {
-          const name = [d.firstName, d.lastName].filter(Boolean).join(' ') || d.name || '—';
-          const veh = d.vehicleMake && d.vehicleModel ? `${d.vehicleMake} ${d.vehicleModel}` : (d.vehicle || '—');
-          const plate = d.licensePlate || d.vehiclePlate || '—';
-          const vtype = d.vehicleType || '—';
-          const accessible = d.isWheelchairAccessible || d.accessible ? '<span style="background:#E8F5E9;color:#2E7D32;padding:1px 6px;border-radius:8px;font-size:11px;font-weight:600">♿ WAV</span>' : '';
+          const name = [d.firstName, d.lastName].filter(Boolean).join(' ') || String(d.name || '—');
+          const veh = d.vehicleMake && d.vehicleModel ? `${d.vehicleMake} ${d.vehicleModel}` : String(d.vehicle || '—');
+          const plate = String(d.licensePlate || d.vehiclePlate || '—');
+          const vtype = String(d.vehicleType || '—');
+          const accessible = isDriverWav(d) ? '<span style="background:#E8F5E9;color:#2E7D32;padding:1px 6px;border-radius:8px;font-size:11px;font-weight:600">♿ WAV</span>' : '';
           return `<tr>
 <td style="font-weight:500">${esc(name)}</td>
 <td style="font-family:monospace;font-size:11px">${esc(plate)}</td>
@@ -845,7 +843,7 @@ ${tar.updatedAt ? `<div style="font-size:11px;color:#aaa;margin-top:6px">Tariffs
 <div class="cp-card" style="margin-bottom:18px">
   <div class="cp-card-hd">
     <h3 style="font-size:15px">&#127970; ${esc(sc.name || cid)}</h3>
-    <span style="background:#E8F5E9;color:#2E7D32;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">&#10003; Approved</span>
+    <span style="background:#E8F5E9;color:#2E7D32;padding:2px 8px;border-radius:10px;font-weight:600;font-size:11px">&#10003; Approved</span>
   </div>
   <div style="padding:14px 18px">
     ${sc.phone || sc.email || sc.address ? `<div style="font-size:12.5px;color:#555;margin-bottom:10px;display:flex;gap:20px;flex-wrap:wrap">

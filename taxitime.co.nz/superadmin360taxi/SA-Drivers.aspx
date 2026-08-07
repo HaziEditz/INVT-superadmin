@@ -373,6 +373,7 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
 <script src="assets/js/common.min.js"></script>
 <script src="assets/js/altair_admin_common.min.js"></script>
 <script src="assets/js/tm-helpers.js"></script>
+<script src="assets/js/driver-list.js"></script>
 <script>
 var allDrivers = [];
 var allCompanies = {};
@@ -401,9 +402,11 @@ function driverVehicle(d) {
 }
 function driverPlate(d) { return d.licensePlate || d.vehiclePlate || d.plate || '—'; }
 function isWav(d) {
-  return !!(d.isWheelchairAccessible || d.accessible || d.wav ||
-    (d.vehicleType && d.vehicleType.toLowerCase().indexOf('wheelchair') !== -1) ||
-    (d.vehicleType && d.vehicleType.toLowerCase().indexOf('wav') !== -1));
+  return (window.BWDriverList && BWDriverList.isDriverWav)
+    ? BWDriverList.isDriverWav(d)
+    : !!(d.isWheelchairAccessible || d.accessible || d.wav ||
+      (d.vehicleType && d.vehicleType.toLowerCase().indexOf('wheelchair') !== -1) ||
+      (d.vehicleType && d.vehicleType.toLowerCase().indexOf('wav') !== -1));
 }
 function isActive(d) { return d.active !== false && d.status !== 'inactive' && d.status !== 'suspended'; }
 function initials(d) {
@@ -435,32 +438,10 @@ function loadData() {
   ]).then(function(results) {
     allCompanies = results[0] || {};
     var raw = results[1] || {};
-    // Flatten both structures:
-    // 1. Nested: drivers/{cid}/{uid} — Driver App / SA writes
-    // 2. Flat:   drivers/{pushKey}   — Owner Portal writes
-    var flat = [];
-    var seenUids = {};
-    Object.entries(raw).forEach(function(e){
-      var key = e[0], val = e[1];
-      if(!val || typeof val !== 'object') return;
-      // Detect nested company bucket: key is a numeric CID and val contains uid-keyed objects
-      var firstChildKey = Object.keys(val)[0];
-      var firstChildVal = firstChildKey ? val[firstChildKey] : null;
-      if(firstChildVal && typeof firstChildVal === 'object' && (firstChildVal.email || firstChildVal.uid || firstChildVal.companyId)){
-        // Nested bucket — expand children
-        Object.entries(val).forEach(function(e2){
-          if(!seenUids[e2[0]] && e2[1] && typeof e2[1]==='object'){
-            seenUids[e2[0]] = true;
-            flat.push(Object.assign({ _uid: e2[0] }, e2[1]));
-          }
-        });
-      } else if(!seenUids[key] && (val.email || val.uid || val.companyId)){
-        // Flat record
-        seenUids[key] = true;
-        flat.push(Object.assign({ _uid: key }, val));
-      }
-    });
-    allDrivers = flat;
+    // Nested drivers/{cid}/{uid} + flat drivers/{pushKey}; identity-dedupe (not RTDB key only)
+    allDrivers = (window.BWDriverList && BWDriverList.flattenAllDrivers)
+      ? BWDriverList.flattenAllDrivers(raw)
+      : [];
     allTransferRequests = results[2] || {};
 
     // Populate company filter
