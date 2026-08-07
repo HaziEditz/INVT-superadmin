@@ -629,6 +629,21 @@ function submitToCouncil(id) {
       ttData[id].councilId = chosenCouncilId;
       renderTT();
       toastr.success('Trip submitted to ' + councilName + '.');
+      // Phase 3: immediate anomaly scan (portal also re-scans on load)
+      try {
+        fetch('/api/tm-scan-submitted', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cid: t._cid, rawKey: t._rawKey, councilId: chosenCouncilId }),
+        }).then(function(r) { return r.json(); }).then(function(j) {
+          if (j && j.ok && j.status === 'flagged') {
+            ttData[id].status = 'flagged';
+            ttData[id].flagReasons = j.flagReasons || [];
+            renderTT();
+            toastr.warning('Trip auto-flagged for council review (' + (j.flagReasons || []).join(', ') + ').');
+          }
+        }).catch(function() {});
+      } catch (e) {}
     })
     .catch(function(e) { toastr.error('Error: ' + e); });
 }

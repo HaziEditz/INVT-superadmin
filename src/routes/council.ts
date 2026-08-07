@@ -15,6 +15,12 @@ import {
   TM_TRIP_CSV_HEADERS,
   type TmTripDetail,
 } from '../lib/tmTripDetail';
+import {
+  applyAnomalyScan,
+  partitionCleanAndFlagged,
+  isClaimEligibleStatus,
+  type AnomalyStatusPatch,
+} from '../lib/tmAnomaly';
 
 const router = Router();
 
@@ -83,6 +89,7 @@ a{color:inherit;text-decoration:none}
 .cp-edit-grid label{display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:2px}
 .cp-edit-grid input,.cp-edit-grid select,.cp-edit-grid textarea{width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:12.5px}
 .cp-ref-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;background:#FFF8E1;color:#E65100;border:1px solid #FFE082}
+.cp-chip{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10.5px;font-weight:600;background:#FFEBEE;color:#C62828;margin:1px 2px 1px 0;border:1px solid #FFCDD2}
 `;
 
 function renderNav(session: any, token: string, activePage: string): string {
@@ -90,7 +97,8 @@ function renderNav(session: any, token: string, activePage: string): string {
   const pages: [string, string][] = [
     ['dashboard', '&#128202; Dashboard'],
     ['trips', '&#128661; Trips'],
-    ['flagged', '&#128681; Pending Approval'],
+    ['pending', '&#128681; Pending Approval'],
+    ['anomalies', '&#128680; Flagged'],
     ['batches', '&#128196; Claim Batches'],
     ['cards', '&#127938; Cards'],
     ['limits', '&#128176; Trip Limits'],
@@ -212,13 +220,83 @@ function loadCouncilTrips(councilId: string, cb: (err: any, trips: any[]) => voi
             ...econ,
             status: st.status || 'pending', councilId: st.councilId,
             submittedAt: st.submittedAt, approvedAt: st.approvedAt, rejectedAt: st.rejectedAt,
-            approvedBy: st.approvedBy, rejectedBy: st.rejectedBy, revisionNote: st.revisionNote, batchId: st.batchId
+            approvedBy: st.approvedBy, rejectedBy: st.rejectedBy,
+            revisionNote: st.revisionNote || st.revisionNotes || null,
+            revisionNotes: st.revisionNotes || st.revisionNote || null,
+            batchId: st.batchId,
+            flagReasons: Array.isArray(st.flagReasons) ? st.flagReasons : [],
+            anomalyDetail: st.anomalyDetail || null,
+            anomalyScannedAt: st.anomalyScannedAt || null,
+            flaggedAt: st.flaggedAt || null,
+            rejectNote: st.rejectNote || null,
+            sentBackAt: st.sentBackAt || null,
           });
         });
       });
       cb(null, result);
     }
   });
+}
+
+function loadTariffsForCids(cids: string[], cb: (map: Record<string, any>) => void): void {
+  const unique = Array.from(new Set((cids || []).map((c) => String(c || '').trim()).filter(Boolean)));
+  if (unique.length === 0) return cb({});
+  const map: Record<string, any> = {};
+  let left = unique.length;
+  unique.forEach((cid) => {
+    fbRead('tmTariffs/' + cid, (_e: any, tar: any) => {
+      map[cid] = tar || {};
+      if (--left === 0) cb(map);
+    });
+  });
+}
+
+function persistAnomalyPatches(patches: AnomalyStatusPatch[], done: () => void): void {
+  if (!patches || patches.length === 0) return done();
+  let left = patches.length;
+  patches.forEach((p) => {
+    fbWrite('PATCH', 'tmTripStatus/' + p.cid + '/' + p.rawKey, p.patch, () => {
+      if (--left === 0) done();
+    });
+  });
+}
+
+function scanAndRefreshTrips(trips: any[], cb: (updated: any[]) => void): void {
+  const list = Array.isArray(trips) ? trips : [];
+  const cids = list.map((t) => String(t._cid || '')).filter(Boolean);
+  loadTariffsForCids(cids, (tariffByCid) => {
+    const patches = applyAnomalyScan(list, tariffByCid);
+    persistAnomalyPatches(patches, () => {
+      const byKey: Record<string, Record<string, unknown>> = {};
+      patches.forEach((p) => {
+        byKey[p.cid + '/' + p.rawKey] = p.patch;
+      });
+      const updated = list.map((t) => {
+        const patch = byKey[String(t._cid) + '/' + String(t._rawKey)];
+        if (!patch) return t;
+        return {
+          ...t,
+          status: patch.status != null ? patch.status : t.status,
+          flagReasons: patch.flagReasons !== undefined ? patch.flagReasons : t.flagReasons,
+          anomalyDetail: patch.anomalyDetail !== undefined ? patch.anomalyDetail : t.anomalyDetail,
+          anomalyScannedAt: patch.anomalyScannedAt != null ? patch.anomalyScannedAt : t.anomalyScannedAt,
+          flaggedAt: patch.flaggedAt != null ? patch.flaggedAt : t.flaggedAt,
+        };
+      });
+      cb(updated);
+    });
+  });
+}
+
+function flagReasonChips(reasons: any, detail?: string | null): string {
+  const arr = Array.isArray(reasons) ? reasons.map((r) => String(r || '').trim()).filter(Boolean) : [];
+  if (!arr.length) {
+    return detail ? `<span class="cp-chip" title="${esc(String(detail))}">flagged</span>` : '';
+  }
+  const title = detail ? esc(String(detail)) : '';
+  return arr
+    .map((r) => `<span class="cp-chip"${title ? ` title="${title}"` : ''}>${esc(r)}</span>`)
+    .join(' ');
 }
 
 /** Validation ranges for shared SA / council financial fields. */
@@ -372,7 +450,8 @@ router.post('/api/set-council-password', (req, res) => {
 });
 
 function councilReturnPath(returnTo: string, te: string): string {
-  const page = returnTo === 'reports' ? 'reports' : 'flagged';
+  const rt = String(returnTo || 'pending').trim();
+  const page = rt === 'reports' ? 'reports' : rt === 'anomalies' ? 'anomalies' : 'pending';
   return '/council-portal/' + page + '?t=' + te;
 }
 
@@ -382,7 +461,13 @@ router.post('/api/council-approve', (req, res) => {
   const tripCid = (req.body.tripCid as string) || '';
   const tripRawKey = (req.body.tripRawKey as string) || '';
   const action = (req.body.action as string) || '';
-  const returnTo = String(req.body.returnTo || 'flagged').trim() === 'reports' ? 'reports' : 'flagged';
+  const rawRt = String(req.body.returnTo || 'pending').trim();
+  const returnTo =
+    rawRt === 'reports' || rawRt === 'anomalies' || rawRt === 'pending'
+      ? rawRt
+      : rawRt === 'flagged'
+        ? 'pending'
+        : 'pending';
   const flagReason = String(req.body.flagReason || '').trim();
   const note = String(req.body.note || req.body.revisionNote || '').trim();
   const sess = cpGetSession(token);
@@ -426,6 +511,8 @@ router.post('/api/council-approve', (req, res) => {
         revisionNote: note,
         sentBackAt: now,
         sentBackBy: who,
+        flagReasons: Array.isArray(st.flagReasons) ? st.flagReasons : [],
+        anomalyDetail: st.anomalyDetail || null,
       };
       msg = 'Trip returned to company for revision.';
     }
@@ -457,7 +544,13 @@ router.post('/api/council-trip-edit', (req, res) => {
   const token = (req.body._token as string) || '';
   const tripCid = (req.body.tripCid as string) || '';
   const tripRawKey = (req.body.tripRawKey as string) || '';
-  const returnTo = String(req.body.returnTo || 'reports').trim() === 'flagged' ? 'flagged' : 'reports';
+  const rawRt = String(req.body.returnTo || 'reports').trim();
+  const returnTo =
+    rawRt === 'pending' || rawRt === 'anomalies' || rawRt === 'reports'
+      ? rawRt
+      : rawRt === 'flagged'
+        ? 'pending'
+        : 'reports';
   const resubmit = String(req.body.resubmit || '') === '1';
   const sess = cpGetSession(token);
   const te = encodeURIComponent(token);
@@ -599,10 +692,11 @@ router.get('/council-portal/dashboard', requirePortalAuth, (req, res) => {
         });
       }
       const thisMonthTrips = myTrips.filter(t => (t.startedAt_ISO || '').slice(0, 7) === curMonth);
-      let totalCouncilPays = 0, pendingCount = 0;
+      let totalCouncilPays = 0, pendingCount = 0, flaggedCount = 0;
       thisMonthTrips.forEach(t => {
         totalCouncilPays += parseFloat(t.tmSubsidy || 0);
         if (t.status === 'submitted') pendingCount++;
+        if (t.status === 'flagged') flaggedCount++;
       });
       const avg = thisMonthTrips.length ? (totalCouncilPays / thisMonthTrips.length).toFixed(2) : '0.00';
       const recent = [...myTrips].sort((a, b) => (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || '')).slice(0, 10);
@@ -635,7 +729,8 @@ router.get('/council-portal/dashboard', requirePortalAuth, (req, res) => {
   <div class="cp-stat"><div class="cp-stat-v">${thisMonthTrips.length}</div><div class="cp-stat-l">Trips This Month (${esc(curMonth)})</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totalCouncilPays.toFixed(2)}</div><div class="cp-stat-l">Council Pays This Month</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${avg}</div><div class="cp-stat-l">Avg Per Trip</div></div>
-  ${pendingCount > 0 ? `<div class="cp-stat flag"><div class="cp-stat-v">${pendingCount}</div><div class="cp-stat-l">Awaiting Your Approval</div></div>` : ''}
+  ${pendingCount > 0 ? `<div class="cp-stat flag"><div class="cp-stat-v">${pendingCount}</div><div class="cp-stat-l"><a href="/council-portal/pending?t=${encodeURIComponent(token)}" style="color:inherit">Awaiting Your Approval</a></div></div>` : ''}
+  ${flaggedCount > 0 ? `<div class="cp-stat flag"><div class="cp-stat-v">${flaggedCount}</div><div class="cp-stat-l"><a href="/council-portal/anomalies?t=${encodeURIComponent(token)}" style="color:inherit">Flagged anomalies</a></div></div>` : ''}
 </div>
 ${configHtml}
 <div class="cp-card">
@@ -720,71 +815,17 @@ ${displayTrips.length ? `<table class="cp-tbl">
   });
 });
 
-// ── Flagged / Pending Approval ─────────────────────────────────────────────────
+// ── Legacy /flagged → /pending ─────────────────────────────────────────────────
 router.get('/council-portal/flagged', requirePortalAuth, (req, res) => {
-  const sess = (req as any).cpSession;
   const token = (req as any).cpToken;
-  const msg = (req.query.msg as string) || '';
-  const mt = (req.query.mt as string) || '';
   const te = encodeURIComponent(token);
-  loadCouncilTrips(sess.councilId, (err: any, myTrips: any[]) => {
-    const pending = myTrips.filter(t => t.status === 'submitted');
-    pending.sort((a, b) => (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || ''));
-    const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
-    const rows = pending.map(t => {
-      const d = buildTmTripDetail(t);
-      const dt = d.dateTime || '—';
-      const submittedDt = t.submittedAt ? new Date(t.submittedAt).toLocaleString('en-NZ') : '—';
-      return `<tr>
-<td style="font-family:monospace;font-size:11px">${esc(d.voucherNo)}</td>
-<td>${esc(d.passengerName)}</td>
-<td style="font-size:12px;color:#555">${esc(d.companyName)}</td>
-<td>${esc(d.tripCategory)}</td>
-<td>${esc(dt)}</td>
-<td>${esc(d.pickup)}</td>
-<td>$${d.meterFare.toFixed(2)}</td>
-<td style="font-weight:700;color:#2E7D32">$${d.totalCouncil.toFixed(2)}</td>
-<td>$${d.passengerPays.toFixed(2)}</td>
-<td style="font-size:11px;color:#888">${submittedDt}</td>
-<td style="white-space:nowrap">
-  <form method="POST" action="/api/council-approve" style="display:inline">
-    <input type="hidden" name="_token" value="${esc(token)}"/>
-    <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
-    <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
-    <input type="hidden" name="action" value="approve"/>
-    <input type="hidden" name="returnTo" value="flagged"/>
-    <button type="submit" class="cp-btn cp-btn-g" style="margin-right:4px">&#10003; Approve</button>
-  </form>
-  <form method="POST" action="/api/council-approve" style="display:inline" onsubmit="return cpRejectTrip(this)">
-    <input type="hidden" name="_token" value="${esc(token)}"/>
-    <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
-    <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
-    <input type="hidden" name="action" value="reject"/>
-    <input type="hidden" name="returnTo" value="flagged"/>
-    <input type="hidden" name="flagReason" value=""/>
-    <input type="hidden" name="note" value=""/>
-    <button type="submit" class="cp-btn cp-btn-r" style="margin-right:4px">&#10007; Reject</button>
-  </form>
-  <form method="POST" action="/api/council-approve" style="display:inline" onsubmit="return cpReturnTrip(this)">
-    <input type="hidden" name="_token" value="${esc(token)}"/>
-    <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
-    <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
-    <input type="hidden" name="action" value="return"/>
-    <input type="hidden" name="returnTo" value="flagged"/>
-    <input type="hidden" name="note" value=""/>
-    <button type="submit" class="cp-btn" style="background:#E65100;color:#fff">&#8617; Return</button>
-  </form>
-</td></tr>`;
-    }).join('');
-    const body = `
-<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Pending Approval (${pending.length})</h2>
-${noticeHtml}
-<p style="font-size:13px;color:#666;margin-bottom:16px">These trips have been reviewed and submitted to your council by BookaWaka. Approve, reject (with reason), or return to the company for revision.</p>
-<div class="cp-card" style="overflow-x:auto">
-${pending.length ? `<table class="cp-tbl">
-<thead><tr><th>Voucher No.</th><th>Passenger</th><th>Operator</th><th>Category</th><th>Date</th><th>Pickup</th><th>Fare</th><th>Council Pays</th><th>Pax Pays</th><th>Submitted</th><th>Action</th></tr></thead>
-<tbody>${rows}</tbody></table>` : '<div class="cp-empty">No trips pending your approval. All clear!</div>'}
-</div>
+  let url = '/council-portal/pending?t=' + te;
+  if (req.query.msg) url += '&msg=' + encodeURIComponent(String(req.query.msg));
+  if (req.query.mt) url += '&mt=' + encodeURIComponent(String(req.query.mt));
+  res.redirect(url);
+});
+
+const CP_TRIP_ACTION_SCRIPT = `
 <script>
 function cpRejectTrip(form){
   var reason = prompt('Flag reason:\\nfare_mismatch, waiting_charged, hoist_rate_mismatch, or other','other');
@@ -809,7 +850,309 @@ function cpReturnTrip(form){
   return true;
 }
 </script>`;
-    res.send(portalPage('Pending Approval', renderNav(sess, token, 'flagged'), body));
+
+// ── Pending Approval (clean submitted) ─────────────────────────────────────────
+router.get('/council-portal/pending', requirePortalAuth, (req, res) => {
+  const sess = (req as any).cpSession;
+  const token = (req as any).cpToken;
+  const msg = (req.query.msg as string) || '';
+  const mt = (req.query.mt as string) || '';
+  const te = encodeURIComponent(token);
+  loadCouncilTrips(sess.councilId, (_err: any, myTrips: any[]) => {
+    scanAndRefreshTrips(myTrips, (scanned) => {
+      const { cleanSubmitted } = partitionCleanAndFlagged(scanned);
+      const pending = cleanSubmitted.slice().sort((a, b) =>
+        (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || ''),
+      );
+      const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
+      const rows = pending.map((t) => {
+        const d = buildTmTripDetail(t);
+        const dt = d.dateTime || '—';
+        const submittedDt = t.submittedAt ? new Date(t.submittedAt).toLocaleString('en-NZ') : '—';
+        return `<tr>
+<td style="font-family:monospace;font-size:11px">${esc(d.voucherNo)}</td>
+<td>${esc(d.passengerName)}</td>
+<td style="font-size:12px;color:#555">${esc(d.companyName)}</td>
+<td>${esc(d.tripCategory)}</td>
+<td>${esc(dt)}</td>
+<td>${esc(d.pickup)}</td>
+<td>$${d.meterFare.toFixed(2)}</td>
+<td style="font-weight:700;color:#2E7D32">$${d.totalCouncil.toFixed(2)}</td>
+<td>$${d.passengerPays.toFixed(2)}</td>
+<td style="font-size:11px;color:#888">${submittedDt}</td>
+<td style="white-space:nowrap">
+  <form method="POST" action="/api/council-approve" style="display:inline">
+    <input type="hidden" name="_token" value="${esc(token)}"/>
+    <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
+    <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
+    <input type="hidden" name="action" value="approve"/>
+    <input type="hidden" name="returnTo" value="pending"/>
+    <button type="submit" class="cp-btn cp-btn-g" style="margin-right:4px">&#10003; Approve</button>
+  </form>
+  <form method="POST" action="/api/council-approve" style="display:inline" onsubmit="return cpRejectTrip(this)">
+    <input type="hidden" name="_token" value="${esc(token)}"/>
+    <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
+    <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
+    <input type="hidden" name="action" value="reject"/>
+    <input type="hidden" name="returnTo" value="pending"/>
+    <input type="hidden" name="flagReason" value=""/>
+    <input type="hidden" name="note" value=""/>
+    <button type="submit" class="cp-btn cp-btn-r" style="margin-right:4px">&#10007; Reject</button>
+  </form>
+  <form method="POST" action="/api/council-approve" style="display:inline" onsubmit="return cpReturnTrip(this)">
+    <input type="hidden" name="_token" value="${esc(token)}"/>
+    <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
+    <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
+    <input type="hidden" name="action" value="return"/>
+    <input type="hidden" name="returnTo" value="pending"/>
+    <input type="hidden" name="note" value=""/>
+    <button type="submit" class="cp-btn" style="background:#E65100;color:#fff">&#8617; Return</button>
+  </form>
+</td></tr>`;
+      }).join('');
+      const approveAllForm = pending.length
+        ? `<form method="POST" action="/api/council-bulk-approve" style="display:inline" onsubmit="return confirm('Approve ${pending.length} clean trips?')">
+  <input type="hidden" name="_token" value="${esc(token)}"/>
+  <input type="hidden" name="returnTo" value="pending"/>
+  <input type="hidden" name="allClean" value="1"/>
+  <button type="submit" class="cp-btn cp-btn-g">&#10003; Approve All (${pending.length})</button>
+</form>`
+        : '';
+      const body = `
+<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Pending Approval (${pending.length})</h2>
+${noticeHtml}
+<p style="font-size:13px;color:#666;margin-bottom:12px">Clean submitted trips (no anomaly flags). Approve, reject, or return individually — or approve all clean trips at once. Flagged trips appear under <a href="/council-portal/anomalies?t=${te}" style="color:#2E7D32;font-weight:600">Flagged</a>.</p>
+${approveAllForm ? `<div style="margin-bottom:14px">${approveAllForm}</div>` : ''}
+<div class="cp-card" style="overflow-x:auto">
+${pending.length ? `<table class="cp-tbl">
+<thead><tr><th>Voucher No.</th><th>Passenger</th><th>Operator</th><th>Category</th><th>Date</th><th>Pickup</th><th>Fare</th><th>Council Pays</th><th>Pax Pays</th><th>Submitted</th><th>Action</th></tr></thead>
+<tbody>${rows}</tbody></table>` : '<div class="cp-empty">No clean trips pending your approval. All clear!</div>'}
+</div>
+${CP_TRIP_ACTION_SCRIPT}`;
+      res.send(portalPage('Pending Approval', renderNav(sess, token, 'pending'), body));
+    });
+  });
+});
+
+// ── Anomalies / Flagged ────────────────────────────────────────────────────────
+router.get('/council-portal/anomalies', requirePortalAuth, (req, res) => {
+  const sess = (req as any).cpSession;
+  const token = (req as any).cpToken;
+  const msg = (req.query.msg as string) || '';
+  const mt = (req.query.mt as string) || '';
+  const te = encodeURIComponent(token);
+  loadCouncilTrips(sess.councilId, (_err: any, myTrips: any[]) => {
+    scanAndRefreshTrips(myTrips, (scanned) => {
+      const { flagged } = partitionCleanAndFlagged(scanned);
+      const rowsList = flagged.slice().sort((a, b) =>
+        (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || ''),
+      );
+      const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
+      const rows = rowsList.map((t) => {
+        const d = buildTmTripDetail(t);
+        const dt = d.dateTime || '—';
+        const chips = flagReasonChips(t.flagReasons, t.anomalyDetail);
+        const tripKey = esc(String(t._cid) + '|' + String(t._rawKey));
+        return `<tr>
+<td><input type="checkbox" name="trip" value="${tripKey}" form="cp-bulk-return"/></td>
+<td style="font-family:monospace;font-size:11px">${esc(d.voucherNo)}</td>
+<td>${esc(d.passengerName)}</td>
+<td style="font-size:12px;color:#555">${esc(d.companyName)}</td>
+<td>${esc(dt)}</td>
+<td>$${d.meterFare.toFixed(2)}</td>
+<td style="font-weight:700;color:#2E7D32">$${d.totalCouncil.toFixed(2)}</td>
+<td style="max-width:220px">${chips || '<span class="cp-bdg-r">flagged</span>'}${t.anomalyDetail ? `<div style="font-size:11px;color:#888;margin-top:3px">${esc(String(t.anomalyDetail))}</div>` : ''}</td>
+<td style="white-space:nowrap">
+  <form method="POST" action="/api/council-approve" style="display:inline" onsubmit="return cpReturnTrip(this)">
+    <input type="hidden" name="_token" value="${esc(token)}"/>
+    <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
+    <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
+    <input type="hidden" name="action" value="return"/>
+    <input type="hidden" name="returnTo" value="anomalies"/>
+    <input type="hidden" name="note" value=""/>
+    <button type="submit" class="cp-btn" style="background:#E65100;color:#fff;margin-right:4px">&#8617; Return</button>
+  </form>
+  <form method="POST" action="/api/council-approve" style="display:inline" onsubmit="return cpRejectTrip(this)">
+    <input type="hidden" name="_token" value="${esc(token)}"/>
+    <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
+    <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
+    <input type="hidden" name="action" value="reject"/>
+    <input type="hidden" name="returnTo" value="anomalies"/>
+    <input type="hidden" name="flagReason" value=""/>
+    <input type="hidden" name="note" value=""/>
+    <button type="submit" class="cp-btn cp-btn-r">&#10007; Reject</button>
+  </form>
+</td></tr>`;
+      }).join('');
+      const body = `
+<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Flagged / Anomalies (${rowsList.length})</h2>
+${noticeHtml}
+<p style="font-size:13px;color:#666;margin-bottom:12px">Trips automatically flagged for fare mismatch or card reuse. Return selected trips to the company with a note, or reject individually. Clean trips are under <a href="/council-portal/pending?t=${te}" style="color:#2E7D32;font-weight:600">Pending Approval</a>.</p>
+${rowsList.length ? `<form id="cp-bulk-return" method="POST" action="/api/council-bulk-return" style="margin-bottom:12px" onsubmit="return cpBulkReturn(this)">
+  <input type="hidden" name="_token" value="${esc(token)}"/>
+  <input type="hidden" name="returnTo" value="anomalies"/>
+  <label style="font-size:12.5px;font-weight:600;color:#555;margin-right:8px">Revision note (required)</label>
+  <input name="note" class="cp-input" style="min-width:240px;margin-right:8px" placeholder="Note for company" required/>
+  <button type="submit" class="cp-btn" style="background:#E65100;color:#fff">&#8617; Return selected</button>
+</form>` : ''}
+<div class="cp-card" style="overflow-x:auto">
+${rowsList.length ? `<table class="cp-tbl">
+<thead><tr><th></th><th>Voucher No.</th><th>Passenger</th><th>Operator</th><th>Date</th><th>Fare</th><th>Council Pays</th><th>Reasons</th><th>Action</th></tr></thead>
+<tbody>${rows}</tbody></table>` : '<div class="cp-empty">No flagged trips. All clear!</div>'}
+</div>
+${CP_TRIP_ACTION_SCRIPT}
+<script>
+function cpBulkReturn(form){
+  var boxes = document.querySelectorAll('input[name="trip"]:checked');
+  if(!boxes.length){ alert('Select at least one trip.'); return false; }
+  var note = (form.note && form.note.value || '').trim();
+  if(!note){ alert('A revision note is required.'); return false; }
+  return confirm('Return '+boxes.length+' flagged trip(s) to company?');
+}
+</script>`;
+      res.send(portalPage('Flagged', renderNav(sess, token, 'anomalies'), body));
+    });
+  });
+});
+
+function parseTripKeysFromBody(body: any): Array<{ cid: string; rawKey: string }> {
+  const raw = body.tripKeys != null ? body.tripKeys : body.trip;
+  const list = Array.isArray(raw) ? raw : raw != null && raw !== '' ? [raw] : [];
+  const out: Array<{ cid: string; rawKey: string }> = [];
+  list.forEach((v: any) => {
+    const s = String(v || '').trim();
+    if (!s) return;
+    const pipe = s.indexOf('|');
+    if (pipe > 0) {
+      out.push({ cid: s.slice(0, pipe), rawKey: s.slice(pipe + 1) });
+      return;
+    }
+    const slash = s.indexOf('/');
+    if (slash > 0) out.push({ cid: s.slice(0, slash), rawKey: s.slice(slash + 1) });
+  });
+  return out;
+}
+
+// ── Bulk approve clean submitted trips ─────────────────────────────────────────
+router.post('/api/council-bulk-approve', (req, res) => {
+  const token = (req.body._token as string) || '';
+  const rawRt = String(req.body.returnTo || 'pending').trim();
+  const returnTo = rawRt === 'anomalies' || rawRt === 'reports' ? rawRt : 'pending';
+  const allClean = String(req.body.allClean || '') === '1';
+  const sess = cpGetSession(token);
+  const te = encodeURIComponent(token);
+  const base = councilReturnPath(returnTo, te);
+  if (!sess) return res.redirect(base + '&msg=Invalid+request&mt=err');
+  const selected = parseTripKeysFromBody(req.body);
+  const selectedSet = new Set(selected.map((k) => k.cid + '/' + k.rawKey));
+  loadCouncilTrips(sess.councilId, (_err: any, myTrips: any[]) => {
+    scanAndRefreshTrips(myTrips, (scanned) => {
+      const candidates = scanned.filter((t) => {
+        if (String(t.status || '').toLowerCase() !== 'submitted') return false;
+        if (allClean) return true;
+        return selectedSet.has(String(t._cid) + '/' + String(t._rawKey));
+      });
+      if (candidates.length === 0) {
+        return res.redirect(base + '&msg=' + encodeURIComponent('No clean submitted trips to approve.') + '&mt=err');
+      }
+      const now = Date.now();
+      const who = sess.name || sess.councilId;
+      let left = candidates.length;
+      let ok = 0;
+      candidates.forEach((t) => {
+        fbWrite(
+          'PATCH',
+          'tmTripStatus/' + t._cid + '/' + t._rawKey,
+          { status: 'approved', approvedAt: now, approvedBy: who },
+          (err: any) => {
+            if (!err) ok++;
+            if (--left === 0) {
+              res.redirect(
+                base +
+                  '&msg=' +
+                  encodeURIComponent('Approved ' + ok + ' trip(s).') +
+                  '&mt=' +
+                  (ok ? 'ok' : 'err'),
+              );
+            }
+          },
+        );
+      });
+    });
+  });
+});
+
+// ── Bulk return flagged trips ──────────────────────────────────────────────────
+router.post('/api/council-bulk-return', (req, res) => {
+  const token = (req.body._token as string) || '';
+  const note = String(req.body.note || req.body.revisionNote || '').trim();
+  const sess = cpGetSession(token);
+  const te = encodeURIComponent(token);
+  const base = councilReturnPath('anomalies', te);
+  if (!sess) return res.redirect(base + '&msg=Invalid+request&mt=err');
+  if (!note) return res.redirect(base + '&msg=Revision+note+is+required&mt=err');
+  const keys = parseTripKeysFromBody(req.body);
+  if (keys.length === 0) {
+    return res.redirect(base + '&msg=' + encodeURIComponent('Select at least one trip.') + '&mt=err');
+  }
+  const now = Date.now();
+  const who = sess.name || sess.councilId;
+  let left = keys.length;
+  let ok = 0;
+  keys.forEach(({ cid, rawKey }) => {
+    fbRead('tmTripStatus/' + cid + '/' + rawKey, (e0: any, st: any) => {
+      if (e0 || !st || st.councilId !== sess.councilId) {
+        if (--left === 0) {
+          res.redirect(
+            base + '&msg=' + encodeURIComponent('Returned ' + ok + ' trip(s).') + '&mt=' + (ok ? 'ok' : 'err'),
+          );
+        }
+        return;
+      }
+      const patch = {
+        status: 'revision_needed',
+        revisionNote: note,
+        sentBackAt: now,
+        sentBackBy: who,
+        flagReasons: Array.isArray(st.flagReasons) ? st.flagReasons : [],
+        anomalyDetail: st.anomalyDetail || null,
+      };
+      fbWrite('PATCH', 'tmTripStatus/' + cid + '/' + rawKey, patch, (err: any) => {
+        if (!err) ok++;
+        if (--left === 0) {
+          res.redirect(
+            base + '&msg=' + encodeURIComponent('Returned ' + ok + ' trip(s).') + '&mt=' + (ok ? 'ok' : 'err'),
+          );
+        }
+      });
+    });
+  });
+});
+
+// ── Scan one trip after SA/owner submit (same-origin; no portal session) ───────
+router.post('/api/tm-scan-submitted', (req, res) => {
+  const cid = String(req.body.cid || req.body.tripCid || '').trim();
+  const rawKey = String(req.body.rawKey || req.body.tripRawKey || '').trim();
+  const councilId = String(req.body.councilId || '').trim();
+  if (!cid || !rawKey) {
+    return res.status(400).json({ ok: false, error: 'cid and rawKey required' });
+  }
+  fbRead('tmTripStatus/' + cid + '/' + rawKey, (e0: any, st: any) => {
+    if (e0 || !st) return res.status(404).json({ ok: false, error: 'status not found' });
+    const cId = councilId || String(st.councilId || '');
+    if (!cId) return res.status(400).json({ ok: false, error: 'councilId required' });
+    loadCouncilTrips(cId, (_err: any, trips: any[]) => {
+      scanAndRefreshTrips(trips, (scanned) => {
+        const row = scanned.find(
+          (t) => String(t._cid) === cid && String(t._rawKey) === rawKey,
+        );
+        res.json({
+          ok: true,
+          status: row ? row.status : st.status,
+          flagReasons: row ? row.flagReasons || [] : st.flagReasons || [],
+        });
+      });
+    });
   });
 });
 
@@ -990,6 +1333,8 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
               const mismatchMark = d.fareMismatch
                 ? ' <span class="cp-bdg-mismatch" title="Fare mismatch vs reference">!</span>'
                 : '';
+              const src = displayTrips[idx] || {};
+              const chips = flagReasonChips(src.flagReasons, src.anomalyDetail);
               return `<tr class="cp-row-click" data-idx="${idx}" onclick="openRptDetail(${idx})">
 <td>${esc(d.dateTime)}</td>
 <td>${esc(d.companyName)}</td>
@@ -1000,12 +1345,19 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
 <td>$${d.meterFare.toFixed(2)}${mismatchMark}</td>
 <td style="font-weight:700;color:#1B5E20">$${d.totalCouncil.toFixed(2)}</td>
 <td>$${d.passengerPays.toFixed(2)}</td>
-<td>${statusBadge(d.status)}</td>
+<td>${statusBadge(d.status)}${chips ? `<div style="margin-top:3px">${chips}</div>` : ''}</td>
 <td><button type="button" class="cp-btn-sm" onclick="event.stopPropagation();openRptDetail(${idx})">Details</button></td>
 </tr>`;
             })
             .join('');
-          const bodyHtmlByIdx = details.map((d) => tripDetailModalHtml(d));
+          const bodyHtmlByIdx = details.map((d, idx) => {
+            const src = displayTrips[idx] || {};
+            const chips = flagReasonChips(src.flagReasons, src.anomalyDetail);
+            const chipBlock = chips
+              ? `<div style="margin:10px 0 0;padding:8px 10px;border-radius:6px;background:#FFEBEE;font-size:12px"><strong style="color:#C62828">Anomaly flags</strong><div style="margin-top:4px">${chips}</div>${src.anomalyDetail ? `<div style="margin-top:4px;color:#888">${esc(String(src.anomalyDetail))}</div>` : ''}</div>`
+              : '';
+            return tripDetailModalHtml(d) + chipBlock;
+          });
           const tripsJson = JSON.stringify(details).replace(/</g, '\\u003c');
           const bodiesJson = JSON.stringify(bodyHtmlByIdx).replace(/</g, '\\u003c');
           const msg = (req.query.msg as string) || '';
@@ -1198,45 +1550,94 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
   const msg = (req.query.msg as string) || '';
   const mt = (req.query.mt as string) || '';
   const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
-  fbRead('tmBatches/' + sess.councilId, (err: any, batchData: any) => {
-    const emptyBody = `<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Claim Batches</h2>
-${noticeHtml}<div class="cp-card"><div class="cp-empty">No batches found.</div></div>`;
-    if (err || !batchData) return res.send(portalPage('Claim Batches', renderNav(sess, token, 'batches'), emptyBody));
-    const cidKeys = Object.keys(batchData);
-    if (cidKeys.length === 0) return res.send(portalPage('Claim Batches', renderNav(sess, token, 'batches'), emptyBody));
-    let pending2 = cidKeys.length;
-    const namesMap: Record<string, string> = {};
-    cidKeys.forEach(cid => {
-      fbRead('superClients/' + cid, (e2: any, sc: any) => {
-        namesMap[cid] = (sc && sc.name) ? sc.name : ('Operator ' + cid);
-        if (--pending2 === 0) buildBatchPage();
-      });
+  const claimNotice =
+    `<p style="font-size:12.5px;color:#666;margin:-4px 0 14px;padding:10px 12px;background:#FFF8E1;border-left:4px solid #E65100;border-radius:4px">` +
+    `Trips with status flagged, revision_needed, or rejected are excluded from claims. Only approved trips are claimable.</p>`;
+  loadCouncilTrips(sess.councilId, (_eT: any, councilTrips: any[]) => {
+    const tripByKey: Record<string, any> = {};
+    (councilTrips || []).forEach((t) => {
+      tripByKey[String(t._cid) + '/' + String(t._rawKey)] = t;
+      if (t.batchId) tripByKey['batch:' + String(t.batchId) + ':' + String(t._rawKey)] = t;
     });
-    function buildBatchPage() {
-      const allBatches: any[] = [];
+    fbRead('tmBatches/' + sess.councilId, (err: any, batchData: any) => {
+      const emptyBody = `<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Claim Batches</h2>
+${noticeHtml}${claimNotice}<div class="cp-card"><div class="cp-empty">No batches found.</div></div>`;
+      if (err || !batchData) return res.send(portalPage('Claim Batches', renderNav(sess, token, 'batches'), emptyBody));
+      const cidKeys = Object.keys(batchData);
+      if (cidKeys.length === 0) return res.send(portalPage('Claim Batches', renderNav(sess, token, 'batches'), emptyBody));
+      let pending2 = cidKeys.length;
+      const namesMap: Record<string, string> = {};
       cidKeys.forEach(cid => {
-        const months = batchData[cid] || {};
-        Object.entries(months).forEach(([ym, b]: [string, any]) => {
-          if (!b) return;
-          allBatches.push({ _cid: cid, _cname: namesMap[cid], _ym: ym, ...b });
+        fbRead('superClients/' + cid, (e2: any, sc: any) => {
+          namesMap[cid] = (sc && sc.name) ? sc.name : ('Operator ' + cid);
+          if (--pending2 === 0) buildBatchPage();
         });
       });
-      allBatches.sort((a, b) => (b._ym + b._cid).localeCompare(a._ym + a._cid));
-      const batchStatusBadge = (s: string) => {
-        const m: Record<string, string> = {
-          draft: '<span style="background:#F5F5F5;color:#757575;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">Draft</span>',
-          submitted: '<span style="background:#E3F2FD;color:#1565C0;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">Submitted</span>',
-          approved: '<span style="background:#E8F5E9;color:#2E7D32;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">Approved</span>',
-          rejected: '<span style="background:#FFEBEE;color:#C62828;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">Rejected</span>',
-          paid: '<span style="background:#E8F5E9;color:#1B5E20;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;border:1px solid #A5D6A7">&#10003; Paid</span>'
+      function resolveBatchTripIds(b: any, cid: string): any[] {
+        const rawList = Array.isArray(b.trips) ? b.trips : Array.isArray(b.tripIds) ? b.tripIds : [];
+        if (!rawList.length) return [];
+        return rawList.map((item: any) => {
+          if (item && typeof item === 'object') {
+            const rawKey = String(item.rawKey || item._rawKey || item.id || item.bookingId || '');
+            const tCid = String(item.cid || item._cid || cid);
+            return tripByKey[tCid + '/' + rawKey] || item;
+          }
+          const s = String(item || '');
+          if (s.indexOf('/') > 0) return tripByKey[s] || { _rawKey: s, status: '' };
+          return tripByKey[cid + '/' + s] || { _cid: cid, _rawKey: s, status: '' };
+        });
+      }
+      function displayBatchTotals(b: any, cid: string): { totalTrips: number; totalSubsidy: number } {
+        const tripRows = resolveBatchTripIds(b, cid);
+        if (tripRows.length) {
+          let totalTrips = 0;
+          let totalSubsidy = 0;
+          tripRows.forEach((t: any) => {
+            const st = String(t.status || '').toLowerCase();
+            if (!isClaimEligibleStatus(st)) return;
+            totalTrips++;
+            totalSubsidy += parseFloat(t.tmSubsidy != null ? t.tmSubsidy : t.totalSubsidy || 0) || 0;
+          });
+          return { totalTrips, totalSubsidy };
+        }
+        return {
+          totalTrips: Number(b.totalTrips || 0) || 0,
+          totalSubsidy: parseFloat(b.totalSubsidy || 0) || 0,
         };
-        return m[s] || `<span style="background:#F5F5F5;color:#757575;padding:2px 8px;border-radius:10px;font-size:11px">${esc(s)}</span>`;
-      };
-      const rows = allBatches.map(b => {
-        const subDt = b.submittedAt ? new Date(b.submittedAt).toLocaleDateString('en-NZ') : '—';
-        const appDt = b.approvedAt ? new Date(b.approvedAt).toLocaleDateString('en-NZ') : '—';
-        const paidDt = b.paidAt ? new Date(b.paidAt).toLocaleDateString('en-NZ') : '—';
-        const actionBtns = b.status === 'submitted' ? `
+      }
+      function buildBatchPage() {
+        const allBatches: any[] = [];
+        cidKeys.forEach(cid => {
+          const months = batchData[cid] || {};
+          Object.entries(months).forEach(([ym, b]: [string, any]) => {
+            if (!b) return;
+            const totals = displayBatchTotals(b, cid);
+            allBatches.push({
+              _cid: cid,
+              _cname: namesMap[cid],
+              _ym: ym,
+              ...b,
+              _displayTrips: totals.totalTrips,
+              _displaySubsidy: totals.totalSubsidy,
+            });
+          });
+        });
+        allBatches.sort((a, b) => (b._ym + b._cid).localeCompare(a._ym + a._cid));
+        const batchStatusBadge = (s: string) => {
+          const m: Record<string, string> = {
+            draft: '<span style="background:#F5F5F5;color:#757575;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">Draft</span>',
+            submitted: '<span style="background:#E3F2FD;color:#1565C0;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">Submitted</span>',
+            approved: '<span style="background:#E8F5E9;color:#2E7D32;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">Approved</span>',
+            rejected: '<span style="background:#FFEBEE;color:#C62828;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">Rejected</span>',
+            paid: '<span style="background:#E8F5E9;color:#1B5E20;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;border:1px solid #A5D6A7">&#10003; Paid</span>'
+          };
+          return m[s] || `<span style="background:#F5F5F5;color:#757575;padding:2px 8px;border-radius:10px;font-size:11px">${esc(s)}</span>`;
+        };
+        const rows = allBatches.map(b => {
+          const subDt = b.submittedAt ? new Date(b.submittedAt).toLocaleDateString('en-NZ') : '—';
+          const appDt = b.approvedAt ? new Date(b.approvedAt).toLocaleDateString('en-NZ') : '—';
+          const paidDt = b.paidAt ? new Date(b.paidAt).toLocaleDateString('en-NZ') : '—';
+          const actionBtns = b.status === 'submitted' ? `
 <form method="POST" action="/api/council-batch-action" style="display:inline">
   <input type="hidden" name="_token" value="${esc(token)}"/>
   <input type="hidden" name="cid" value="${esc(b._cid)}"/>
@@ -1259,24 +1660,25 @@ ${noticeHtml}<div class="cp-card"><div class="cp-empty">No batches found.</div><
   <input type="text" name="payRef" placeholder="Payment ref (optional)" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:12px;width:150px;margin-right:4px"/>
   <button type="submit" class="cp-btn cp-btn-g">&#128181; Mark Paid</button>
 </form>` : b.status === 'paid' ? `<span style="font-size:12px;color:#555">${esc(b.payRef || '')}${b.payRef ? '<br>' : ''}<span style="color:#888;font-size:11px">Paid ${paidDt}</span></span>` : '—';
-        return `<tr>
+          return `<tr>
 <td style="font-weight:600">${esc(b._cname)}</td>
 <td style="font-family:monospace">${esc(b._ym)}</td>
-<td style="text-align:right">${b.totalTrips || 0}</td>
-<td style="text-align:right;font-weight:700;color:#2E7D32">$${parseFloat(b.totalSubsidy || 0).toFixed(2)}</td>
+<td style="text-align:right">${b._displayTrips}</td>
+<td style="text-align:right;font-weight:700;color:#2E7D32">$${Number(b._displaySubsidy || 0).toFixed(2)}</td>
 <td>${batchStatusBadge(b.status)}</td>
 <td style="font-size:12px;color:#666">${subDt}</td>
 <td style="font-size:12px;color:#666">${appDt}</td>
 <td style="white-space:nowrap">${actionBtns}</td>
 </tr>`;
-      }).join('');
-      const submitted = allBatches.filter(b => b.status === 'submitted');
-      const approved = allBatches.filter(b => b.status === 'approved');
-      const totalPending = submitted.reduce((s, b) => s + parseFloat(b.totalSubsidy || 0), 0);
-      const totalApproved = approved.reduce((s, b) => s + parseFloat(b.totalSubsidy || 0), 0);
-      const body = `
+        }).join('');
+        const submitted = allBatches.filter(b => b.status === 'submitted');
+        const approved = allBatches.filter(b => b.status === 'approved');
+        const totalPending = submitted.reduce((s, b) => s + Number(b._displaySubsidy || 0), 0);
+        const totalApproved = approved.reduce((s, b) => s + Number(b._displaySubsidy || 0), 0);
+        const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Claim Batches</h2>
 ${noticeHtml}
+${claimNotice}
 <div class="cp-stats" style="margin-bottom:18px">
   <div class="cp-stat"><div class="cp-stat-v">${submitted.length}</div><div class="cp-stat-l">Awaiting Your Approval</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totalPending.toFixed(2)}</div><div class="cp-stat-l">Pending Claim Value</div></div>
@@ -1289,8 +1691,9 @@ ${allBatches.length ? `<table class="cp-tbl" style="margin-top:8px">
 <thead><tr><th>Operator</th><th>Month</th><th style="text-align:right">Trips</th><th style="text-align:right">Council Claim</th><th>Status</th><th>Submitted</th><th>Approved</th><th>Action</th></tr></thead>
 <tbody>${rows}</tbody></table>` : '<div class="cp-empty">No batches yet.</div>'}
 </div>`;
-      res.send(portalPage('Claim Batches', renderNav(sess, token, 'batches'), body));
-    }
+        res.send(portalPage('Claim Batches', renderNav(sess, token, 'batches'), body));
+      }
+    });
   });
 });
 
