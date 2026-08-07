@@ -172,19 +172,29 @@ firebase.initializeApp(config);
       <option value="revision_needed">Needs Revision</option>
       <option value="rejected">Rejected</option>
       <option value="paid">Paid</option>
+      <option value="archived">Archived</option>
     </select>
     <input type="date" id="tt-f-from" onchange="renderTT()"/>
     <input type="date" id="tt-f-to" onchange="renderTT()"/>
     <input type="text" id="tt-f-search" placeholder="Job ID / Driver / Card #&#8230;" oninput="renderTT()" style="min-width:180px"/>
     <button class="tm-btn" style="background:#fff;border:1px solid #ddd;color:#333;font-size:12px" onclick="clearTTFilters()">Clear</button>
   </div>
+  <div id="tt-bulk-bar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px;padding:8px 10px;background:#FAFAFA;border:1px solid #eee;border-radius:6px">
+    <label style="font-size:12px;color:#555"><input type="checkbox" id="tt-check-all" onchange="ttToggleAll(this.checked)"/> Select all matching</label>
+    <input type="text" id="tt-archive-note" placeholder="Archive note (optional)" style="min-width:180px;padding:5px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px"/>
+    <button type="button" class="tm-btn" style="background:#546E7A;color:#fff" onclick="archiveSelectedTT()">Archive selected</button>
+    <button type="button" class="tm-btn" style="background:#546E7A;color:#fff;opacity:.9" onclick="archiveAllMatchingTT()">Archive all matching filter</button>
+    <button type="button" class="tm-btn tm-btn-ok" onclick="restoreSelectedTT()">Restore selected</button>
+    <button type="button" class="tm-btn tm-btn-ok" style="opacity:.9" onclick="restoreAllMatchingTT()">Restore all matching filter</button>
+  </div>
   <div style="overflow-x:auto">
     <table class="tm-tbl">
       <thead><tr>
+        <th style="width:36px"></th>
         <th>Job ID</th><th>Driver</th><th>Vehicle</th><th>Voucher #</th><th>Passenger</th><th>Council</th>
         <th>Date</th><th>Pickup</th><th>Dropoff</th><th>Fare</th><th>TM Sub.</th><th>Hoist</th><th>Pax Pays</th><th>Status</th><th>Actions</th>
       </tr></thead>
-      <tbody id="tt-tb"><tr><td colspan="15" style="text-align:center;padding:40px;color:#9e9e9e">Loading&#8230;</td></tr></tbody>
+      <tbody id="tt-tb"><tr><td colspan="16" style="text-align:center;padding:40px;color:#9e9e9e">Loading&#8230;</td></tr></tbody>
     </table>
   </div>
 </div></div>
@@ -414,6 +424,10 @@ function loadTT() {
           t.approvedAt  = st.approvedAt  || null;
           t.rejectedAt  = st.rejectedAt  || null;
           t.revisionNote = st.revisionNote || '';
+          t.archivedAt = st.archivedAt || null;
+          t.archivedBy = st.archivedBy || null;
+          t.archivedFromStatus = st.archivedFromStatus || null;
+          t.archiveNote = st.archiveNote || null;
         }
       });
       renderTT();
@@ -449,7 +463,9 @@ function renderTT() {
   });
   entries.sort(function(a,b) { return (b[1].startTime || '').localeCompare(a[1].startTime || ''); });
   document.getElementById('tt-count').textContent = entries.length + ' of ' + Object.keys(ttData).length + ' trip(s)';
-  if (!entries.length) { document.getElementById('tt-tb').innerHTML = '<tr><td colspan="15" style="text-align:center;padding:40px;color:#9e9e9e">No trips found.</td></tr>'; return; }
+  var checkAll = document.getElementById('tt-check-all');
+  if (checkAll) checkAll.checked = false;
+  if (!entries.length) { document.getElementById('tt-tb').innerHTML = '<tr><td colspan="16" style="text-align:center;padding:40px;color:#9e9e9e">No trips found.</td></tr>'; return; }
   var cnames = {}; Object.entries(ttCouncils).forEach(function(kv) { cnames[kv[0]] = (kv[1].name) || kv[0]; });
   document.getElementById('tt-tb').innerHTML = entries.map(function(kv) {
     var id = kv[0], t = kv[1], sid = "'" + String(id).replace(/\\/g,'\\\\').replace(/'/g,"\\'") + "'";
@@ -458,7 +474,12 @@ function renderTT() {
     var flagHtml = flags.length ? flags.map(function(f) { return '<span class="fc">' + f + '</span>'; }).join('') : '';
     var dt = t.startTime ? _tzFmtDT(t.startTime) : '\u2014';
     var hoistAmt = parseFloat(t.hoistTotal || 0);
+    var isArch = t.status === 'archived';
+    var archBtn = isArch
+      ? '<button class="tm-btn tm-btn-ok" onclick="restoreTT(' + sid + ')" title="Restore" style="margin-right:4px">Restore</button>'
+      : '<button class="tm-btn" style="background:#546E7A;color:#fff;margin-right:4px" onclick="archiveTT(' + sid + ')" title="Archive">Archive</button>';
     return '<tr>' +
+      '<td><input type="checkbox" class="tt-row-check" value="' + String(id).replace(/"/g,'&quot;') + '"/></td>' +
       '<td style="font-family:monospace;font-size:12px">' + id + '</td>' +
       '<td>' + (t.driverName || '\u2014') + '</td>' +
       '<td>' + (t.vehicleId || '\u2014') + (t.vehicleHoistEquipped ? '<br><span class="bx bx-b" style="font-size:10px">Hoist</span>' : '') + '</td>' +
@@ -479,9 +500,10 @@ function renderTT() {
       '<td>' + statusBadge + '<br>' + flagHtml + '</td>' +
       '<td style="white-space:nowrap">' +
         '<button class="tm-btn tm-btn-e" onclick="viewTT(' + sid + ')" style="margin-right:4px" title="View Details">&#128065;</button>' +
-        (t.status === 'pending' || t.status === 'flagged' ? '<button class="tm-btn tm-btn-ok" onclick="approveTT(' + sid + ')" title="Mark Company Approved" style="margin-right:4px">&#10003;</button>' : '') +
-        (t.status === 'company_approved' ? '<button class="tm-btn" style="background:#1565C0;color:#fff;margin-right:4px" onclick="submitToCouncil(' + sid + ')" title="Submit to Council">&#8679;</button>' : '') +
-        (t.status !== 'revision_needed' && t.status !== 'approved' && t.status !== 'paid' ? '<button class="tm-btn" style="background:#FFF8E1;color:#E65100;border:1px solid #FFE082" onclick="openSendBack(' + sid + ')" title="Send back to company">&#8617;</button>' : '') +
+        archBtn +
+        (!isArch && (t.status === 'pending' || t.status === 'flagged') ? '<button class="tm-btn tm-btn-ok" onclick="approveTT(' + sid + ')" title="Mark Company Approved" style="margin-right:4px">&#10003;</button>' : '') +
+        (!isArch && t.status === 'company_approved' ? '<button class="tm-btn" style="background:#1565C0;color:#fff;margin-right:4px" onclick="submitToCouncil(' + sid + ')" title="Submit to Council">&#8679;</button>' : '') +
+        (!isArch && t.status !== 'revision_needed' && t.status !== 'approved' && t.status !== 'paid' ? '<button class="tm-btn" style="background:#FFF8E1;color:#E65100;border:1px solid #FFE082" onclick="openSendBack(' + sid + ')" title="Send back to company">&#8617;</button>' : '') +
       '</td></tr>';
   }).join('');
 }
@@ -494,7 +516,8 @@ function ttStatusBadge(s) {
     approved: '<span class="bx bx-g">\u2713 Council Approved</span>',
     revision_needed: '<span class="bx" style="background:#FFF3E0;color:#E65100">\u21a9 Needs Revision</span>',
     rejected: '<span class="bx bx-r">Rejected</span>',
-    paid: '<span class="bx bx-g">\uD83D\uDCB5 Paid</span>'
+    paid: '<span class="bx bx-g">\uD83D\uDCB5 Paid</span>',
+    archived: '<span class="bx" style="background:#ECEFF1;color:#546E7A">Archived</span>'
   };
   return map[s] || ('<span class="bx bx-gr">' + (s || 'Unknown') + '</span>');
 }
@@ -579,12 +602,17 @@ function viewTT(id) {
 
   var sid2 = "'" + String(id).replace(/\\/g,'\\\\').replace(/'/g,"\\'") + "'";
   var footBtns = '<button class="tm-btn" style="background:#eee;color:#333" onclick="closeTTDetail()">Close</button>';
-  if (t.status === 'pending' || t.status === 'flagged')
-    footBtns += '<button class="tm-btn tm-btn-ok" onclick="approveTT(' + sid2 + ');closeTTDetail()">\u2713 Mark Company Approved</button>';
-  if (t.status === 'company_approved')
-    footBtns += '<button class="tm-btn" style="background:#1565C0;color:#fff" onclick="submitToCouncil(' + sid2 + ');closeTTDetail()">\u2B06 Submit to Council</button>';
-  if (t.status !== 'revision_needed' && t.status !== 'approved' && t.status !== 'paid')
-    footBtns += '<button class="tm-btn" style="background:#FFF8E1;color:#E65100;border:1px solid #FFE082" onclick="closeTTDetail();openSendBack(' + sid2 + ')">\u21A9 Send Back to Company</button>';
+  if (t.status === 'archived') {
+    footBtns += '<button class="tm-btn tm-btn-ok" onclick="restoreTT(' + sid2 + ');closeTTDetail()">Restore</button>';
+  } else {
+    footBtns += '<button class="tm-btn" style="background:#546E7A;color:#fff" onclick="archiveTT(' + sid2 + ');closeTTDetail()">Archive</button>';
+    if (t.status === 'pending' || t.status === 'flagged')
+      footBtns += '<button class="tm-btn tm-btn-ok" onclick="approveTT(' + sid2 + ');closeTTDetail()">\u2713 Mark Company Approved</button>';
+    if (t.status === 'company_approved')
+      footBtns += '<button class="tm-btn" style="background:#1565C0;color:#fff" onclick="submitToCouncil(' + sid2 + ');closeTTDetail()">\u2B06 Submit to Council</button>';
+    if (t.status !== 'revision_needed' && t.status !== 'approved' && t.status !== 'paid')
+      footBtns += '<button class="tm-btn" style="background:#FFF8E1;color:#E65100;border:1px solid #FFE082" onclick="closeTTDetail();openSendBack(' + sid2 + ')">\u21A9 Send Back to Company</button>';
+  }
   document.getElementById('tt-detail-foot').innerHTML = footBtns;
   document.getElementById('tt-ov').classList.add('open');
 }
@@ -664,6 +692,137 @@ function saveSendBack() {
   adminWrite(path, 'PATCH', { status: 'revision_needed', revisionNotes: notes, sentBackAt: new Date().toISOString(), sentBackBy: 'SA' })
     .then(function() { ttData[id].status = 'revision_needed'; renderTT(); closeSendBack(); toastr.success('Trip sent back to company for revision.'); })
     .catch(function(e) { toastr.error('Error: ' + e); });
+}
+function ttMatchingIds() {
+  var fC = document.getElementById('tt-f-council').value;
+  var fS = document.getElementById('tt-f-status').value;
+  var fFrom = document.getElementById('tt-f-from').value;
+  var fTo = document.getElementById('tt-f-to').value;
+  var fQ = (document.getElementById('tt-f-search').value || '').toLowerCase();
+  return Object.entries(ttData).filter(function(kv) {
+    var t = kv[1];
+    if (fC && t.councilId !== fC) return false;
+    if (fS && t.status !== fS) return false;
+    if (fFrom && t.startTime && _tzToDate(t.startTime) < fFrom) return false;
+    if (fTo && t.startTime && _tzToDate(t.startTime) > fTo) return false;
+    if (fQ) {
+      var s = (kv[0] + ' ' + (t.driverName || '') + ' ' + (t.cardNumber || '') + ' ' + ((t.allCardNums||[]).join(' ')) + ' ' + (t.passengerName || '') + ' ' + (t.vehicleId || '')).toLowerCase();
+      if (!s.includes(fQ)) return false;
+    }
+    return true;
+  }).map(function(kv) { return kv[0]; });
+}
+function ttSelectedIds() {
+  return Array.prototype.map.call(document.querySelectorAll('.tt-row-check:checked'), function(el) { return el.value; });
+}
+function ttToggleAll(on) {
+  document.querySelectorAll('.tt-row-check').forEach(function(el) { el.checked = !!on; });
+}
+function ttArchivePatch(fromStatus, note) {
+  var prior = String(fromStatus || 'submitted').toLowerCase();
+  if (prior === 'archived') prior = 'submitted';
+  var patch = {
+    status: 'archived',
+    archivedAt: Date.now(),
+    archivedBy: 'SA',
+    archivedFromStatus: prior,
+    archiveNote: note ? note : null
+  };
+  return patch;
+}
+function ttRestorePatch(t) {
+  var from = String((t && t.archivedFromStatus) || 'submitted').toLowerCase();
+  if (from === 'archived') from = 'submitted';
+  return {
+    status: from,
+    archivedAt: null,
+    archivedBy: null,
+    archivedFromStatus: null,
+    archiveNote: null,
+    restoredAt: Date.now()
+  };
+}
+function archiveTT(id) {
+  var t = ttData[id]; if (!t || t.status === 'archived') return;
+  if (!confirm('Archive trip ' + id + '? You can restore it later.')) return;
+  var note = (document.getElementById('tt-archive-note') && document.getElementById('tt-archive-note').value || '').trim();
+  var path = 'tmTripStatus/' + t._cid + '/' + t._rawKey;
+  var patch = ttArchivePatch(t.status, note);
+  adminWrite(path, 'PATCH', patch)
+    .then(function() {
+      Object.keys(patch).forEach(function(k) { ttData[id][k] = patch[k]; });
+      renderTT();
+      toastr.success('Trip archived.');
+    })
+    .catch(function(e) { toastr.error('Error: ' + e); });
+}
+function restoreTT(id) {
+  var t = ttData[id]; if (!t || t.status !== 'archived') return;
+  if (!confirm('Restore trip ' + id + ' to ' + (t.archivedFromStatus || 'submitted') + '?')) return;
+  var path = 'tmTripStatus/' + t._cid + '/' + t._rawKey;
+  var patch = ttRestorePatch(t);
+  adminWrite(path, 'PATCH', patch)
+    .then(function() {
+      ttData[id].status = patch.status;
+      ttData[id].archivedAt = null;
+      ttData[id].archivedBy = null;
+      ttData[id].archivedFromStatus = null;
+      ttData[id].archiveNote = null;
+      renderTT();
+      toastr.success('Trip restored.');
+    })
+    .catch(function(e) { toastr.error('Error: ' + e); });
+}
+function archiveIds(ids) {
+  if (!ids.length) { toastr.warning('Select at least one trip.'); return; }
+  var note = (document.getElementById('tt-archive-note') && document.getElementById('tt-archive-note').value || '').trim();
+  if (!confirm('Archive ' + ids.length + ' trip(s)?')) return;
+  var left = ids.length, ok = 0;
+  ids.forEach(function(id) {
+    var t = ttData[id];
+    if (!t || t.status === 'archived') { if (--left === 0) done(); return; }
+    var patch = ttArchivePatch(t.status, note);
+    adminWrite('tmTripStatus/' + t._cid + '/' + t._rawKey, 'PATCH', patch)
+      .then(function() {
+        Object.keys(patch).forEach(function(k) { ttData[id][k] = patch[k]; });
+        ok++;
+        if (--left === 0) done();
+      })
+      .catch(function() { if (--left === 0) done(); });
+  });
+  function done() { renderTT(); toastr.success('Archived ' + ok + ' trip(s).'); }
+}
+function restoreIds(ids) {
+  if (!ids.length) { toastr.warning('Select at least one trip.'); return; }
+  if (!confirm('Restore ' + ids.length + ' trip(s)?')) return;
+  var left = ids.length, ok = 0;
+  ids.forEach(function(id) {
+    var t = ttData[id];
+    if (!t || t.status !== 'archived') { if (--left === 0) done(); return; }
+    var patch = ttRestorePatch(t);
+    adminWrite('tmTripStatus/' + t._cid + '/' + t._rawKey, 'PATCH', patch)
+      .then(function() {
+        ttData[id].status = patch.status;
+        ttData[id].archivedAt = null;
+        ttData[id].archivedBy = null;
+        ttData[id].archivedFromStatus = null;
+        ttData[id].archiveNote = null;
+        ok++;
+        if (--left === 0) done();
+      })
+      .catch(function() { if (--left === 0) done(); });
+  });
+  function done() { renderTT(); toastr.success('Restored ' + ok + ' trip(s).'); }
+}
+function archiveSelectedTT() { archiveIds(ttSelectedIds()); }
+function restoreSelectedTT() { restoreIds(ttSelectedIds()); }
+function archiveAllMatchingTT() {
+  var ids = ttMatchingIds().filter(function(id) { return ttData[id] && ttData[id].status !== 'archived'; });
+  archiveIds(ids);
+}
+function restoreAllMatchingTT() {
+  var ids = ttMatchingIds().filter(function(id) { return ttData[id] && ttData[id].status === 'archived'; });
+  restoreIds(ids);
 }
 </script>
 <script src="assets/js/bw-customize.js"></script>

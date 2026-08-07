@@ -21,6 +21,11 @@ import {
   isClaimEligibleStatus,
   type AnomalyStatusPatch,
 } from '../lib/tmAnomaly';
+import {
+  isArchivedStatus,
+  archivePatch,
+  restorePatch,
+} from '../lib/tmArchive';
 
 const router = Router();
 
@@ -99,6 +104,7 @@ function renderNav(session: any, token: string, activePage: string): string {
     ['trips', '&#128661; Trips'],
     ['pending', '&#128681; Pending Approval'],
     ['anomalies', '&#128680; Flagged'],
+    ['archived', '&#128193; Archived'],
     ['batches', '&#128196; Claim Batches'],
     ['cards', '&#127938; Cards'],
     ['limits', '&#128176; Trip Limits'],
@@ -138,7 +144,8 @@ function statusBadge(s: string): string {
     revision_needed:  '<span class="cp-bdg-a">Revision Needed</span>',
     rejected:         '<span class="cp-bdg-r">Rejected</span>',
     paid:             '<span class="cp-bdg-g">Paid</span>',
-    flagged:          '<span class="cp-bdg-r">Flagged</span>'
+    flagged:          '<span class="cp-bdg-r">Flagged</span>',
+    archived:         '<span class="cp-bdg-gr">Archived</span>',
   };
   return map[s] || `<span class="cp-bdg-gr">${esc(s || 'pending')}</span>`;
 }
@@ -230,6 +237,10 @@ function loadCouncilTrips(councilId: string, cb: (err: any, trips: any[]) => voi
             flaggedAt: st.flaggedAt || null,
             rejectNote: st.rejectNote || null,
             sentBackAt: st.sentBackAt || null,
+            archivedAt: st.archivedAt || null,
+            archivedBy: st.archivedBy || null,
+            archivedFromStatus: st.archivedFromStatus || null,
+            archiveNote: st.archiveNote || null,
           });
         });
       });
@@ -451,8 +462,19 @@ router.post('/api/set-council-password', (req, res) => {
 
 function councilReturnPath(returnTo: string, te: string): string {
   const rt = String(returnTo || 'pending').trim();
-  const page = rt === 'reports' ? 'reports' : rt === 'anomalies' ? 'anomalies' : 'pending';
+  const page =
+    rt === 'reports' ? 'reports'
+    : rt === 'anomalies' ? 'anomalies'
+    : rt === 'archived' ? 'archived'
+    : 'pending';
   return '/council-portal/' + page + '?t=' + te;
+}
+
+function normalizeCouncilReturnTo(raw: string | undefined, fallback = 'pending'): string {
+  const rt = String(raw || fallback).trim();
+  if (rt === 'reports' || rt === 'anomalies' || rt === 'pending' || rt === 'archived') return rt;
+  if (rt === 'flagged') return 'pending';
+  return fallback;
 }
 
 // ── Approve / reject / return individual trip ─────────────────────────────────
@@ -752,10 +774,11 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
   const filterMonth = (req.query.month as string) || '';
   const te = encodeURIComponent(token);
   loadCouncilTrips(sess.councilId, (err: any, myTrips: any[]) => {
+    const activeTrips = myTrips.filter((t) => !isArchivedStatus(t.status));
     const months: Record<string, boolean> = {};
-    myTrips.forEach(t => { if (t.startedAt_ISO) months[t.startedAt_ISO.slice(0, 7)] = true; });
+    activeTrips.forEach(t => { if (t.startedAt_ISO) months[t.startedAt_ISO.slice(0, 7)] = true; });
     const sortedMonths = Object.keys(months).sort().reverse();
-    let displayTrips = filterMonth ? myTrips.filter(t => (t.startedAt_ISO || '').slice(0, 7) === filterMonth) : myTrips;
+    let displayTrips = filterMonth ? activeTrips.filter(t => (t.startedAt_ISO || '').slice(0, 7) === filterMonth) : activeTrips;
     displayTrips.sort((a, b) => (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || ''));
     let totalFare = 0, totalCouncil = 0, totalPax = 0;
     displayTrips.forEach(t => {
@@ -849,6 +872,51 @@ function cpReturnTrip(form){
   form.note.value = note;
   return true;
 }
+function cpArchiveTrip(form){
+  return confirm('Archive this trip? You can restore it later from Archived.');
+}
+function cpBulkArchiveConfirm(){
+  var boxes = document.querySelectorAll('input[name="trip"]:checked');
+  if(!boxes.length){ alert('Select at least one trip.'); return false; }
+  return confirm('Archive '+boxes.length+' selected trip(s)?');
+}
+function cpBulkArchiveSelected(form){
+  var boxes = document.querySelectorAll('input[name="trip"]:checked');
+  if(!boxes.length){ alert('Select at least one trip.'); return false; }
+  form.querySelectorAll('input[data-arch-inj]').forEach(function(el){ el.remove(); });
+  boxes.forEach(function(b){
+    var inp = document.createElement('input');
+    inp.type = 'hidden';
+    inp.name = 'trip';
+    inp.value = b.value;
+    inp.setAttribute('data-arch-inj','1');
+    form.appendChild(inp);
+  });
+  return confirm('Archive '+boxes.length+' selected trip(s)?');
+}
+function cpBulkArchiveAll(n){
+  return confirm('Archive all '+n+' trip(s) currently listed on this page?');
+}
+function cpRestoreTrip(form){
+  return confirm('Restore this trip to its previous status?');
+}
+function cpBulkRestoreSelected(form){
+  var boxes = document.querySelectorAll('input[name="trip"]:checked');
+  if(!boxes.length){ alert('Select at least one trip.'); return false; }
+  form.querySelectorAll('input[data-res-inj]').forEach(function(el){ el.remove(); });
+  boxes.forEach(function(b){
+    var inp = document.createElement('input');
+    inp.type = 'hidden';
+    inp.name = 'trip';
+    inp.value = b.value;
+    inp.setAttribute('data-res-inj','1');
+    form.appendChild(inp);
+  });
+  return confirm('Restore '+boxes.length+' selected trip(s)?');
+}
+function cpBulkRestoreAll(n){
+  return confirm('Restore all '+n+' archived trip(s) on this page?');
+}
 </script>`;
 
 // ── Pending Approval (clean submitted) ─────────────────────────────────────────
@@ -869,7 +937,9 @@ router.get('/council-portal/pending', requirePortalAuth, (req, res) => {
         const d = buildTmTripDetail(t);
         const dt = d.dateTime || '—';
         const submittedDt = t.submittedAt ? new Date(t.submittedAt).toLocaleString('en-NZ') : '—';
+        const tripKey = esc(String(t._cid) + '|' + String(t._rawKey));
         return `<tr>
+<td><input type="checkbox" name="trip" value="${tripKey}" form="cp-bulk-archive"/></td>
 <td style="font-family:monospace;font-size:11px">${esc(d.voucherNo)}</td>
 <td>${esc(d.passengerName)}</td>
 <td style="font-size:12px;color:#555">${esc(d.companyName)}</td>
@@ -906,26 +976,48 @@ router.get('/council-portal/pending', requirePortalAuth, (req, res) => {
     <input type="hidden" name="action" value="return"/>
     <input type="hidden" name="returnTo" value="pending"/>
     <input type="hidden" name="note" value=""/>
-    <button type="submit" class="cp-btn" style="background:#E65100;color:#fff">&#8617; Return</button>
+    <button type="submit" class="cp-btn" style="background:#E65100;color:#fff;margin-right:4px">&#8617; Return</button>
+  </form>
+  <form method="POST" action="/api/council-archive" style="display:inline" onsubmit="return cpArchiveTrip(this)">
+    <input type="hidden" name="_token" value="${esc(token)}"/>
+    <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
+    <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
+    <input type="hidden" name="returnTo" value="pending"/>
+    <button type="submit" class="cp-btn" style="background:#757575;color:#fff">&#128193; Archive</button>
   </form>
 </td></tr>`;
       }).join('');
       const approveAllForm = pending.length
-        ? `<form method="POST" action="/api/council-bulk-approve" style="display:inline" onsubmit="return confirm('Approve ${pending.length} clean trips?')">
+        ? `<form method="POST" action="/api/council-bulk-approve" style="display:inline;margin-right:8px" onsubmit="return confirm('Approve ${pending.length} clean trips?')">
   <input type="hidden" name="_token" value="${esc(token)}"/>
   <input type="hidden" name="returnTo" value="pending"/>
   <input type="hidden" name="allClean" value="1"/>
   <button type="submit" class="cp-btn cp-btn-g">&#10003; Approve All (${pending.length})</button>
 </form>`
         : '';
+      const archiveToolbar = pending.length
+        ? `<form id="cp-bulk-archive" method="POST" action="/api/council-bulk-archive" style="display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px" onsubmit="return cpBulkArchiveConfirm()">
+  <input type="hidden" name="_token" value="${esc(token)}"/>
+  <input type="hidden" name="returnTo" value="pending"/>
+  <label style="font-size:12.5px;font-weight:600;color:#555">Archive note (optional)</label>
+  <input name="note" class="cp-input" style="min-width:200px" placeholder="Optional note"/>
+  <button type="submit" class="cp-btn" style="background:#757575;color:#fff">&#128193; Archive selected</button>
+</form>
+<form method="POST" action="/api/council-bulk-archive" style="display:inline;margin-left:8px" onsubmit="return cpBulkArchiveAll(${pending.length})">
+  <input type="hidden" name="_token" value="${esc(token)}"/>
+  <input type="hidden" name="returnTo" value="pending"/>
+  <input type="hidden" name="allMatching" value="1"/>
+  <button type="submit" class="cp-btn" style="background:#616161;color:#fff">&#128193; Archive all on this page (${pending.length})</button>
+</form>`
+        : '';
       const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Pending Approval (${pending.length})</h2>
 ${noticeHtml}
-<p style="font-size:13px;color:#666;margin-bottom:12px">Clean submitted trips (no anomaly flags). Approve, reject, or return individually — or approve all clean trips at once. Flagged trips appear under <a href="/council-portal/anomalies?t=${te}" style="color:#2E7D32;font-weight:600">Flagged</a>.</p>
-${approveAllForm ? `<div style="margin-bottom:14px">${approveAllForm}</div>` : ''}
+<p style="font-size:13px;color:#666;margin-bottom:12px">Clean submitted trips (no anomaly flags). Approve, reject, return, or archive individually — or approve / archive all clean trips at once. Flagged trips appear under <a href="/council-portal/anomalies?t=${te}" style="color:#2E7D32;font-weight:600">Flagged</a>.</p>
+${approveAllForm || archiveToolbar ? `<div style="margin-bottom:14px">${approveAllForm}${archiveToolbar}</div>` : ''}
 <div class="cp-card" style="overflow-x:auto">
 ${pending.length ? `<table class="cp-tbl">
-<thead><tr><th>Voucher No.</th><th>Passenger</th><th>Operator</th><th>Category</th><th>Date</th><th>Pickup</th><th>Fare</th><th>Council Pays</th><th>Pax Pays</th><th>Submitted</th><th>Action</th></tr></thead>
+<thead><tr><th></th><th>Voucher No.</th><th>Passenger</th><th>Operator</th><th>Category</th><th>Date</th><th>Pickup</th><th>Fare</th><th>Council Pays</th><th>Pax Pays</th><th>Submitted</th><th>Action</th></tr></thead>
 <tbody>${rows}</tbody></table>` : '<div class="cp-empty">No clean trips pending your approval. All clear!</div>'}
 </div>
 ${CP_TRIP_ACTION_SCRIPT}`;
@@ -980,20 +1072,40 @@ router.get('/council-portal/anomalies', requirePortalAuth, (req, res) => {
     <input type="hidden" name="returnTo" value="anomalies"/>
     <input type="hidden" name="flagReason" value=""/>
     <input type="hidden" name="note" value=""/>
-    <button type="submit" class="cp-btn cp-btn-r">&#10007; Reject</button>
+    <button type="submit" class="cp-btn cp-btn-r" style="margin-right:4px">&#10007; Reject</button>
+  </form>
+  <form method="POST" action="/api/council-archive" style="display:inline" onsubmit="return cpArchiveTrip(this)">
+    <input type="hidden" name="_token" value="${esc(token)}"/>
+    <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
+    <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
+    <input type="hidden" name="returnTo" value="anomalies"/>
+    <button type="submit" class="cp-btn" style="background:#757575;color:#fff">&#128193; Archive</button>
   </form>
 </td></tr>`;
       }).join('');
       const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Flagged / Anomalies (${rowsList.length})</h2>
 ${noticeHtml}
-<p style="font-size:13px;color:#666;margin-bottom:12px">Trips automatically flagged for fare mismatch or card reuse. Return selected trips to the company with a note, or reject individually. Clean trips are under <a href="/council-portal/pending?t=${te}" style="color:#2E7D32;font-weight:600">Pending Approval</a>.</p>
+<p style="font-size:13px;color:#666;margin-bottom:12px">Trips automatically flagged for fare mismatch or card reuse. Return selected trips to the company with a note, archive, or reject individually. Clean trips are under <a href="/council-portal/pending?t=${te}" style="color:#2E7D32;font-weight:600">Pending Approval</a>.</p>
 ${rowsList.length ? `<form id="cp-bulk-return" method="POST" action="/api/council-bulk-return" style="margin-bottom:12px" onsubmit="return cpBulkReturn(this)">
   <input type="hidden" name="_token" value="${esc(token)}"/>
   <input type="hidden" name="returnTo" value="anomalies"/>
   <label style="font-size:12.5px;font-weight:600;color:#555;margin-right:8px">Revision note (required)</label>
   <input name="note" class="cp-input" style="min-width:240px;margin-right:8px" placeholder="Note for company" required/>
   <button type="submit" class="cp-btn" style="background:#E65100;color:#fff">&#8617; Return selected</button>
+</form>
+<form id="cp-bulk-archive" method="POST" action="/api/council-bulk-archive" style="display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px" onsubmit="return cpBulkArchiveSelected(this)">
+  <input type="hidden" name="_token" value="${esc(token)}"/>
+  <input type="hidden" name="returnTo" value="anomalies"/>
+  <label style="font-size:12.5px;font-weight:600;color:#555">Archive note (optional)</label>
+  <input name="note" class="cp-input" style="min-width:200px" placeholder="Optional note"/>
+  <button type="submit" class="cp-btn" style="background:#757575;color:#fff">&#128193; Archive selected</button>
+</form>
+<form method="POST" action="/api/council-bulk-archive" style="display:inline;margin-left:8px;margin-bottom:12px" onsubmit="return cpBulkArchiveAll(${rowsList.length})">
+  <input type="hidden" name="_token" value="${esc(token)}"/>
+  <input type="hidden" name="returnTo" value="anomalies"/>
+  <input type="hidden" name="allMatching" value="1"/>
+  <button type="submit" class="cp-btn" style="background:#616161;color:#fff">&#128193; Archive all matching (${rowsList.length})</button>
 </form>` : ''}
 <div class="cp-card" style="overflow-x:auto">
 ${rowsList.length ? `<table class="cp-tbl">
@@ -1007,6 +1119,15 @@ function cpBulkReturn(form){
   if(!boxes.length){ alert('Select at least one trip.'); return false; }
   var note = (form.note && form.note.value || '').trim();
   if(!note){ alert('A revision note is required.'); return false; }
+  form.querySelectorAll('input[data-ret-inj]').forEach(function(el){ el.remove(); });
+  boxes.forEach(function(b){
+    var inp = document.createElement('input');
+    inp.type = 'hidden';
+    inp.name = 'trip';
+    inp.value = b.value;
+    inp.setAttribute('data-ret-inj','1');
+    form.appendChild(inp);
+  });
   return confirm('Return '+boxes.length+' flagged trip(s) to company?');
 }
 </script>`;
@@ -1129,6 +1250,247 @@ router.post('/api/council-bulk-return', (req, res) => {
   });
 });
 
+// ── Soft-archive / restore ─────────────────────────────────────────────────────
+router.post('/api/council-archive', (req, res) => {
+  const token = (req.body._token as string) || '';
+  const tripCid = String(req.body.tripCid || '').trim();
+  const tripRawKey = String(req.body.tripRawKey || '').trim();
+  const note = String(req.body.note || '').trim();
+  const returnTo = normalizeCouncilReturnTo(req.body.returnTo, 'pending');
+  const sess = cpGetSession(token);
+  const te = encodeURIComponent(token);
+  const base = councilReturnPath(returnTo, te);
+  if (!sess || !tripCid || !tripRawKey) {
+    return res.redirect(base + '&msg=Invalid+request&mt=err');
+  }
+  const who = sess.name || sess.councilId;
+  fbRead('tmTripStatus/' + tripCid + '/' + tripRawKey, (e0: any, st: any) => {
+    if (e0 || !st || st.councilId !== sess.councilId) {
+      return res.redirect(base + '&msg=Trip+not+found+for+this+council&mt=err');
+    }
+    if (isArchivedStatus(st.status)) {
+      return res.redirect(base + '&msg=' + encodeURIComponent('Trip is already archived.') + '&mt=err');
+    }
+    const patch = archivePatch(st.status, who, note || null);
+    fbWrite('PATCH', 'tmTripStatus/' + tripCid + '/' + tripRawKey, patch, (err: any) => {
+      if (err) return res.redirect(base + '&msg=Archive+failed&mt=err');
+      res.redirect(base + '&msg=' + encodeURIComponent('Trip archived.') + '&mt=ok');
+    });
+  });
+});
+
+router.post('/api/council-bulk-archive', (req, res) => {
+  const token = (req.body._token as string) || '';
+  const note = String(req.body.note || '').trim();
+  const returnTo = normalizeCouncilReturnTo(req.body.returnTo, 'pending');
+  const allMatching = String(req.body.allMatching || '') === '1';
+  const sess = cpGetSession(token);
+  const te = encodeURIComponent(token);
+  const base = councilReturnPath(returnTo, te);
+  if (!sess) return res.redirect(base + '&msg=Invalid+request&mt=err');
+  const selected = parseTripKeysFromBody(req.body);
+  const selectedSet = new Set(selected.map((k) => k.cid + '/' + k.rawKey));
+  const filterCompany = String(req.body.company || '').trim();
+  const filterFrom = String(req.body.from || '').trim();
+  const filterTo = String(req.body.to || '').trim();
+  const who = sess.name || sess.councilId;
+
+  const finishArchive = (candidates: any[]) => {
+    const toArchive = candidates.filter((t) => !isArchivedStatus(t.status));
+    if (toArchive.length === 0) {
+      return res.redirect(base + '&msg=' + encodeURIComponent('No trips to archive.') + '&mt=err');
+    }
+    let left = toArchive.length;
+    let ok = 0;
+    toArchive.forEach((t) => {
+      const patch = archivePatch(t.status, who, note || null);
+      fbWrite('PATCH', 'tmTripStatus/' + t._cid + '/' + t._rawKey, patch, (err: any) => {
+        if (!err) ok++;
+        if (--left === 0) {
+          res.redirect(
+            base +
+              '&msg=' +
+              encodeURIComponent('Archived ' + ok + ' trip(s).') +
+              '&mt=' +
+              (ok ? 'ok' : 'err'),
+          );
+        }
+      });
+    });
+  };
+
+  loadCouncilTrips(sess.councilId, (_err: any, myTrips: any[]) => {
+    if (returnTo === 'reports' && allMatching) {
+      const matching = filterTripsForReports(myTrips, {
+        companyId: filterCompany || undefined,
+        from: filterFrom || undefined,
+        to: filterTo || undefined,
+        includeArchived: false,
+      });
+      return finishArchive(matching);
+    }
+    if (returnTo === 'pending' || returnTo === 'anomalies') {
+      scanAndRefreshTrips(myTrips, (scanned) => {
+        const { cleanSubmitted, flagged } = partitionCleanAndFlagged(scanned);
+        const queue = returnTo === 'anomalies' ? flagged : cleanSubmitted;
+        const candidates = allMatching
+          ? queue
+          : queue.filter((t) => selectedSet.has(String(t._cid) + '/' + String(t._rawKey)));
+        if (!allMatching && selected.length === 0) {
+          return res.redirect(base + '&msg=' + encodeURIComponent('Select at least one trip.') + '&mt=err');
+        }
+        finishArchive(candidates);
+      });
+      return;
+    }
+    // Selected keys from reports / archived / other
+    if (!allMatching && selected.length === 0) {
+      return res.redirect(base + '&msg=' + encodeURIComponent('Select at least one trip.') + '&mt=err');
+    }
+    const candidates = myTrips.filter((t) =>
+      selectedSet.has(String(t._cid) + '/' + String(t._rawKey)),
+    );
+    finishArchive(candidates);
+  });
+});
+
+router.post('/api/council-restore', (req, res) => {
+  const token = (req.body._token as string) || '';
+  const tripCid = String(req.body.tripCid || '').trim();
+  const tripRawKey = String(req.body.tripRawKey || '').trim();
+  const returnTo = normalizeCouncilReturnTo(req.body.returnTo, 'archived');
+  const sess = cpGetSession(token);
+  const te = encodeURIComponent(token);
+  const base = councilReturnPath(returnTo, te);
+  if (!sess || !tripCid || !tripRawKey) {
+    return res.redirect(base + '&msg=Invalid+request&mt=err');
+  }
+  fbRead('tmTripStatus/' + tripCid + '/' + tripRawKey, (e0: any, st: any) => {
+    if (e0 || !st || st.councilId !== sess.councilId) {
+      return res.redirect(base + '&msg=Trip+not+found+for+this+council&mt=err');
+    }
+    if (!isArchivedStatus(st.status)) {
+      return res.redirect(base + '&msg=' + encodeURIComponent('Trip is not archived.') + '&mt=err');
+    }
+    const patch = restorePatch(st);
+    fbWrite('PATCH', 'tmTripStatus/' + tripCid + '/' + tripRawKey, patch, (err: any) => {
+      if (err) return res.redirect(base + '&msg=Restore+failed&mt=err');
+      res.redirect(base + '&msg=' + encodeURIComponent('Trip restored.') + '&mt=ok');
+    });
+  });
+});
+
+router.post('/api/council-bulk-restore', (req, res) => {
+  const token = (req.body._token as string) || '';
+  const returnTo = normalizeCouncilReturnTo(req.body.returnTo, 'archived');
+  const allMatching = String(req.body.allMatching || '') === '1';
+  const sess = cpGetSession(token);
+  const te = encodeURIComponent(token);
+  const base = councilReturnPath(returnTo, te);
+  if (!sess) return res.redirect(base + '&msg=Invalid+request&mt=err');
+  const selected = parseTripKeysFromBody(req.body);
+  const selectedSet = new Set(selected.map((k) => k.cid + '/' + k.rawKey));
+  loadCouncilTrips(sess.councilId, (_err: any, myTrips: any[]) => {
+    const archived = myTrips.filter((t) => isArchivedStatus(t.status));
+    const candidates = allMatching
+      ? archived
+      : archived.filter((t) => selectedSet.has(String(t._cid) + '/' + String(t._rawKey)));
+    if (!allMatching && selected.length === 0) {
+      return res.redirect(base + '&msg=' + encodeURIComponent('Select at least one trip.') + '&mt=err');
+    }
+    if (candidates.length === 0) {
+      return res.redirect(base + '&msg=' + encodeURIComponent('No archived trips to restore.') + '&mt=err');
+    }
+    let left = candidates.length;
+    let ok = 0;
+    candidates.forEach((t) => {
+      const patch = restorePatch(t);
+      fbWrite('PATCH', 'tmTripStatus/' + t._cid + '/' + t._rawKey, patch, (err: any) => {
+        if (!err) ok++;
+        if (--left === 0) {
+          res.redirect(
+            base +
+              '&msg=' +
+              encodeURIComponent('Restored ' + ok + ' trip(s).') +
+              '&mt=' +
+              (ok ? 'ok' : 'err'),
+          );
+        }
+      });
+    });
+  });
+});
+
+// ── Archived trips ─────────────────────────────────────────────────────────────
+router.get('/council-portal/archived', requirePortalAuth, (req, res) => {
+  const sess = (req as any).cpSession;
+  const token = (req as any).cpToken;
+  const msg = (req.query.msg as string) || '';
+  const mt = (req.query.mt as string) || '';
+  const te = encodeURIComponent(token);
+  loadCouncilTrips(sess.councilId, (_err: any, myTrips: any[]) => {
+    const archived = myTrips
+      .filter((t) => isArchivedStatus(t.status))
+      .slice()
+      .sort((a, b) => {
+        const aAt = Number(a.archivedAt) || 0;
+        const bAt = Number(b.archivedAt) || 0;
+        if (bAt !== aAt) return bAt - aAt;
+        return (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || '');
+      });
+    const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
+    const rows = archived.map((t) => {
+      const d = buildTmTripDetail(t);
+      const dt = d.dateTime || '—';
+      const archivedDt = t.archivedAt ? new Date(t.archivedAt).toLocaleString('en-NZ') : '—';
+      const tripKey = esc(String(t._cid) + '|' + String(t._rawKey));
+      return `<tr>
+<td><input type="checkbox" name="trip" value="${tripKey}" form="cp-bulk-restore"/></td>
+<td style="font-family:monospace;font-size:11px">${esc(d.voucherNo)}</td>
+<td>${esc(d.passengerName)}</td>
+<td style="font-size:12px;color:#555">${esc(d.companyName)}</td>
+<td>${esc(dt)}</td>
+<td>${statusBadge(String(t.archivedFromStatus || 'submitted'))}</td>
+<td style="font-size:12px;color:#666;max-width:200px">${t.archiveNote ? esc(String(t.archiveNote)) : '—'}</td>
+<td style="font-size:11px;color:#888">${archivedDt}</td>
+<td style="white-space:nowrap">
+  <form method="POST" action="/api/council-restore" style="display:inline" onsubmit="return cpRestoreTrip(this)">
+    <input type="hidden" name="_token" value="${esc(token)}"/>
+    <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
+    <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
+    <input type="hidden" name="returnTo" value="archived"/>
+    <button type="submit" class="cp-btn cp-btn-g">&#8634; Restore</button>
+  </form>
+</td></tr>`;
+    }).join('');
+    const toolbar = archived.length
+      ? `<form id="cp-bulk-restore" method="POST" action="/api/council-bulk-restore" style="display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px" onsubmit="return cpBulkRestoreSelected(this)">
+  <input type="hidden" name="_token" value="${esc(token)}"/>
+  <input type="hidden" name="returnTo" value="archived"/>
+  <button type="submit" class="cp-btn cp-btn-g">&#8634; Restore selected</button>
+</form>
+<form method="POST" action="/api/council-bulk-restore" style="display:inline;margin-left:8px" onsubmit="return cpBulkRestoreAll(${archived.length})">
+  <input type="hidden" name="_token" value="${esc(token)}"/>
+  <input type="hidden" name="returnTo" value="archived"/>
+  <input type="hidden" name="allMatching" value="1"/>
+  <button type="submit" class="cp-btn" style="background:#2E7D32;color:#fff">&#8634; Restore all on page (${archived.length})</button>
+</form>`
+      : '';
+    const body = `
+<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Archived (${archived.length})</h2>
+${noticeHtml}
+<p style="font-size:13px;color:#666;margin-bottom:12px">Soft-archived trips are hidden from Pending, Flagged, Trips, and default Reports. Restore to return them to their prior status.</p>
+${toolbar}
+<div class="cp-card" style="overflow-x:auto">
+${archived.length ? `<table class="cp-tbl">
+<thead><tr><th></th><th>Voucher No.</th><th>Passenger</th><th>Company</th><th>Date</th><th>Prior status</th><th>Archive note</th><th>Archived at</th><th>Action</th></tr></thead>
+<tbody>${rows}</tbody></table>` : '<div class="cp-empty">No archived trips.</div>'}
+</div>
+${CP_TRIP_ACTION_SCRIPT}`;
+    res.send(portalPage('Archived', renderNav(sess, token, 'archived'), body));
+  });
+});
+
 // ── Scan one trip after SA/owner submit (same-origin; no portal session) ───────
 router.post('/api/tm-scan-submitted', (req, res) => {
   const cid = String(req.body.cid || req.body.tripCid || '').trim();
@@ -1165,9 +1527,12 @@ function tripStartedMs(t: any): number {
 
 function filterTripsForReports(
   trips: any[],
-  opts: { companyId?: string; from?: string; to?: string },
+  opts: { companyId?: string; from?: string; to?: string; includeArchived?: boolean },
 ): any[] {
   let rows = trips.slice();
+  if (!opts.includeArchived) {
+    rows = rows.filter((t) => !isArchivedStatus(t.status));
+  }
   if (opts.companyId) rows = rows.filter((t) => String(t._cid) === opts.companyId);
   if (opts.from) {
     const fromMs = Date.parse(opts.from + 'T00:00:00');
@@ -1265,6 +1630,7 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
   const filterCompany = String(req.query.company || '').trim();
   const filterFrom = String(req.query.from || '').trim();
   const filterTo = String(req.query.to || '').trim();
+  const includeArchived = String(req.query.includeArchived || '') === '1';
   const te = encodeURIComponent(token);
   loadCouncilTrips(sess.councilId, (err: any, myTrips: any[]) => {
     fbRead('tmCompanyAccess', (eAcc: any, allAccess: any) => {
@@ -1291,6 +1657,7 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
           companyId: filterCompany || undefined,
           from: filterFrom || undefined,
           to: filterTo || undefined,
+          includeArchived,
         });
         const tariffCids = Array.from(
           new Set(
@@ -1327,7 +1694,8 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
           const exportQs =
             `&company=${encodeURIComponent(filterCompany)}` +
             `&from=${encodeURIComponent(filterFrom)}` +
-            `&to=${encodeURIComponent(filterTo)}`;
+            `&to=${encodeURIComponent(filterTo)}` +
+            (includeArchived ? '&includeArchived=1' : '');
           const summaryRows = details
             .map((d, idx) => {
               const mismatchMark = d.fareMismatch
@@ -1335,6 +1703,21 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
                 : '';
               const src = displayTrips[idx] || {};
               const chips = flagReasonChips(src.flagReasons, src.anomalyDetail);
+              const rowArchiveBtn = isArchivedStatus(d.status)
+                ? `<form method="POST" action="/api/council-restore" style="display:inline" onclick="event.stopPropagation()" onsubmit="return confirm('Restore this trip?')">
+  <input type="hidden" name="_token" value="${esc(token)}"/>
+  <input type="hidden" name="tripCid" value="${esc(d.cid)}"/>
+  <input type="hidden" name="tripRawKey" value="${esc(d.rawKey)}"/>
+  <input type="hidden" name="returnTo" value="reports"/>
+  <button type="submit" class="cp-btn-sm" style="background:#2E7D32">Restore</button>
+</form>`
+                : `<form method="POST" action="/api/council-archive" style="display:inline" onclick="event.stopPropagation()" onsubmit="return confirm('Archive this trip?')">
+  <input type="hidden" name="_token" value="${esc(token)}"/>
+  <input type="hidden" name="tripCid" value="${esc(d.cid)}"/>
+  <input type="hidden" name="tripRawKey" value="${esc(d.rawKey)}"/>
+  <input type="hidden" name="returnTo" value="reports"/>
+  <button type="submit" class="cp-btn-sm" style="background:#757575">Archive</button>
+</form>`;
               return `<tr class="cp-row-click" data-idx="${idx}" onclick="openRptDetail(${idx})">
 <td>${esc(d.dateTime)}</td>
 <td>${esc(d.companyName)}</td>
@@ -1346,7 +1729,7 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
 <td style="font-weight:700;color:#1B5E20">$${d.totalCouncil.toFixed(2)}</td>
 <td>$${d.passengerPays.toFixed(2)}</td>
 <td>${statusBadge(d.status)}${chips ? `<div style="margin-top:3px">${chips}</div>` : ''}</td>
-<td><button type="button" class="cp-btn-sm" onclick="event.stopPropagation();openRptDetail(${idx})">Details</button></td>
+<td style="white-space:nowrap"><button type="button" class="cp-btn-sm" onclick="event.stopPropagation();openRptDetail(${idx})">Details</button> ${rowArchiveBtn}</td>
 </tr>`;
             })
             .join('');
@@ -1368,7 +1751,7 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
           const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:6px">Reports</h2>
 ${noticeHtml}
-<p style="font-size:13px;color:#666;margin-bottom:14px">Filter by company and date range. Click a row for full trip detail, map, fare check, and council actions.</p>
+<p style="font-size:13px;color:#666;margin-bottom:14px">Filter by company and date range. Click a row for full trip detail, map, fare check, and council actions. Archived trips are hidden unless included below.</p>
 <div class="cp-month-row">
   <form method="GET" action="/council-portal/reports" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
     <input type="hidden" name="t" value="${esc(token)}"/>
@@ -1378,8 +1761,11 @@ ${noticeHtml}
       <input type="date" name="from" class="cp-input" value="${esc(filterFrom)}"/></div>
     <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">To</label>
       <input type="date" name="to" class="cp-input" value="${esc(filterTo)}"/></div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:#555;padding-bottom:6px">
+      <input type="checkbox" name="includeArchived" value="1"${includeArchived ? ' checked' : ''}/> Include archived
+    </label>
     <button type="submit" class="cp-btn cp-btn-g">Apply</button>
-    ${filterCompany || filterFrom || filterTo ? `<a href="/council-portal/reports?t=${te}" class="cp-btn" style="background:#eee;color:#333">Clear</a>` : ''}
+    ${filterCompany || filterFrom || filterTo || includeArchived ? `<a href="/council-portal/reports?t=${te}" class="cp-btn" style="background:#eee;color:#333">Clear</a>` : ''}
   </form>
   <a href="/council-portal/export?t=${te}${exportQs}" class="cp-btn cp-btn-g" style="margin-left:auto">&#11015; Download full CSV</a>
 </div>
@@ -1418,6 +1804,7 @@ function _fld(name,label,val,full){
   return '<div'+(full?' style="grid-column:1/-1"':'')+'><label>'+label+'</label><input class="cp-input" name="'+name+'" value="'+_escAttr(val)+'"/></div>';
 }
 function buildEditPanel(d){
+  if(d.status==='archived') return '';
   var html = '<details style="margin-top:14px;border:1px solid #FFE082;border-radius:6px;padding:10px 12px;background:#FFFDE7" '+(d.status==='revision_needed'?'open':'')+'>';
   html += '<summary style="cursor:pointer;font-weight:700;color:#E65100">Edit all fields</summary>';
   html += '<form method="POST" action="/api/council-trip-edit" style="margin-top:10px">';
@@ -1451,37 +1838,54 @@ function buildEditPanel(d){
   return html;
 }
 function buildActionForms(d){
-  if(!_ACTIONABLE[d.status] && d.status!=='revision_needed') return '';
-  if(!_ACTIONABLE[d.status]) return '';
   var h = '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start;width:100%">';
-  h += '<form method="POST" action="/api/council-approve">';
+  if(d.status==='archived'){
+    h += '<form method="POST" action="/api/council-restore" onsubmit="return confirm(&#39;Restore this trip to its previous status?&#39;)">';
+    h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
+    h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
+    h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
+    h += '<input type="hidden" name="returnTo" value="reports"/>';
+    h += '<button type="submit" class="cp-btn cp-btn-g">&#8634; Restore</button></form>';
+    h += '</div>';
+    return h;
+  }
+  if(_ACTIONABLE[d.status]){
+    h += '<form method="POST" action="/api/council-approve">';
+    h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
+    h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
+    h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
+    h += '<input type="hidden" name="action" value="approve"/>';
+    h += '<input type="hidden" name="returnTo" value="reports"/>';
+    h += '<button type="submit" class="cp-btn cp-btn-g">&#10003; Approve</button></form>';
+    h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFCDD2;border-radius:6px;background:#FFEBEE" onsubmit="return !!this.note.value.trim()||(alert(&#39;Reject note required&#39;),false)">';
+    h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
+    h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
+    h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
+    h += '<input type="hidden" name="action" value="reject"/>';
+    h += '<input type="hidden" name="returnTo" value="reports"/>';
+    h += '<select name="flagReason" class="cp-input" style="width:auto">';
+    h += '<option value="fare_mismatch">fare_mismatch</option>';
+    h += '<option value="waiting_charged">waiting_charged</option>';
+    h += '<option value="hoist_rate_mismatch">hoist_rate_mismatch</option>';
+    h += '<option value="other">other</option></select>';
+    h += '<input name="note" class="cp-input" placeholder="Reject note (required)" style="min-width:160px" required/>';
+    h += '<button type="submit" class="cp-btn cp-btn-r">&#10007; Reject / Red-flag</button></form>';
+    h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFE082;border-radius:6px;background:#FFF8E1" onsubmit="return !!this.note.value.trim()||(alert(&#39;Revision note required&#39;),false)">';
+    h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
+    h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
+    h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
+    h += '<input type="hidden" name="action" value="return"/>';
+    h += '<input type="hidden" name="returnTo" value="reports"/>';
+    h += '<input name="note" class="cp-input" placeholder="Revision note (required)" style="min-width:160px" required/>';
+    h += '<button type="submit" class="cp-btn" style="background:#E65100;color:#fff">&#8617; Return to company</button></form>';
+  }
+  h += '<form method="POST" action="/api/council-archive" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #E0E0E0;border-radius:6px;background:#FAFAFA" onsubmit="return confirm(&#39;Archive this trip? You can restore it later.&#39;)">';
   h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
   h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
   h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
-  h += '<input type="hidden" name="action" value="approve"/>';
   h += '<input type="hidden" name="returnTo" value="reports"/>';
-  h += '<button type="submit" class="cp-btn cp-btn-g">&#10003; Approve</button></form>';
-  h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFCDD2;border-radius:6px;background:#FFEBEE" onsubmit="return !!this.note.value.trim()||(alert(&#39;Reject note required&#39;),false)">';
-  h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
-  h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
-  h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
-  h += '<input type="hidden" name="action" value="reject"/>';
-  h += '<input type="hidden" name="returnTo" value="reports"/>';
-  h += '<select name="flagReason" class="cp-input" style="width:auto">';
-  h += '<option value="fare_mismatch">fare_mismatch</option>';
-  h += '<option value="waiting_charged">waiting_charged</option>';
-  h += '<option value="hoist_rate_mismatch">hoist_rate_mismatch</option>';
-  h += '<option value="other">other</option></select>';
-  h += '<input name="note" class="cp-input" placeholder="Reject note (required)" style="min-width:160px" required/>';
-  h += '<button type="submit" class="cp-btn cp-btn-r">&#10007; Reject / Red-flag</button></form>';
-  h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFE082;border-radius:6px;background:#FFF8E1" onsubmit="return !!this.note.value.trim()||(alert(&#39;Revision note required&#39;),false)">';
-  h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
-  h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
-  h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
-  h += '<input type="hidden" name="action" value="return"/>';
-  h += '<input type="hidden" name="returnTo" value="reports"/>';
-  h += '<input name="note" class="cp-input" placeholder="Revision note (required)" style="min-width:160px" required/>';
-  h += '<button type="submit" class="cp-btn" style="background:#E65100;color:#fff">&#8617; Return to company</button></form>';
+  h += '<input name="note" class="cp-input" placeholder="Archive note (optional)" style="min-width:160px"/>';
+  h += '<button type="submit" class="cp-btn" style="background:#757575;color:#fff">&#128193; Archive</button></form>';
   h += '</div>';
   return h;
 }
@@ -1561,7 +1965,7 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
     // Count line links to Flagged tab (full detail lives there — no duplicate trip list here).
     const claimNotice =
       `<p style="font-size:12.5px;color:#666;margin:-4px 0 14px;padding:10px 12px;background:#FFF8E1;border-left:4px solid #E65100;border-radius:4px">` +
-      `Trips with status flagged, revision_needed, or rejected are excluded from claims. Only approved trips are claimable.` +
+      `Trips with status flagged, revision_needed, rejected, or archived are excluded from claims. Only approved trips are claimable.` +
       (flaggedExcluded > 0
         ? `<div style="margin-top:6px">${flaggedExcluded} trip${flaggedExcluded === 1 ? '' : 's'} excluded this period — ` +
           `<a href="/council-portal/anomalies?t=${te}" style="color:#E65100;font-weight:600">View Flagged Trips</a></div>`
@@ -2006,6 +2410,7 @@ router.get('/council-portal/export', requirePortalAuth, (req, res) => {
   const filterCompany = String(req.query.company || '').trim();
   const filterFrom = String(req.query.from || '').trim();
   const filterTo = String(req.query.to || '').trim();
+  const includeArchived = String(req.query.includeArchived || '') === '1';
   // Legacy month=YYYY-MM still supported
   const filterMonth = String(req.query.month || '').trim();
   loadCouncilTrips(sess.councilId, (err: any, trips: any[]) => {
@@ -2013,11 +2418,13 @@ router.get('/council-portal/export', requirePortalAuth, (req, res) => {
       companyId: filterCompany || undefined,
       from: filterFrom || undefined,
       to: filterTo || undefined,
+      includeArchived,
     });
     if (filterMonth && !filterFrom && !filterTo) {
       filtered = trips
         .filter((t) => (t.startedAt_ISO || '').slice(0, 7) === filterMonth)
         .filter((t) => !filterCompany || String(t._cid) === filterCompany)
+        .filter((t) => includeArchived || !isArchivedStatus(t.status))
         .sort((a, b) => (a.startedAt_ISO || '').localeCompare(b.startedAt_ISO || ''));
     } else {
       filtered.sort((a, b) => (a.startedAt_ISO || '').localeCompare(b.startedAt_ISO || ''));

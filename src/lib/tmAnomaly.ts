@@ -134,6 +134,12 @@ export function isClaimEligibleStatus(status: string | null | undefined): boolea
   return s === 'approved' || s === 'paid';
 }
 
+/** Archived trips are soft-deleted from queues / claims / anomaly auto-moves. */
+export function isActiveWorkflowStatus(status: string | null | undefined): boolean {
+  const s = String(status || '').trim().toLowerCase();
+  return s !== 'archived';
+}
+
 export function detectTripAnomalies(
   trip: AnomalyTripLike,
   opts?: { peers?: AnomalyTripLike[]; refTariff?: RefTariff | null },
@@ -213,6 +219,7 @@ export function applyAnomalyScan(
     if (!cid || !rawKey) continue;
 
     const status = str(trip.status || 'pending').toLowerCase();
+    if (status === 'archived') continue;
     if (['approved', 'rejected', 'paid'].includes(status)) continue;
     // Only auto-move between submitted <-> flagged (and refresh flags on revision_needed for banner)
     if (!['submitted', 'flagged', 'revision_needed', 'pending', 'company_approved'].includes(status)) {
