@@ -129,9 +129,14 @@ firebase.initializeApp(config);
   <div id="page_content_inner">
 
 <div class="tm-wrap">
+<div id="tm-setup-banner" style="margin:0 0 16px;padding:12px 16px;border-radius:8px;background:#E3F2FD;border-left:4px solid #1565C0;font-size:13px;color:#0D47A1;line-height:1.45">
+  <strong>Prefer TM Setup Hub</strong> for day-to-day council onboarding and company approval.
+  You are on Council Config (advanced).
+  <a href="TM-Setup.aspx" style="font-weight:700;color:#0D47A1;text-decoration:underline">Open Setup Hub →</a>
+</div>
 <div class="tm-card">
   <div class="tm-bar">
-    <h3>TM Council Config <small id="cc-count" style="opacity:.75;font-size:12px"></small></h3>
+    <h3>TM Council Config <small id="cc-count" style="opacity:.75;font-size:12px"></small> <span style="font-size:11px;opacity:.85;font-weight:500">(Advanced)</span></h3>
     <div style="display:flex;gap:8px">
       <button class="tm-btn tm-btn-p" onclick="openCC()">+ Add Council</button>
       <button class="tm-btn tm-btn-wh" onclick="refreshCC()">&#8635;</button>

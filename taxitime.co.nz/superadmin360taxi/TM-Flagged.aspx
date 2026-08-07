@@ -106,13 +106,14 @@ firebase.initializeApp(config);
         </ul>
       </li>
     <li class="current_section" title="Total Mobility"><a href="#"><span class="menu_icon"><i class="material-icons">&#xE8CC;</i></span><span class="menu_title">Total Mobility</span></a><ul>
-      <li><a href="TM-Council-Config.aspx">Council Config</a></li>
+      <li><a href="TM-Setup.aspx">TM Setup Hub</a></li>
+      <li><a href="TM-Council-Config.aspx">Council Config (Advanced)</a></li>
       <li><a href="TM-Cards.aspx">Passenger Cards</a></li>
       <li><a href="TM-Trips.aspx">All Trips</a></li>
       <li><a href="TM-Flagged.aspx" style="font-weight:700;color:#1565C0">&#9658; Flagged Trips</a></li>
       <li><a href="TM-Batches.aspx">Claim Batches</a></li>
       <li><a href="TM-Reports.aspx">Monthly Reports</a></li>
-      <li><a href="TM-Settings.aspx">TM Settings</a></li>
+      <li><a href="TM-Settings.aspx">TM Settings (Advanced)</a></li>
       <li><a href="/council-portal" target="_blank">Council Portal &#8599;</a></li>
     </ul></li>
     <li class="current_section" title="Pricing"><a href="#"><span class="menu_icon"><i class="material-icons">&#xE8A1;</i></span><span class="menu_title">Pricing</span></a><ul>

@@ -3,6 +3,18 @@ import { fbRead, fbWrite, fbAuthCreate, fbAuthSignIn, fbAuthSendReset } from '..
 import { esc } from '../utils';
 import { cpGetSession, cpSetSession, cpDeleteSession, councilSessions } from '../sessions';
 import { isDriverWav, listDriversForCompany } from '../lib/driverList';
+import { resolveDriverVehicle } from '../lib/vehicleRegistry';
+import {
+  classifyTmConfig,
+  legacyTariffProvenance,
+  provenanceBadgeHtml,
+} from '../lib/tmProvenance';
+import {
+  buildTmTripDetail,
+  tmTripDetailToCsvRow,
+  TM_TRIP_CSV_HEADERS,
+  type TmTripDetail,
+} from '../lib/tmTripDetail';
 
 const router = Router();
 
@@ -55,6 +67,16 @@ a{color:inherit;text-decoration:none}
 .cp-tog-on{background:#E8F5E9;color:#2E7D32;border:1px solid #C8E6C9;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:600;cursor:pointer}
 .cp-tog-off{background:#FFEBEE;color:#C62828;border:1px solid #FFCDD2;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:600;cursor:pointer}
 .cp-btn-sm{padding:5px 10px;background:#1B5E20;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600}
+.cp-tbl tr.cp-row-click{cursor:pointer}
+.cp-tbl tr.cp-row-click:hover td{background:#E8F5E9}
+.cp-ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:999;align-items:center;justify-content:center;padding:16px}
+.cp-ov.open{display:flex}
+.cp-modal{background:#fff;border-radius:8px;width:720px;max-width:96vw;max-height:92vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.25)}
+.cp-modal-hd{background:#1B5E20;color:#fff;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;border-radius:8px 8px 0 0}
+.cp-modal-hd h3{margin:0;font-size:15px}
+.cp-modal-bd{padding:18px}
+.cp-modal-ft{padding:12px 18px;border-top:1px solid #eee;display:flex;justify-content:flex-end;gap:8px}
+.cp-input{padding:7px 10px;border:1px solid #ddd;border-radius:4px;font-size:13px}
 `;
 
 function renderNav(session: any, token: string, activePage: string): string {
@@ -373,6 +395,13 @@ router.get('/council-portal/dashboard', requirePortalAuth, (req, res) => {
   const curMonth = now.toISOString().slice(0, 7);
   loadCouncilTrips(sess.councilId, (err: any, myTrips: any[]) => {
     fbRead('tmConfig/' + sess.councilId, (e2: any, cfg: any) => {
+      fbRead('tmCompanyAccess', (e3: any, allAccess: any) => {
+      let approvedOps = 0;
+      if (allAccess && typeof allAccess === 'object') {
+        Object.values(allAccess).forEach((councils: any) => {
+          if (councils && councils[sess.councilId] && councils[sess.councilId].approved) approvedOps++;
+        });
+      }
       const thisMonthTrips = myTrips.filter(t => (t.startedAt_ISO || '').slice(0, 7) === curMonth);
       let totalCouncilPays = 0, pendingCount = 0;
       thisMonthTrips.forEach(t => {
@@ -382,7 +411,7 @@ router.get('/council-portal/dashboard', requirePortalAuth, (req, res) => {
       const avg = thisMonthTrips.length ? (totalCouncilPays / thisMonthTrips.length).toFixed(2) : '0.00';
       const recent = [...myTrips].sort((a, b) => (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || '')).slice(0, 10);
       const configHtml = cfg ? `
-<div class="cp-card"><div class="cp-card-hd"><h3>Council Configuration</h3></div><div class="cp-card-bd">
+<div class="cp-card"><div class="cp-card-hd"><h3>Council Configuration ${provenanceBadgeHtml({ kind: 'synced', label: 'Live', detail: 'Council source of truth for subsidy / cap / hoist' })}</h3></div><div class="cp-card-bd">
 <table style="font-size:13px;width:100%">
 <tr><td style="padding:4px 8px;color:#666">Region</td><td style="padding:4px 8px;font-weight:500">${esc(cfg.region || '—')}</td>
     <td style="padding:4px 8px;color:#666">Subsidy Cap</td><td style="padding:4px 8px;font-weight:500">$${parseFloat(cfg.capAmount || 0).toFixed(2)}</td></tr>
@@ -403,21 +432,24 @@ router.get('/council-portal/dashboard', requirePortalAuth, (req, res) => {
 <td>${statusBadge(t.status)}</td></tr>`;
       }).join('');
       const body = `
-<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Dashboard &mdash; ${esc(curMonth)}</h2>
+<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:6px">Dashboard snapshot</h2>
+<p style="font-size:13px;color:#666;margin-bottom:14px">At-a-glance: approved operators, this month&rsquo;s TM activity, and recent trips.</p>
 <div class="cp-stats">
-  <div class="cp-stat"><div class="cp-stat-v">${thisMonthTrips.length}</div><div class="cp-stat-l">Trips This Month</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">${approvedOps}</div><div class="cp-stat-l">Approved Companies</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">${thisMonthTrips.length}</div><div class="cp-stat-l">Trips This Month (${esc(curMonth)})</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totalCouncilPays.toFixed(2)}</div><div class="cp-stat-l">Council Pays This Month</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${avg}</div><div class="cp-stat-l">Avg Per Trip</div></div>
   ${pendingCount > 0 ? `<div class="cp-stat flag"><div class="cp-stat-v">${pendingCount}</div><div class="cp-stat-l">Awaiting Your Approval</div></div>` : ''}
 </div>
 ${configHtml}
 <div class="cp-card">
-  <div class="cp-card-hd"><h3>Recent Trips (${recent.length})</h3>
+  <div class="cp-card-hd"><h3>Recent TM activity (${recent.length})</h3>
     <a href="/council-portal/trips?t=${encodeURIComponent(token)}" style="font-size:12px;color:#2E7D32">View all &rarr;</a></div>
   ${recent.length ? `<table class="cp-tbl"><thead><tr><th>Voucher No.</th><th>Passenger</th><th>Operator</th><th>Date</th><th>Fare</th><th>Council Pays</th><th>Status</th></tr></thead>
 <tbody>${recentRows}</tbody></table>` : '<div class="cp-empty">No trips submitted to this council yet.</div>'}
 </div>`;
       res.send(portalPage('Dashboard', renderNav(sess, token, 'dashboard'), body));
+      });
     });
   });
 });
@@ -548,87 +580,207 @@ ${pending.length ? `<table class="cp-tbl">
 });
 
 // ── Reports ────────────────────────────────────────────────────────────────────
+function tripStartedMs(t: any): number {
+  const iso = t.startedAt_ISO || t.startedAt || t.completedAt_ISO || '';
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function filterTripsForReports(
+  trips: any[],
+  opts: { companyId?: string; from?: string; to?: string },
+): any[] {
+  let rows = trips.slice();
+  if (opts.companyId) rows = rows.filter((t) => String(t._cid) === opts.companyId);
+  if (opts.from) {
+    const fromMs = Date.parse(opts.from + 'T00:00:00');
+    if (Number.isFinite(fromMs)) rows = rows.filter((t) => tripStartedMs(t) >= fromMs);
+  }
+  if (opts.to) {
+    const toMs = Date.parse(opts.to + 'T23:59:59');
+    if (Number.isFinite(toMs)) rows = rows.filter((t) => tripStartedMs(t) <= toMs);
+  }
+  rows.sort((a, b) => (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || ''));
+  return rows;
+}
+
+function tripDetailModalHtml(d: TmTripDetail): string {
+  const money = (n: number) => '$' + n.toFixed(2);
+  const row = (l: string, v: string) =>
+    `<div><div style="font-size:11px;color:#888;font-weight:600;margin-bottom:2px">${l}</div><div style="font-size:13px;font-weight:500">${v}</div></div>`;
+  const frow = (l: string, v: string, c = '#333') =>
+    `<tr><td style="padding:3px 0;color:${c}">${l}</td><td style="text-align:right;color:${c}">${v}</td></tr>`;
+  return `
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 18px;margin-bottom:14px">
+  ${row('Job / Booking', esc(d.id))}
+  ${row('Status', statusBadge(d.status))}
+  ${row('Operator', esc(d.companyName))}
+  ${row('Driver', esc(d.driverName))}
+  ${row('Vehicle / Cab', esc(d.vehicleId))}
+  ${row('Trip Category', esc(d.tripCategory))}
+  ${row('Passenger', esc(d.passengerName))}
+  ${row('Voucher / Cards', esc(d.allCards))}
+  ${row('Pickup', esc(d.pickup))}
+  ${row('Dropoff', esc(d.dropoff))}
+  ${row('Start', esc(d.dateTime))}
+  ${row('End', esc(d.endTime))}
+  ${row('Distance', esc(d.distanceKm ? d.distanceKm + ' km' : '—'))}
+  ${row('Duration', esc(d.duration))}
+  ${row('Payment Method', esc(d.paymentMethod))}
+  ${row('Passengers (TM)', String(d.passengerCount))}
+</div>
+<div style="background:#F1F8E9;border-radius:6px;padding:14px;font-size:13px">
+<strong>Fare Breakdown</strong>
+<table style="width:100%;margin-top:8px">
+${frow('Meter Fare (trip only)', money(d.meterFare))}
+${d.waitingCharge > 0 ? frow('Waiting Charge (passenger pays, not TM)', money(d.waitingCharge), '#9e9e9e') : ''}
+<tr><td colspan="2" style="padding:4px 0;border-top:1px dashed #ccc"></td></tr>
+${d.splitNote ? frow(esc(d.splitNote), '', '#1565C0') : ''}
+${frow('Line 1 — Meter subsidy', '<span style="color:#2E7D32;font-weight:600">' + money(d.meterSubsidy) + '</span>')}
+${frow('Line 2 — Hoist (100% council)', '<span style="color:#2E7D32;font-weight:600">' + money(d.hoistCouncil) + '</span>')}
+${d.hoistLines ? frow('&nbsp;&nbsp;' + esc(d.hoistLines), '', '#555') : ''}
+<tr style="border-top:2px solid #ccc"><td style="padding:6px 0"><strong>Total Council Pays</strong></td>
+<td style="text-align:right"><strong style="color:#2E7D32;font-size:15px">${money(d.totalCouncil)}</strong></td></tr>
+${frow('Passenger Share (meter − subsidy)', money(d.passengerShare))}
+${d.waitingCharge > 0 ? frow('+ Waiting Charge', money(d.waitingCharge)) : ''}
+<tr style="border-top:2px solid #1B5E20"><td style="padding:6px 0"><strong>Passenger Total Pays</strong></td>
+<td style="text-align:right"><strong style="font-size:15px">${money(d.passengerPays)}</strong>
+ <span class="cp-bdg-b">${esc(d.paymentMethod)}</span></td></tr>
+</table></div>`;
+}
+
 router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
   const sess = (req as any).cpSession;
   const token = (req as any).cpToken;
-  const filterMonth = (req.query.month as string) || '';
+  const filterCompany = String(req.query.company || '').trim();
+  const filterFrom = String(req.query.from || '').trim();
+  const filterTo = String(req.query.to || '').trim();
   const te = encodeURIComponent(token);
   loadCouncilTrips(sess.councilId, (err: any, myTrips: any[]) => {
-    fbRead('tmConfig/' + sess.councilId, (e2: any, cfg: any) => {
-      const months: Record<string, boolean> = {};
-      myTrips.forEach(t => { if (t.startedAt_ISO) months[t.startedAt_ISO.slice(0, 7)] = true; });
-      const sortedMonths = Object.keys(months).sort().reverse();
-      const displayTrips = filterMonth ? myTrips.filter(t => (t.startedAt_ISO || '').slice(0, 7) === filterMonth) : myTrips;
-      const monthOpts = sortedMonths.map(m => `<option value="${esc(m)}" ${m === filterMonth ? 'selected' : ''}>${m}</option>`).join('');
-      let totTrips = 0, totFare = 0, totCouncil = 0, totPax = 0;
-      const paxAgg: Record<string, any> = {};
-      const opAgg: Record<string, any> = {};
-      displayTrips.forEach(t => {
-        totTrips++;
-        totFare += parseFloat(t.fare || 0);
-        totCouncil += parseFloat(t.tmSubsidy || 0);
-        totPax += parseFloat(t.tmPassengerPays || 0);
-        const pn = t.tmPassengerName || t.tmVoucherNo || 'Unknown';
-        const vn = t.tmVoucherNo || 'unknown';
-        const pk = vn + '||' + pn;
-        if (!paxAgg[pk]) paxAgg[pk] = { name: pn, voucher: vn, trips: 0, councilPays: 0 };
-        paxAgg[pk].trips++;
-        paxAgg[pk].councilPays += parseFloat(t.tmSubsidy || 0);
-        const cname = t._companyName || ('Operator ' + t._cid);
-        if (!opAgg[cname]) opAgg[cname] = { trips: 0, fare: 0, council: 0, pax: 0 };
-        opAgg[cname].trips++;
-        opAgg[cname].fare += parseFloat(t.fare || 0);
-        opAgg[cname].council += parseFloat(t.tmSubsidy || 0);
-        opAgg[cname].pax += parseFloat(t.tmPassengerPays || 0);
+    fbRead('tmCompanyAccess', (eAcc: any, allAccess: any) => {
+      const approvedCids: string[] = [];
+      const nameByCid: Record<string, string> = {};
+      myTrips.forEach((t) => {
+        if (t._cid) nameByCid[t._cid] = t._companyName || ('Operator ' + t._cid);
       });
-      const monthlyLimit = cfg && cfg.monthlyLimitPerPassenger;
-      const paxRows = Object.values(paxAgg).sort((a: any, b: any) => b.councilPays - a.councilPays).map((p: any) => {
-        const barPct = monthlyLimit ? Math.min(100, (p.trips / monthlyLimit) * 100) : 0;
-        const barOver = monthlyLimit && p.trips >= monthlyLimit;
-        const barHtml = monthlyLimit ? `<div style="display:flex;align-items:center;gap:8px">
-  <div class="cp-bar-wrap"><div class="cp-bar-fill ${barOver ? 'over' : ''}" style="width:${barPct}%"></div></div>
-  <span style="font-size:11px;color:${barOver ? '#C62828' : '#666'}">${p.trips}/${monthlyLimit}</span></div>` : `${p.trips} trip(s)`;
-        return `<tr><td>${esc(p.name)}</td><td style="font-family:monospace">${esc(p.voucher)}</td>
-<td style="text-align:center">${barHtml}</td>
-<td style="color:#2E7D32;font-weight:600">$${p.councilPays.toFixed(2)}</td></tr>`;
-      }).join('');
-      const body = `
-<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Reports</h2>
+      if (allAccess) {
+        Object.entries(allAccess).forEach(([cid, councils]: [string, any]) => {
+          if (councils && councils[sess.councilId] && councils[sess.councilId].approved) {
+            approvedCids.push(cid);
+            if (!nameByCid[cid]) nameByCid[cid] = 'Operator ' + cid;
+          }
+        });
+      }
+      // Resolve missing company names
+      const needNames = approvedCids.filter(
+        (c) => !nameByCid[c] || String(nameByCid[c]).startsWith('Operator '),
+      );
+      let pendingNames = needNames.length;
+      const finish = () => {
+        const displayTrips = filterTripsForReports(myTrips, {
+          companyId: filterCompany || undefined,
+          from: filterFrom || undefined,
+          to: filterTo || undefined,
+        });
+        const details = displayTrips.map((t) => buildTmTripDetail(t));
+        let totTrips = details.length,
+          totFare = 0,
+          totCouncil = 0,
+          totPax = 0;
+        details.forEach((d) => {
+          totFare += d.meterFare;
+          totCouncil += d.totalCouncil;
+          totPax += d.passengerPays;
+        });
+        const companyOpts = approvedCids
+          .concat(Object.keys(nameByCid).filter((c) => approvedCids.indexOf(c) === -1))
+          .filter((c, i, a) => a.indexOf(c) === i)
+          .sort((a, b) => (nameByCid[a] || a).localeCompare(nameByCid[b] || b))
+          .map(
+            (cid) =>
+              `<option value="${esc(cid)}" ${cid === filterCompany ? 'selected' : ''}>${esc(nameByCid[cid] || cid)}</option>`,
+          )
+          .join('');
+        const exportQs =
+          `&company=${encodeURIComponent(filterCompany)}` +
+          `&from=${encodeURIComponent(filterFrom)}` +
+          `&to=${encodeURIComponent(filterTo)}`;
+        const summaryRows = details
+          .map((d, idx) => {
+            return `<tr class="cp-row-click" data-idx="${idx}" onclick="openRptDetail(${idx})">
+<td>${esc(d.dateTime)}</td>
+<td>${esc(d.companyName)}</td>
+<td>${esc(d.passengerName)}</td>
+<td style="font-family:monospace;font-size:11px">${esc(d.voucherNo)}</td>
+<td>${esc(d.pickup)}</td>
+<td>${esc(d.dropoff)}</td>
+<td>$${d.meterFare.toFixed(2)}</td>
+<td style="font-weight:700;color:#1B5E20">$${d.totalCouncil.toFixed(2)}</td>
+<td>$${d.passengerPays.toFixed(2)}</td>
+<td>${statusBadge(d.status)}</td>
+<td><button type="button" class="cp-btn-sm" onclick="event.stopPropagation();openRptDetail(${idx})">Details</button></td>
+</tr>`;
+          })
+          .join('');
+        const detailsJson = JSON.stringify(details.map(tripDetailModalHtml)).replace(/</g, '\\u003c');
+        const body = `
+<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:6px">Reports</h2>
+<p style="font-size:13px;color:#666;margin-bottom:14px">Filter by company and date range. Click a row for full trip detail (fare breakdown, split, hoist, cards, payment method).</p>
 <div class="cp-month-row">
-  <form method="GET" action="/council-portal/reports" style="display:flex;gap:10px;align-items:center">
+  <form method="GET" action="/council-portal/reports" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
     <input type="hidden" name="t" value="${esc(token)}"/>
-    <label>Month:</label>
-    <select name="month"><option value="">All Months</option>${monthOpts}</select>
-    <button type="submit" class="cp-btn cp-btn-g">Filter</button>
-    ${filterMonth ? `<a href="/council-portal/reports?t=${te}" class="cp-btn" style="background:#eee;color:#333">Clear</a>` : ''}
+    <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">Company</label>
+      <select name="company" class="cp-input"><option value="">All Companies</option>${companyOpts}</select></div>
+    <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">From</label>
+      <input type="date" name="from" class="cp-input" value="${esc(filterFrom)}"/></div>
+    <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">To</label>
+      <input type="date" name="to" class="cp-input" value="${esc(filterTo)}"/></div>
+    <button type="submit" class="cp-btn cp-btn-g">Apply</button>
+    ${filterCompany || filterFrom || filterTo ? `<a href="/council-portal/reports?t=${te}" class="cp-btn" style="background:#eee;color:#333">Clear</a>` : ''}
   </form>
-  <a href="/council-portal/export?t=${te}${filterMonth ? '&month=' + esc(filterMonth) : ''}" class="cp-btn cp-btn-g" style="margin-left:auto">&#11015; Download CSV</a>
+  <a href="/council-portal/export?t=${te}${exportQs}" class="cp-btn cp-btn-g" style="margin-left:auto">&#11015; Download full CSV</a>
 </div>
 <div class="cp-stats">
-  <div class="cp-stat"><div class="cp-stat-v">${totTrips}</div><div class="cp-stat-l">Total Trips</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">${totTrips}</div><div class="cp-stat-l">Trips in selection</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totFare.toFixed(2)}</div><div class="cp-stat-l">Total Meter Fare</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totCouncil.toFixed(2)}</div><div class="cp-stat-l">Total Council Claim</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totPax.toFixed(2)}</div><div class="cp-stat-l">Total Passenger Pays</div></div>
 </div>
-<div class="cp-card" style="margin-bottom:18px">
-  <div class="cp-card-hd"><h3>By Operator</h3></div>
-  ${Object.keys(opAgg).length ? `<table class="cp-tbl">
-<thead><tr><th>Taxi Operator</th><th style="text-align:right">Trips</th><th style="text-align:right">Total Fare</th><th style="text-align:right">Council Pays</th><th style="text-align:right">Pax Pays</th></tr></thead>
-<tbody>${Object.entries(opAgg).sort((a: any, b: any) => b[1].council - a[1].council).map(([name, o]: [string, any]) =>
-  `<tr><td style="font-weight:500">${esc(name)}</td>
-<td style="text-align:right">${o.trips}</td>
-<td style="text-align:right">$${o.fare.toFixed(2)}</td>
-<td style="text-align:right;font-weight:700;color:#2E7D32">$${o.council.toFixed(2)}</td>
-<td style="text-align:right">$${o.pax.toFixed(2)}</td></tr>`).join('')}
-</tbody></table>` : '<div class="cp-empty">No data for selected period.</div>'}
+<div class="cp-card" style="overflow-x:auto">
+  <div class="cp-card-hd"><h3>Trip summary</h3>
+    <span style="font-size:12px;color:#888">${details.length} trip(s) — click for full detail</span></div>
+  ${details.length ? `<table class="cp-tbl">
+<thead><tr><th>Date</th><th>Operator</th><th>Passenger</th><th>Voucher</th><th>Pickup</th><th>Dropoff</th><th>Meter</th><th>Council</th><th>Pax Pays</th><th>Status</th><th></th></tr></thead>
+<tbody>${summaryRows}</tbody></table>` : '<div class="cp-empty">No trips for this selection.</div>'}
 </div>
-<div class="cp-card">
-  <div class="cp-card-hd"><h3>Per-Passenger Breakdown</h3></div>
-  ${Object.keys(paxAgg).length ? `<table class="cp-tbl">
-<thead><tr><th>Passenger</th><th>Voucher #</th><th>Trips ${monthlyLimit ? '/ Limit' : ''}</th><th>Council Pays</th></tr></thead>
-<tbody>${paxRows}</tbody></table>` : '<div class="cp-empty">No data for selected period.</div>'}
-</div>`;
-      res.send(portalPage('Reports', renderNav(sess, token, 'reports'), body));
+<div class="cp-ov" id="rpt-ov" onclick="if(event.target===this)closeRptDetail()">
+  <div class="cp-modal" onclick="event.stopPropagation()">
+    <div class="cp-modal-hd"><h3 id="rpt-dtitle">Trip detail</h3>
+      <button type="button" onclick="closeRptDetail()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:20px;line-height:1">&#x2715;</button></div>
+    <div class="cp-modal-bd" id="rpt-detail-body"></div>
+    <div class="cp-modal-ft"><button type="button" class="cp-btn" style="background:#eee;color:#333" onclick="closeRptDetail()">Close</button></div>
+  </div>
+</div>
+<script>
+var _rptDetails = ${detailsJson};
+function openRptDetail(i){
+  var html = _rptDetails[i];
+  if(!html) return;
+  document.getElementById('rpt-detail-body').innerHTML = html;
+  document.getElementById('rpt-dtitle').textContent = 'Trip detail';
+  document.getElementById('rpt-ov').classList.add('open');
+}
+function closeRptDetail(){ document.getElementById('rpt-ov').classList.remove('open'); }
+</script>`;
+        res.send(portalPage('Reports', renderNav(sess, token, 'reports'), body));
+      };
+      if (pendingNames === 0) return finish();
+      needNames.forEach((cid) => {
+        fbRead('superClients/' + cid, (eN: any, sc: any) => {
+          if (sc && sc.name) nameByCid[cid] = sc.name;
+          if (--pendingNames <= 0) finish();
+        });
+      });
     });
   });
 });
@@ -781,10 +933,13 @@ router.get('/council-portal/operators', requirePortalAuth, (req, res) => {
     const emptyBody = `<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Approved Operators</h2>
 <div class="cp-card"><div class="cp-empty">No operators are currently approved under your council.</div></div>`;
     if (approvedCids.length === 0) return res.send(portalPage('Approved Operators', renderNav(sess, token, 'operators'), emptyBody));
-    let pending3 = approvedCids.length * 2 + 1; // clients + tariffs per cid, plus one drivers root read
+    // clients + tariffs + tmConfig per cid, plus drivers root + vehicles root
+    let pending3 = approvedCids.length * 3 + 2;
     const clientMap: Record<string, any> = {};
     const tariffMap: Record<string, any> = {};
+    const tmConfigMap: Record<string, any> = {};
     let driversRoot: Record<string, unknown> | null = null;
+    let vehiclesRoot: Record<string, unknown> | null = null;
     function done3() {
       if (--pending3 === 0) buildOperatorsPage();
     }
@@ -792,14 +947,22 @@ router.get('/council-portal/operators', requirePortalAuth, (req, res) => {
       driversRoot = allDrivers && typeof allDrivers === 'object' ? allDrivers : {};
       done3();
     });
+    fbRead('vehicles', (e: any, allVeh: any) => {
+      vehiclesRoot = allVeh && typeof allVeh === 'object' ? allVeh : {};
+      done3();
+    });
     approvedCids.forEach(cid => {
       fbRead('superClients/' + cid, (e: any, sc: any) => { clientMap[cid] = sc || {}; done3(); });
       fbRead('tmTariffs/' + cid, (e: any, t: any) => { tariffMap[cid] = t || {}; done3(); });
+      fbRead('companySettings/' + cid + '/tmConfig', (e: any, tc: any) => { tmConfigMap[cid] = tc || {}; done3(); });
     });
     function buildOperatorsPage() {
+      const legacyProv = legacyTariffProvenance();
       const sections = approvedCids.map(cid => {
         const sc = clientMap[cid] || {};
         const tar = tariffMap[cid] || {};
+        const tmCfg = tmConfigMap[cid] || {};
+        const syncProv = classifyTmConfig(tmCfg);
         const drivers = listDriversForCompany(driversRoot, cid, { activeOnly: true });
         const tarCar = tar.car || {};
         const tarVan = tar.van || {};
@@ -827,23 +990,32 @@ router.get('/council-portal/operators', requirePortalAuth, (req, res) => {
 ${tar.updatedAt ? `<div style="font-size:11px;color:#aaa;margin-top:6px">Tariffs last updated: ${new Date(tar.updatedAt).toLocaleDateString('en-NZ')}</div>` : ''}`;
         const driverRows = drivers.length ? drivers.map(d => {
           const name = [d.firstName, d.lastName].filter(Boolean).join(' ') || String(d.name || '—');
-          const veh = d.vehicleMake && d.vehicleModel ? `${d.vehicleMake} ${d.vehicleModel}` : String(d.vehicle || '—');
-          const plate = String(d.licensePlate || d.vehiclePlate || '—');
-          const vtype = String(d.vehicleType || '—');
+          const veh = resolveDriverVehicle(vehiclesRoot, cid, d as Record<string, unknown>);
+          const plate = veh.registration || '—';
+          const cab = veh.taxiNumber || '—';
+          const vehLabel = veh.label || '—';
+          const vtype = veh.vehicleType || String(d.vehicleType || '—');
           const accessible = isDriverWav(d) ? '<span style="background:#E8F5E9;color:#2E7D32;padding:1px 6px;border-radius:8px;font-size:11px;font-weight:600">♿ WAV</span>' : '';
           return `<tr>
 <td style="font-weight:500">${esc(name)}</td>
 <td style="font-family:monospace;font-size:11px">${esc(plate)}</td>
-<td>${esc(veh)}</td>
+<td style="font-family:monospace;font-size:11px">${esc(cab)}</td>
+<td>${esc(vehLabel)}</td>
 <td style="font-size:12px;color:#666">${esc(vtype)}</td>
 <td>${accessible}</td>
 </tr>`;
-        }).join('') : `<tr><td colspan="5" style="text-align:center;color:#aaa;font-style:italic;padding:12px">No drivers on file</td></tr>`;
+        }).join('') : `<tr><td colspan="6" style="text-align:center;color:#aaa;font-style:italic;padding:12px">No drivers on file</td></tr>`;
+        const pct = tmCfg.councilSubsidyPercent ?? tmCfg.councilPercent;
+        const cap = tmCfg.councilCapAmount ?? tmCfg.capAmount;
+        const hoist = tmCfg.hoistCostPerUnit ?? tmCfg.hoistUnitCost;
         return `
 <div class="cp-card" style="margin-bottom:18px">
   <div class="cp-card-hd">
     <h3 style="font-size:15px">&#127970; ${esc(sc.name || cid)}</h3>
-    <span style="background:#E8F5E9;color:#2E7D32;padding:2px 8px;border-radius:10px;font-weight:600;font-size:11px">&#10003; Approved</span>
+    <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      ${provenanceBadgeHtml(syncProv)}
+      <span style="background:#E8F5E9;color:#2E7D32;padding:2px 8px;border-radius:10px;font-weight:600;font-size:11px">&#10003; Approved</span>
+    </span>
   </div>
   <div style="padding:14px 18px">
     ${sc.phone || sc.email || sc.address ? `<div style="font-size:12.5px;color:#555;margin-bottom:10px;display:flex;gap:20px;flex-wrap:wrap">
@@ -851,13 +1023,15 @@ ${tar.updatedAt ? `<div style="font-size:11px;color:#aaa;margin-top:6px">Tariffs
       ${sc.email ? `<span>&#9993; ${esc(sc.email)}</span>` : ''}
       ${sc.address ? `<span>&#128205; ${esc(sc.address)}</span>` : ''}
     </div>` : ''}
-    <div style="font-size:13px;font-weight:700;color:#1B5E20;margin-bottom:4px">TM Tariffs <span style="font-weight:600;color:#888;font-size:11px">(legacy / unused)</span></div>
+    <div style="font-size:13px;font-weight:700;color:#1B5E20;margin-bottom:4px">Live TM economics ${provenanceBadgeHtml(syncProv)}</div>
+    <p style="font-size:11.5px;color:#666;margin:0 0 8px">${esc(syncProv.detail)} — subsidy ${pct != null ? esc(String(pct)) + '%' : '—'}, cap $${cap != null ? Number(cap).toFixed(2) : '—'}, hoist $${hoist != null ? Number(hoist).toFixed(2) : '—'}/use</p>
+    <div style="font-size:13px;font-weight:700;color:#1B5E20;margin:14px 0 6px">TM Tariffs ${provenanceBadgeHtml(legacyProv)}</div>
     <p style="font-size:11.5px;color:#888;margin:0 0 6px;line-height:1.4">Not used for live metering or claims. Drivers fare against the company tariff on the trip; council subsidy comes from council TM config.</p>
     ${tarHtml}
     <div style="font-size:13px;font-weight:700;color:#1B5E20;margin:14px 0 6px">Drivers &amp; Vehicles (${drivers.length})</div>
     <div style="overflow-x:auto">
     <table class="cp-tbl">
-      <thead><tr><th>Driver Name</th><th>Plate</th><th>Vehicle</th><th>Type</th><th>Accessible</th></tr></thead>
+      <thead><tr><th>Driver Name</th><th>Registration</th><th>Cab No</th><th>Vehicle</th><th>Type</th><th>Accessible</th></tr></thead>
       <tbody>${driverRows}</tbody>
     </table>
     </div>
@@ -866,7 +1040,7 @@ ${tar.updatedAt ? `<div style="font-size:11px;color:#aaa;margin-top:6px">Tariffs
       }).join('');
       const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:4px">Approved Operators</h2>
-<p style="font-size:13px;color:#666;margin-bottom:16px">${approvedCids.length} operator(s) approved under your council for Total Mobility.</p>
+<p style="font-size:13px;color:#666;margin-bottom:16px">${approvedCids.length} operator(s) approved under your council for Total Mobility. Registration and cab number come from the company vehicle registry.</p>
 ${sections}`;
       res.send(portalPage('Approved Operators', renderNav(sess, token, 'operators'), body));
     }
@@ -997,26 +1171,39 @@ router.post('/api/council-config-save', (req, res) => {
 // ── CSV Export ─────────────────────────────────────────────────────────────────
 router.get('/council-portal/export', requirePortalAuth, (req, res) => {
   const sess = (req as any).cpSession;
-  const filterMonth = (req.query.month as string) || '';
+  const filterCompany = String(req.query.company || '').trim();
+  const filterFrom = String(req.query.from || '').trim();
+  const filterTo = String(req.query.to || '').trim();
+  // Legacy month=YYYY-MM still supported
+  const filterMonth = String(req.query.month || '').trim();
   loadCouncilTrips(sess.councilId, (err: any, trips: any[]) => {
-    const filtered = filterMonth ? trips.filter(t => (t.startedAt_ISO || '').slice(0, 7) === filterMonth) : trips;
-    filtered.sort((a, b) => (a.startedAt_ISO || '').localeCompare(b.startedAt_ISO || ''));
-    const cols = ['Date', 'Operator', 'Passenger', 'Voucher No', 'Trip Category', 'Pickup', 'Dropoff', 'Meter Fare', 'Meter Subsidy', 'Hoist (council)', 'Total Council', 'Pax Pays', 'Status', 'Submitted', 'Approved'];
-    const esc2 = (v: any) => '"' + String(v || '').replace(/"/g, '""') + '"';
-    const rows = filtered.map(t => [
-      t.startedAt_ISO ? t.startedAt_ISO.slice(0, 16).replace('T', ' ') : '',
-      t._companyName || '', t.tmPassengerName || '', t.tmVoucherNo || '',
-      t.tmTripCategory || '', t.source || '', t.destination || '',
-      parseFloat(t.fare || 0).toFixed(2),
-      parseFloat(t.tmSubsidyFare || 0).toFixed(2),
-      parseFloat(t.tmSubsidyHoist || 0).toFixed(2),
-      parseFloat(t.tmSubsidy || 0).toFixed(2),
-      parseFloat(t.tmPassengerPays || 0).toFixed(2), t.status || '',
-      t.submittedAt ? new Date(t.submittedAt).toLocaleString('en-NZ') : '',
-      t.approvedAt ? new Date(t.approvedAt).toLocaleString('en-NZ') : ''
-    ].map(esc2).join(','));
-    const csv = [cols.map(esc2).join(','), ...rows].join('\r\n');
-    const fname = 'TM-Trips-' + (filterMonth || 'All') + '-' + sess.councilId + '.csv';
+    let filtered = filterTripsForReports(trips, {
+      companyId: filterCompany || undefined,
+      from: filterFrom || undefined,
+      to: filterTo || undefined,
+    });
+    if (filterMonth && !filterFrom && !filterTo) {
+      filtered = trips
+        .filter((t) => (t.startedAt_ISO || '').slice(0, 7) === filterMonth)
+        .filter((t) => !filterCompany || String(t._cid) === filterCompany)
+        .sort((a, b) => (a.startedAt_ISO || '').localeCompare(b.startedAt_ISO || ''));
+    } else {
+      filtered.sort((a, b) => (a.startedAt_ISO || '').localeCompare(b.startedAt_ISO || ''));
+    }
+    const esc2 = (v: any) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+    const rows = filtered.map((t) => tmTripDetailToCsvRow(buildTmTripDetail(t)).map(esc2).join(','));
+    const csv = [TM_TRIP_CSV_HEADERS.map(esc2).join(','), ...rows].join('\r\n');
+    const rangeLabel =
+      filterFrom || filterTo
+        ? `${filterFrom || 'start'}_${filterTo || 'end'}`
+        : filterMonth || 'All';
+    const fname =
+      'TM-Trips-' +
+      rangeLabel +
+      (filterCompany ? '-' + filterCompany : '') +
+      '-' +
+      sess.councilId +
+      '.csv';
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="' + fname + '"');
     res.send(csv);

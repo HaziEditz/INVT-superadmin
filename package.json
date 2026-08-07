@@ -4,7 +4,7 @@
   "description": "��#\u0000 \u0000I\u0000N\u0000V\u0000T\u0000-\u0000s\u0000u\u0000p\u0000e\u0000r\u0000a\u0000d\u0000m\u0000i\u0000n\u0000\r\u0000 \u0000",
   "main": "server.ts",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test tests/*.mjs",
     "start": "ts-node src/app.ts"
   },
   "keywords": [],

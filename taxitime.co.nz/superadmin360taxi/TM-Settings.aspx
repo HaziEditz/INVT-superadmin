@@ -101,13 +101,14 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
       <li><a href="Define%20Distance%20Units.aspx">Define Distance Units</a></li>
     </ul></li>
     <li class="current_section" title="Total Mobility"><a href="#"><span class="menu_icon"><i class="material-icons">&#xE8CC;</i></span><span class="menu_title">Total Mobility</span></a><ul>
-      <li><a href="TM-Council-Config.aspx">Council Config</a></li>
+      <li><a href="TM-Setup.aspx">TM Setup Hub</a></li>
+      <li><a href="TM-Council-Config.aspx">Council Config (Advanced)</a></li>
       <li><a href="TM-Cards.aspx">Passenger Cards</a></li>
       <li><a href="TM-Trips.aspx">All Trips</a></li>
       <li><a href="TM-Flagged.aspx">Flagged Trips</a></li>
       <li><a href="TM-Batches.aspx">Claim Batches</a></li>
       <li><a href="TM-Reports.aspx">Monthly Reports</a></li>
-      <li><a href="TM-Settings.aspx" style="font-weight:700;color:#1565C0">&#9658; TM Settings</a></li>
+      <li><a href="TM-Settings.aspx" style="font-weight:700;color:#1565C0">&#9658; TM Settings (Advanced)</a></li>
       <li><a href="/council-portal" target="_blank">Council Portal &#8599;</a></li>
     </ul></li>
     <li class="current_section" title="Pricing"><a href="#"><span class="menu_icon"><i class="material-icons">&#xE8A1;</i></span><span class="menu_title">Pricing</span></a><ul>
@@ -145,7 +146,13 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
 <div id="page_content"><div id="page_content_inner">
 <div class="tm-wrap">
 
-<h2 style="font-size:18px;font-weight:700;margin-bottom:4px;color:#37474F">&#9881; TM Settings</h2>
+<div id="tm-setup-banner" style="margin:0 0 16px;padding:12px 16px;border-radius:8px;background:#E3F2FD;border-left:4px solid #1565C0;font-size:13px;color:#0D47A1;line-height:1.45">
+  <strong>Prefer TM Setup Hub</strong> for day-to-day council onboarding and company approval.
+  You are on TM Settings (advanced).
+  <a href="TM-Setup.aspx" style="font-weight:700;color:#0D47A1;text-decoration:underline">Open Setup Hub →</a>
+</div>
+
+<h2 style="font-size:18px;font-weight:700;margin-bottom:4px;color:#37474F">&#9881; TM Settings <span style="font-size:12px;font-weight:500;color:#888">(Advanced)</span></h2>
 <p style="font-size:13px;color:#888;margin-bottom:20px">Approve companies to operate Total Mobility under each council, and set per-company TM fare tariffs (car &amp; wheelchair van). These are read by the Passenger App and Driver App in real time.</p>
 
 <div id="pg-notice" style="display:none" class="notice"></div>

@@ -101,13 +101,14 @@
       <li><a href="Define%20Distance%20Units.aspx">Define Distance Units</a></li>
     </ul></li>
     <li class="current_section" title="Total Mobility"><a href="#"><span class="menu_icon"><i class="material-icons">&#xE8CC;</i></span><span class="menu_title">Total Mobility</span></a><ul>
-      <li><a href="TM-Council-Config.aspx">Council Config</a></li>
+      <li><a href="TM-Setup.aspx">TM Setup Hub</a></li>
+      <li><a href="TM-Council-Config.aspx">Council Config (Advanced)</a></li>
       <li><a href="TM-Cards.aspx">Passenger Cards</a></li>
       <li><a href="TM-Trips.aspx">All Trips</a></li>
       <li><a href="TM-Flagged.aspx">Flagged Trips</a></li>
       <li><a href="TM-Batches.aspx">Claim Batches</a></li>
       <li><a href="TM-Reports.aspx">Monthly Reports</a></li>
-      <li><a href="TM-Settings.aspx">TM Settings</a></li>
+      <li><a href="TM-Settings.aspx">TM Settings (Advanced)</a></li>
       <li><a href="/council-portal" target="_blank">Council Portal &#8599;</a></li>
     </ul></li>
     <li class="current_section" title="Pricing"><a href="#"><span class="menu_icon"><i class="material-icons">&#xE8A1;</i></span><span class="menu_title">Pricing</span></a><ul>
@@ -299,18 +300,24 @@
   </div>
 </div>
 
-<!-- TM Configuration — per company (driver-facing mirror; prefer Council Config) -->
+<!-- TM Configuration — per company (driver-facing mirror; prefer Council Config / Setup Hub) -->
 <div class="sa-card" id="tm-config-card">
   <div class="sa-bar" style="background:#00695C"><h3>&#9855; Total Mobility (TM) Configuration</h3>
     <span style="font-size:11px;opacity:.7">Driver mirror: <code>companySettings/{companyId}/tmConfig</code></span>
   </div>
   <div style="padding:16px 18px">
+    <div style="margin:0 0 12px;padding:12px 14px;border-radius:6px;background:#E3F2FD;border-left:4px solid #1565C0;font-size:13px;color:#0D47A1;line-height:1.45">
+      <strong>Prefer TM Setup Hub</strong> for council create + company approve (auto-sync).
+      This card is the <strong>manual fallback</strong> only.
+      <a href="TM-Setup.aspx" style="font-weight:700;color:#0D47A1;text-decoration:underline">Open Setup Hub →</a>
+    </div>
     <p style="font-size:12px;color:#455a64;margin:0 0 10px;line-height:1.45;background:#E0F2F1;border:1px solid #B2DFDB;border-radius:6px;padding:10px 12px">
       <strong>Prefer TM Council Config</strong> as the source of truth. Saving a council (or approving company access)
       auto-syncs subsidy %, cap, and hoist into this company node for the driver app.
       Use this form only as a manual fallback (e.g. no council approved yet).
     </p>
     <p id="tm-config-source" style="font-size:11px;color:#888;margin:0 0 14px"></p>
+    <div id="tm-config-badge" style="margin:0 0 12px"></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;max-width:720px">
       <div>
         <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:5px">Council Subsidy %</label>
@@ -517,6 +524,7 @@
 <script src="assets/js/common.min.js"></script>
 <script src="assets/js/altair_admin_common.min.js"></script>
 <script src="assets/js/tm-helpers.js"></script>
+<script src="assets/js/tm-provenance.js"></script>
 <script src="assets/js/driver-list.js"></script>
 <script>
 var CID = new URLSearchParams(window.location.search).get('cid') || '';
@@ -1150,14 +1158,19 @@ function loadTmConfig(){
     if(cap) cap.value = data.councilCapAmount != null ? data.councilCapAmount : (data.capAmount != null ? data.capAmount : 37.40);
     if(hoist) hoist.value = data.hoistCostPerUnit != null ? data.hoistCostPerUnit : (data.hoistUnitCost != null ? data.hoistUnitCost : 11.50);
     var src = document.getElementById('tm-config-source');
+    var badge = document.getElementById('tm-config-badge');
+    var P = window.BWTmProvenance;
+    var prov = P && typeof P.classifyTmConfig === 'function' ? P.classifyTmConfig(data) : null;
     if (src) {
-      if (data.sourceCouncilId) {
+      if (prov) src.textContent = prov.detail;
+      else if (data.sourceCouncilId) {
         src.textContent = 'Last synced from council ' + data.sourceCouncilId +
           (data.syncedFromCouncilAt ? (' at ' + new Date(data.syncedFromCouncilAt).toLocaleString()) : '') + '.';
       } else {
         src.textContent = 'No council sync recorded yet — values may be a manual fallback.';
       }
     }
+    if (badge && P && prov) badge.innerHTML = P.provenanceBadgeHtml(prov);
   }).catch(function(){});
 }
 
@@ -1192,6 +1205,9 @@ function saveTmConfig(){
     if(msg) msg.innerHTML='<span style="color:#2e7d32">&#10003; Saved manual fallback — Driver app will use '+payload.councilSubsidyPercent+'% / $'+payload.councilCapAmount.toFixed(2)+' cap / $'+payload.hoistCostPerUnit.toFixed(2)+' hoist. Prefer Council Config when possible.</span>';
     var src = document.getElementById('tm-config-source');
     if (src) src.textContent = 'Manual override saved at ' + new Date().toLocaleString() + '.';
+    var badge = document.getElementById('tm-config-badge');
+    var P = window.BWTmProvenance;
+    if (badge && P) badge.innerHTML = P.provenanceBadgeHtml(P.classifyTmConfig(payload));
   }).catch(function(e){
     if(msg) msg.innerHTML='<span style="color:#c00">Error: '+esc(e.message)+'</span>';
   });
