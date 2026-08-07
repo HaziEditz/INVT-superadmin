@@ -1550,15 +1550,23 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
   const msg = (req.query.msg as string) || '';
   const mt = (req.query.mt as string) || '';
   const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
-  const claimNotice =
-    `<p style="font-size:12.5px;color:#666;margin:-4px 0 14px;padding:10px 12px;background:#FFF8E1;border-left:4px solid #E65100;border-radius:4px">` +
-    `Trips with status flagged, revision_needed, or rejected are excluded from claims. Only approved trips are claimable.</p>`;
   loadCouncilTrips(sess.councilId, (_eT: any, councilTrips: any[]) => {
     const tripByKey: Record<string, any> = {};
+    let flaggedExcluded = 0;
     (councilTrips || []).forEach((t) => {
       tripByKey[String(t._cid) + '/' + String(t._rawKey)] = t;
       if (t.batchId) tripByKey['batch:' + String(t.batchId) + ':' + String(t._rawKey)] = t;
+      if (String(t.status || '').toLowerCase() === 'flagged') flaggedExcluded++;
     });
+    // Count line links to Flagged tab (full detail lives there — no duplicate trip list here).
+    const claimNotice =
+      `<p style="font-size:12.5px;color:#666;margin:-4px 0 14px;padding:10px 12px;background:#FFF8E1;border-left:4px solid #E65100;border-radius:4px">` +
+      `Trips with status flagged, revision_needed, or rejected are excluded from claims. Only approved trips are claimable.` +
+      (flaggedExcluded > 0
+        ? `<div style="margin-top:6px">${flaggedExcluded} trip${flaggedExcluded === 1 ? '' : 's'} excluded this period — ` +
+          `<a href="/council-portal/anomalies?t=${te}" style="color:#E65100;font-weight:600">View Flagged Trips</a></div>`
+        : '') +
+      `</p>`;
     fbRead('tmBatches/' + sess.councilId, (err: any, batchData: any) => {
       const emptyBody = `<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Claim Batches</h2>
 ${noticeHtml}${claimNotice}<div class="cp-card"><div class="cp-empty">No batches found.</div></div>`;

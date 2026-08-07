@@ -218,6 +218,9 @@ test('council portal pending + anomalies + bulk endpoints', () => {
   assert.match(councilSrc, /isClaimEligibleStatus/);
   assert.match(councilSrc, /applyAnomalyScan|detectTripAnomalies|scanAndRefreshTrips/);
   assert.match(councilSrc, /flagReasons/);
+  assert.match(councilSrc, /excluded this period/);
+  assert.match(councilSrc, /View Flagged Trips/);
+  assert.match(councilSrc, /\/council-portal\/anomalies\?t=/);
 });
 
 test('owner panel shows flagged edit-warning on revision_needed', () => {
