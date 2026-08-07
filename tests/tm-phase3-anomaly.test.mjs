@@ -221,6 +221,8 @@ test('council portal pending + anomalies + bulk endpoints', () => {
   assert.match(councilSrc, /excluded this period/);
   assert.match(councilSrc, /View Flagged Trips/);
   assert.match(councilSrc, /\/council-portal\/anomalies\?t=/);
+  assert.match(councilSrc, /Return unlocks company editing/);
+  assert.match(councilSrc, /view-only for the company until you click Return/);
 });
 
 test('owner panel shows flagged edit-warning on revision_needed', () => {

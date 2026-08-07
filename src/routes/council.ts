@@ -1347,7 +1347,8 @@ router.get('/council-portal/anomalies', requirePortalAuth, (req, res) => {
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Flagged / Anomalies (${rowsList.length})</h2>
 ${noticeHtml}
 ${searchForm}
-<p style="font-size:13px;color:#666;margin-bottom:12px">Trips automatically flagged for fare mismatch or card reuse. Return selected trips to the company with a note, archive, or reject individually. Clean trips are under <a href="/council-portal/pending?t=${te}${qKeep}" style="color:#2E7D32;font-weight:600">Pending Approval</a>.</p>
+<p style="font-size:13px;color:#666;margin-bottom:8px">Trips automatically flagged for fare mismatch or card reuse. Return selected trips to the company with a note, archive, or reject individually. Clean trips are under <a href="/council-portal/pending?t=${te}${qKeep}" style="color:#2E7D32;font-weight:600">Pending Approval</a>.</p>
+<p style="font-size:12.5px;color:#5d4037;margin-bottom:12px;padding:10px 12px;background:#FFF8E1;border-left:4px solid #E65100;border-radius:4px"><strong>Return unlocks company editing.</strong> The trip stays view-only for the company until you click Return — this ensures council reviews the original flagged data before anything can be edited.</p>
 ${rowsList.length ? `<form id="cp-bulk-return" method="POST" action="/api/council-bulk-return" style="margin-bottom:12px" onsubmit="return cpBulkReturn(this)">
   <input type="hidden" name="_token" value="${esc(token)}"/>
   <input type="hidden" name="returnTo" value="anomalies"/>
@@ -2243,6 +2244,7 @@ function buildActionForms(d){
     h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
     h += '<input type="hidden" name="action" value="return"/>';
     h += '<input type="hidden" name="returnTo" value="reports"/>';
+    h += (d.status==='flagged' ? '<div style="flex-basis:100%;font-size:12px;color:#5d4037;margin-bottom:2px"><strong>Return unlocks company editing.</strong> Trip stays view-only for the company until you click Return — so council can review the original flagged data before anything is edited.</div>' : '');
     h += '<input name="note" class="cp-input" placeholder="Revision note (required)" style="min-width:160px" required/>';
     h += '<button type="submit" class="cp-btn" style="background:#E65100;color:#fff">&#8617; Return to company</button></form>';
   }
