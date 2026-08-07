@@ -1109,7 +1109,7 @@ function buildActionForms(d){
   h += '<input type="hidden" name="action" value="approve"/>';
   h += '<input type="hidden" name="returnTo" value="reports"/>';
   h += '<button type="submit" class="cp-btn cp-btn-g">&#10003; Approve</button></form>';
-  h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFCDD2;border-radius:6px;background:#FFEBEE" onsubmit="return !!this.note.value.trim()||(alert(\'Reject note required\'),false)">';
+  h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFCDD2;border-radius:6px;background:#FFEBEE" onsubmit="return !!this.note.value.trim()||(alert(&#39;Reject note required&#39;),false)">';
   h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
   h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
   h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
@@ -1122,7 +1122,7 @@ function buildActionForms(d){
   h += '<option value="other">other</option></select>';
   h += '<input name="note" class="cp-input" placeholder="Reject note (required)" style="min-width:160px" required/>';
   h += '<button type="submit" class="cp-btn cp-btn-r">&#10007; Reject / Red-flag</button></form>';
-  h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFE082;border-radius:6px;background:#FFF8E1" onsubmit="return !!this.note.value.trim()||(alert(\'Revision note required\'),false)">';
+  h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFE082;border-radius:6px;background:#FFF8E1" onsubmit="return !!this.note.value.trim()||(alert(&#39;Revision note required&#39;),false)">';
   h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
   h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
   h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';

@@ -89,6 +89,17 @@ test('council Reports has three-action approve + edit + map', () => {
   assert.match(councilSrc, /startedAtRaw/);
 });
 
+test('Reports detail script does not nest single-quoted alert inside single-quoted h+=', () => {
+  // Phase 1.5 regression: alert('...') inside h += '...' broke the whole <script>
+  // with Uncaught SyntaxError: Unexpected identifier 'Reject' → Details click noop.
+  assert.doesNotMatch(
+    councilSrc,
+    /h \+= '[^']*alert\('/,
+  );
+  assert.match(councilSrc, /alert\(&#39;Reject note required&#39;\)/);
+  assert.match(councilSrc, /alert\(&#39;Revision note required&#39;\)/);
+});
+
 test('council tariff save + Operators reference price list', () => {
   assert.match(councilSrc, /\/api\/council-tariff-save/);
   assert.match(councilSrc, /Reference price list/);
