@@ -763,22 +763,6 @@ router.get('/api/council-logout', (req, res) => {
   res.redirect('/council-portal');
 });
 
-/** TEMP — hoist visibility acceptance screenshots only. Remove after evidence. */
-router.get('/api/council-hoist-accept-mint', (_req, res) => {
-  const councilId = 'cncl_invercargill_city_council_test';
-  const token = cpSetSession(councilId, 'Invercargill City Council (test)', 'hoist-accept@local');
-  res.json({
-    marker: 'hoist-accept-v1',
-    token,
-    dashboardUrl: '/council-portal/dashboard?t=' + encodeURIComponent(token),
-    tripsUrl:
-      '/council-portal/trips?t=' +
-      encodeURIComponent(token) +
-      '&status=all&q=ZZHOIST2ACCEPT01',
-    batchesUrl: '/council-portal/batches?t=' + encodeURIComponent(token) + '&tab=all',
-  });
-});
-
 /** Server-side Nominatim proxy — browsers get 403 with default UA. */
 router.get('/api/council-geocode', (req, res) => {
   const token = String(req.query.t || '');
