@@ -6,15 +6,22 @@ import {
   expectedMeterFromTariff,
   type RefTariff,
 } from './tmTripDetail';
+import { tripDayKey, tripMonthKeyNz } from './tmUnifiedTrips';
 
 export const ANOMALY_FARE_MISMATCH = 'fare_mismatch';
 export const ANOMALY_CARD_REUSE_3MIN = 'same_card_reuse_3min';
 export const ANOMALY_CARD_DIFF_TAXI = 'same_card_same_time_diff_taxi';
+export const ANOMALY_LIMIT_DAILY = 'limit_exceeded_daily';
+export const ANOMALY_LIMIT_MONTHLY = 'limit_exceeded_monthly';
+export const ANOMALY_CARD_EXPIRED = 'card_expired';
 
 export type AnomalyReason =
   | typeof ANOMALY_FARE_MISMATCH
   | typeof ANOMALY_CARD_REUSE_3MIN
   | typeof ANOMALY_CARD_DIFF_TAXI
+  | typeof ANOMALY_LIMIT_DAILY
+  | typeof ANOMALY_LIMIT_MONTHLY
+  | typeof ANOMALY_CARD_EXPIRED
   | string;
 
 export type AnomalyTripLike = {
@@ -26,6 +33,7 @@ export type AnomalyTripLike = {
   tmCardNumber?: string;
   tmVoucherNo?: string;
   cardNumber?: string;
+  tmCardExpiry?: string;
   vehicleId?: string;
   taxiNumber?: string;
   VehicleNo?: string;
@@ -46,6 +54,17 @@ export type AnomalyTripLike = {
   completedAt?: string | number;
   flagReasons?: string[];
   anomalyDetail?: string;
+};
+
+/** Registry row from tmCards/{cardNumber} (limits are trip counts). */
+export type AnomalyCardLike = {
+  expiryDate?: string | null;
+  usageLimitDaily?: number | string | null;
+  usageLimitMonthly?: number | string | null;
+  /** Legacy aliases still present on some cards. */
+  monthlyLimit?: number | string | null;
+  maxFarePerTrip?: number | string | null;
+  active?: boolean | null;
 };
 
 export type AnomalyHit = {
@@ -128,6 +147,124 @@ function meterFareOf(trip: AnomalyTripLike): number {
   return num(trip.tmMeterFare ?? trip.meterFare ?? trip.fare ?? trip.totalFare);
 }
 
+function tripIdentity(trip: AnomalyTripLike): string {
+  return `${str(trip._cid)}/${str(trip._rawKey || trip.bookingId || trip.id)}`;
+}
+
+/** Rejected / archived trips do not count toward daily/monthly card limits. */
+export function isUsageCountableStatus(status: string | null | undefined): boolean {
+  const s = str(status).toLowerCase();
+  return s !== 'archived' && s !== 'rejected';
+}
+
+function positiveIntLimit(raw: unknown): number | null {
+  if (raw == null || raw === '') return null;
+  const n = parseInt(String(raw), 10);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
+export function cardDailyTripLimit(card: AnomalyCardLike | null | undefined): number | null {
+  if (!card) return null;
+  return positiveIntLimit(card.usageLimitDaily ?? card.maxFarePerTrip);
+}
+
+export function cardMonthlyTripLimit(card: AnomalyCardLike | null | undefined): number | null {
+  if (!card) return null;
+  return positiveIntLimit(card.usageLimitMonthly ?? card.monthlyLimit);
+}
+
+/** Normalize MM/YY (driver-entered) to YYYY-MM-DD = last day of that month. */
+export function mmYyToExpiryDate(raw: unknown): string | null {
+  const s = str(raw);
+  if (!s) return null;
+  const m = s.match(/^(\d{1,2})\s*[\/\-]\s*(\d{2}|\d{4})$/);
+  if (!m) return null;
+  const month = parseInt(m[1], 10);
+  let year = parseInt(m[2], 10);
+  if (!Number.isFinite(month) || month < 1 || month > 12) return null;
+  if (!Number.isFinite(year)) return null;
+  if (year < 100) year += year >= 70 ? 1900 : 2000;
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+}
+
+/** Prefer registry expiryDate (YYYY-MM-DD); fall back to trip tmCardExpiry MM/YY. */
+export function resolveCardExpiryDate(
+  card: AnomalyCardLike | null | undefined,
+  trip?: AnomalyTripLike | null,
+): string | null {
+  const fromCard = str(card?.expiryDate).slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(fromCard)) return fromCard;
+  return mmYyToExpiryDate(trip?.tmCardExpiry);
+}
+
+/**
+ * Card is expired at trip time when the trip's NZ calendar day is after the expiry date
+ * (card remains valid through its expiry day inclusive).
+ */
+export function isCardExpiredAtTrip(
+  trip: AnomalyTripLike,
+  card: AnomalyCardLike | null | undefined,
+): boolean {
+  const expiry = resolveCardExpiryDate(card, trip);
+  if (!expiry) return false;
+  const day = tripDayKey(trip as any);
+  if (!day) return false;
+  return day > expiry;
+}
+
+/**
+ * 1-based chronological ordinal of this trip among usage-countable same-card peers
+ * in the NZ day or month bucket. 0 if bucket/card unknown.
+ */
+export function cardUsageOrdinal(
+  trip: AnomalyTripLike,
+  peers: AnomalyTripLike[],
+  card: string,
+  bucket: 'day' | 'month',
+): number {
+  const selfKey = tripIdentity(trip);
+  const selfBucket = bucket === 'day' ? tripDayKey(trip as any) : tripMonthKeyNz(trip as any);
+  if (!selfBucket || !card) return 0;
+
+  const seen = new Set<string>();
+  const cohort: { key: string; ms: number }[] = [];
+  const all = [trip, ...(peers || [])];
+  for (const p of all) {
+    if (!p || !isUsageCountableStatus(p.status)) continue;
+    const cards = tripCardNumbers(p);
+    if (!cards.includes(card)) continue;
+    const b = bucket === 'day' ? tripDayKey(p as any) : tripMonthKeyNz(p as any);
+    if (b !== selfBucket) continue;
+    const key = tripIdentity(p);
+    if (!key || key === '/' || seen.has(key)) continue;
+    seen.add(key);
+    const w = tripWindow(p);
+    cohort.push({ key, ms: w.start || w.end || 0 });
+  }
+  cohort.sort((a, b) => a.ms - b.ms || a.key.localeCompare(b.key));
+  const idx = cohort.findIndex((c) => c.key === selfKey);
+  return idx < 0 ? 0 : idx + 1;
+}
+
+export function lookupAnomalyCard(
+  cardsByNumber: Record<string, AnomalyCardLike> | null | undefined,
+  cardNumber: string,
+): AnomalyCardLike | null {
+  if (!cardsByNumber || !cardNumber) return null;
+  const direct = cardsByNumber[cardNumber];
+  if (direct) return direct;
+  const compact = cardNumber.replace(/\s+/g, '');
+  if (cardsByNumber[compact]) return cardsByNumber[compact];
+  // Case-insensitive fallback
+  const want = compact.toLowerCase();
+  for (const [k, v] of Object.entries(cardsByNumber)) {
+    if (String(k).replace(/\s+/g, '').toLowerCase() === want) return v;
+  }
+  return null;
+}
+
 /** Claim batches may only include approved (or already paid) trips. */
 export function isClaimEligibleStatus(status: string | null | undefined): boolean {
   const s = String(status || '').trim().toLowerCase();
@@ -142,12 +279,16 @@ export function isActiveWorkflowStatus(status: string | null | undefined): boole
 
 export function detectTripAnomalies(
   trip: AnomalyTripLike,
-  opts?: { peers?: AnomalyTripLike[]; refTariff?: RefTariff | null },
+  opts?: {
+    peers?: AnomalyTripLike[];
+    refTariff?: RefTariff | null;
+    cardsByNumber?: Record<string, AnomalyCardLike> | null;
+  },
 ): AnomalyHit {
   const reasons: AnomalyReason[] = [];
   const details: string[] = [];
   const peers = (opts?.peers || []).filter((p) => p && p !== trip);
-  const selfKey = `${str(trip._cid)}/${str(trip._rawKey || trip.bookingId || trip.id)}`;
+  const selfKey = tripIdentity(trip);
 
   const fare = meterFareOf(trip);
   const expected = expectedMeterFromTariff(
@@ -173,7 +314,7 @@ export function detectTripAnomalies(
 
   for (const card of cards) {
     for (const peer of peers) {
-      const peerKey = `${str(peer._cid)}/${str(peer._rawKey || peer.bookingId || peer.id)}`;
+      const peerKey = tripIdentity(peer);
       if (peerKey === selfKey) continue;
       const peerCards = tripCardNumbers(peer);
       if (!peerCards.includes(card)) continue;
@@ -195,6 +336,37 @@ export function detectTripAnomalies(
         }
       }
     }
+
+    const registry = lookupAnomalyCard(opts?.cardsByNumber, card);
+    if (isCardExpiredAtTrip(trip, registry)) {
+      if (!reasons.includes(ANOMALY_CARD_EXPIRED)) {
+        reasons.push(ANOMALY_CARD_EXPIRED);
+        const expiry = resolveCardExpiryDate(registry, trip) || '?';
+        details.push(`Card ${card} expired on ${expiry} (trip day after expiry)`);
+      }
+    }
+
+    const dailyLimit = cardDailyTripLimit(registry);
+    if (dailyLimit != null) {
+      const ordinal = cardUsageOrdinal(trip, peers, card, 'day');
+      if (ordinal > dailyLimit && !reasons.includes(ANOMALY_LIMIT_DAILY)) {
+        reasons.push(ANOMALY_LIMIT_DAILY);
+        details.push(
+          `Card ${card} daily trip limit exceeded (${ordinal}/${dailyLimit} on ${tripDayKey(trip as any) || 'day'})`,
+        );
+      }
+    }
+
+    const monthlyLimit = cardMonthlyTripLimit(registry);
+    if (monthlyLimit != null) {
+      const ordinal = cardUsageOrdinal(trip, peers, card, 'month');
+      if (ordinal > monthlyLimit && !reasons.includes(ANOMALY_LIMIT_MONTHLY)) {
+        reasons.push(ANOMALY_LIMIT_MONTHLY);
+        details.push(
+          `Card ${card} monthly trip limit exceeded (${ordinal}/${monthlyLimit} in ${tripMonthKeyNz(trip as any) || 'month'})`,
+        );
+      }
+    }
   }
 
   return { reasons, detail: details.join('; ') };
@@ -209,6 +381,7 @@ export function detectTripAnomalies(
 export function applyAnomalyScan(
   trips: AnomalyTripLike[],
   tariffByCid: Record<string, { car?: RefTariff } | RefTariff | null | undefined>,
+  cardsByNumber?: Record<string, AnomalyCardLike> | null,
 ): AnomalyStatusPatch[] {
   const now = Date.now();
   const patches: AnomalyStatusPatch[] = [];
@@ -232,7 +405,11 @@ export function applyAnomalyScan(
         ? (tariffNode as any).car
         : (tariffNode as RefTariff | null | undefined);
 
-    const hit = detectTripAnomalies(trip, { peers: trips, refTariff });
+    const hit = detectTripAnomalies(trip, {
+      peers: trips,
+      refTariff,
+      cardsByNumber: cardsByNumber || null,
+    });
     const base = {
       anomalyScannedAt: now,
       flagReasons: hit.reasons,

@@ -465,6 +465,23 @@ function loadTariffsForCids(cids: string[], cb: (map: Record<string, any>) => vo
   });
 }
 
+/** Index tmCards by normalized card number for anomaly limit/expiry checks. */
+function loadTmCardsByNumber(cb: (map: Record<string, any>) => void): void {
+  fbRead('tmCards', (_e: any, all: any) => {
+    const map: Record<string, any> = {};
+    if (all && typeof all === 'object') {
+      Object.keys(all).forEach((k) => {
+        const row = all[k];
+        if (!row || typeof row !== 'object') return;
+        const num = String(k || '').replace(/\s+/g, '');
+        if (!num) return;
+        map[num] = row;
+      });
+    }
+    cb(map);
+  });
+}
+
 function persistAnomalyPatches(patches: AnomalyStatusPatch[], done: () => void): void {
   if (!patches || patches.length === 0) return done();
   let left = patches.length;
@@ -498,8 +515,12 @@ function persistAnomalyPatches(patches: AnomalyStatusPatch[], done: () => void):
 function scanAndRefreshTrips(trips: any[], cb: (updated: any[]) => void): void {
   const list = Array.isArray(trips) ? trips : [];
   const cids = list.map((t) => String(t._cid || '')).filter(Boolean);
-  loadTariffsForCids(cids, (tariffByCid) => {
-    const patches = applyAnomalyScan(list, tariffByCid);
+  let tariffByCid: Record<string, any> | null = null;
+  let cardsByNumber: Record<string, any> | null = null;
+  let pending = 2;
+  function runScan() {
+    if (--pending > 0) return;
+    const patches = applyAnomalyScan(list, tariffByCid || {}, cardsByNumber || {});
     persistAnomalyPatches(patches, () => {
       const byKey: Record<string, Record<string, unknown>> = {};
       patches.forEach((p) => {
@@ -519,8 +540,27 @@ function scanAndRefreshTrips(trips: any[], cb: (updated: any[]) => void): void {
       });
       cb(updated);
     });
+  }
+  loadTariffsForCids(cids, (map) => {
+    tariffByCid = map;
+    runScan();
+  });
+  loadTmCardsByNumber((map) => {
+    cardsByNumber = map;
+    runScan();
   });
 }
+
+const FLAG_REASON_LABELS: Record<string, string> = {
+  fare_mismatch: 'Fare mismatch',
+  same_card_reuse_3min: 'Card reused <3min',
+  same_card_same_time_diff_taxi: 'Same card, different taxi',
+  limit_exceeded_daily: 'Daily limit exceeded',
+  limit_exceeded_monthly: 'Monthly limit exceeded',
+  card_expired: 'Card expired',
+  waiting_charged: 'Waiting charged',
+  hoist_rate_mismatch: 'Hoist rate mismatch',
+};
 
 function flagReasonChips(reasons: any, detail?: string | null): string {
   const arr = Array.isArray(reasons) ? reasons.map((r) => String(r || '').trim()).filter(Boolean) : [];
@@ -529,7 +569,10 @@ function flagReasonChips(reasons: any, detail?: string | null): string {
   }
   const title = detail ? esc(String(detail)) : '';
   return arr
-    .map((r) => `<span class="cp-chip"${title ? ` title="${title}"` : ''}>${esc(r)}</span>`)
+    .map((r) => {
+      const label = FLAG_REASON_LABELS[r] || r;
+      return `<span class="cp-chip"${title ? ` title="${title}"` : ''}>${esc(label)}</span>`;
+    })
     .join(' ');
 }
 
@@ -1866,6 +1909,9 @@ function buildActionForms(d){
     h += '<option value="fare_mismatch">fare_mismatch</option>';
     h += '<option value="waiting_charged">waiting_charged</option>';
     h += '<option value="hoist_rate_mismatch">hoist_rate_mismatch</option>';
+    h += '<option value="limit_exceeded_daily">limit_exceeded_daily</option>';
+    h += '<option value="limit_exceeded_monthly">limit_exceeded_monthly</option>';
+    h += '<option value="card_expired">card_expired</option>';
     h += '<option value="other">other</option></select>';
     h += '<input name="note" class="cp-input" placeholder="Reject note (required)" style="min-width:160px" required/>';
     h += '<button type="submit" class="cp-btn cp-btn-r">&#10007; Reject / Red-flag</button></form>';

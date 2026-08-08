@@ -167,6 +167,7 @@ firebase.initializeApp(config);
       <option value="fare_mismatch">Fare Mismatch</option>
       <option value="limit_exceeded_daily">Daily Limit Exceeded</option>
       <option value="limit_exceeded_monthly">Monthly Limit Exceeded</option>
+      <option value="card_expired">Card Expired</option>
       <option value="card_inactive">Card Inactive</option>
       <option value="unapproved_tariff">Unapproved Tariff</option>
     </select>

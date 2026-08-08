@@ -1,15 +1,14 @@
 /**
  * Phase 3 anomaly detection + claim eligibility + council route wiring.
+ * Includes card limit / expiry post-hoc flags (replaces UI-only 2B enforcement).
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const require = createRequire(import.meta.url);
 
 // Inline pure copies (node:test without ts compile) matching tmAnomaly.ts
 function num(v, fallback = 0) {
@@ -46,6 +45,100 @@ function windowsOverlapOrWithin(a, b, withinMs) {
   if (a.start <= b.end && b.start <= a.end) return true;
   return Math.abs(a.start - b.start) <= withinMs;
 }
+function tripDayKey(t) {
+  const ms = tripWindow(t).start || toTripMs(t.completedAt_ISO || t.completedAt);
+  if (!ms) return '';
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Pacific/Auckland',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date(ms));
+  } catch {
+    return new Date(ms).toISOString().slice(0, 10);
+  }
+}
+function tripMonthKeyNz(t) {
+  const day = tripDayKey(t);
+  return day ? day.slice(0, 7) : '';
+}
+function tripIdentity(trip) {
+  return `${trip._cid}/${trip._rawKey || trip.bookingId || trip.id}`;
+}
+function tripCardNumbers(trip) {
+  const primary = String(trip.tmCardNumber || trip.tmVoucherNo || trip.cardNumber || '').replace(/\s+/g, '');
+  return primary ? [primary] : [];
+}
+function isUsageCountableStatus(status) {
+  const s = String(status || '').trim().toLowerCase();
+  return s !== 'archived' && s !== 'rejected';
+}
+function positiveIntLimit(raw) {
+  if (raw == null || raw === '') return null;
+  const n = parseInt(String(raw), 10);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+function cardDailyTripLimit(card) {
+  if (!card) return null;
+  return positiveIntLimit(card.usageLimitDaily ?? card.maxFarePerTrip);
+}
+function cardMonthlyTripLimit(card) {
+  if (!card) return null;
+  return positiveIntLimit(card.usageLimitMonthly ?? card.monthlyLimit);
+}
+function mmYyToExpiryDate(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  const m = s.match(/^(\d{1,2})\s*[\/\-]\s*(\d{2}|\d{4})$/);
+  if (!m) return null;
+  const month = parseInt(m[1], 10);
+  let year = parseInt(m[2], 10);
+  if (!Number.isFinite(month) || month < 1 || month > 12) return null;
+  if (year < 100) year += year >= 70 ? 1900 : 2000;
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+}
+function resolveCardExpiryDate(card, trip) {
+  const fromCard = String(card?.expiryDate || '').trim().slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(fromCard)) return fromCard;
+  return mmYyToExpiryDate(trip?.tmCardExpiry);
+}
+function isCardExpiredAtTrip(trip, card) {
+  const expiry = resolveCardExpiryDate(card, trip);
+  if (!expiry) return false;
+  const day = tripDayKey(trip);
+  if (!day) return false;
+  return day > expiry;
+}
+function cardUsageOrdinal(trip, peers, card, bucket) {
+  const selfKey = tripIdentity(trip);
+  const selfBucket = bucket === 'day' ? tripDayKey(trip) : tripMonthKeyNz(trip);
+  if (!selfBucket || !card) return 0;
+  const seen = new Set();
+  const cohort = [];
+  for (const p of [trip, ...(peers || [])]) {
+    if (!p || !isUsageCountableStatus(p.status)) continue;
+    if (!tripCardNumbers(p).includes(card)) continue;
+    const b = bucket === 'day' ? tripDayKey(p) : tripMonthKeyNz(p);
+    if (b !== selfBucket) continue;
+    const key = tripIdentity(p);
+    if (!key || key === '/' || seen.has(key)) continue;
+    seen.add(key);
+    const w = tripWindow(p);
+    cohort.push({ key, ms: w.start || w.end || 0 });
+  }
+  cohort.sort((a, b) => a.ms - b.ms || a.key.localeCompare(b.key));
+  const idx = cohort.findIndex((c) => c.key === selfKey);
+  return idx < 0 ? 0 : idx + 1;
+}
+function lookupAnomalyCard(cardsByNumber, cardNumber) {
+  if (!cardsByNumber || !cardNumber) return null;
+  if (cardsByNumber[cardNumber]) return cardsByNumber[cardNumber];
+  const compact = cardNumber.replace(/\s+/g, '');
+  return cardsByNumber[compact] || null;
+}
 function detectTripAnomalies(trip, opts = {}) {
   const reasons = [];
   const details = [];
@@ -58,15 +151,15 @@ function detectTripAnomalies(trip, opts = {}) {
     reasons.push('fare_mismatch');
     details.push('fare');
   }
-  const card = String(trip.tmCardNumber || trip.tmVoucherNo || '').replace(/\s+/g, '');
+  const cards = tripCardNumbers(trip);
   const selfWin = tripWindow(trip);
   const selfVeh = String(trip.vehicleId || '').toUpperCase();
-  const selfKey = `${trip._cid}/${trip._rawKey}`;
-  if (card) {
+  const selfKey = tripIdentity(trip);
+  for (const card of cards) {
     for (const peer of peers) {
-      const peerKey = `${peer._cid}/${peer._rawKey}`;
+      const peerKey = tripIdentity(peer);
       if (peerKey === selfKey) continue;
-      const peerCard = String(peer.tmCardNumber || peer.tmVoucherNo || '').replace(/\s+/g, '');
+      const peerCard = tripCardNumbers(peer)[0] || '';
       if (peerCard !== card) continue;
       const peerWin = tripWindow(peer);
       if (!windowsOverlapOrWithin(selfWin, peerWin, 3 * 60 * 1000)) continue;
@@ -76,6 +169,24 @@ function detectTripAnomalies(trip, opts = {}) {
         reasons.push('same_card_same_time_diff_taxi');
       }
     }
+    const registry = lookupAnomalyCard(opts.cardsByNumber, card);
+    if (isCardExpiredAtTrip(trip, registry) && !reasons.includes('card_expired')) {
+      reasons.push('card_expired');
+    }
+    const dailyLimit = cardDailyTripLimit(registry);
+    if (dailyLimit != null) {
+      const ordinal = cardUsageOrdinal(trip, peers, card, 'day');
+      if (ordinal > dailyLimit && !reasons.includes('limit_exceeded_daily')) {
+        reasons.push('limit_exceeded_daily');
+      }
+    }
+    const monthlyLimit = cardMonthlyTripLimit(registry);
+    if (monthlyLimit != null) {
+      const ordinal = cardUsageOrdinal(trip, peers, card, 'month');
+      if (ordinal > monthlyLimit && !reasons.includes('limit_exceeded_monthly')) {
+        reasons.push('limit_exceeded_monthly');
+      }
+    }
   }
   return { reasons, detail: details.join('; ') };
 }
@@ -83,14 +194,14 @@ function isClaimEligibleStatus(status) {
   const s = String(status || '').trim().toLowerCase();
   return s === 'approved' || s === 'paid';
 }
-function applyAnomalyScan(trips, tariffByCid) {
+function applyAnomalyScan(trips, tariffByCid, cardsByNumber) {
   const patches = [];
   for (const trip of trips) {
     const status = String(trip.status || '').toLowerCase();
     if (['approved', 'rejected', 'paid'].includes(status)) continue;
     const node = tariffByCid[trip._cid];
     const ref = node && node.car ? node.car : node;
-    const hit = detectTripAnomalies(trip, { peers: trips, refTariff: ref });
+    const hit = detectTripAnomalies(trip, { peers: trips, refTariff: ref, cardsByNumber });
     if (hit.reasons.length) {
       if (status === 'revision_needed') {
         patches.push({ cid: trip._cid, rawKey: trip._rawKey, patch: { flagReasons: hit.reasons } });
@@ -114,6 +225,10 @@ function applyAnomalyScan(trips, tariffByCid) {
 
 const councilSrc = readFileSync(join(root, 'src/routes/council.ts'), 'utf8');
 const anomalySrc = readFileSync(join(root, 'src/lib/tmAnomaly.ts'), 'utf8');
+const flaggedAspx = readFileSync(
+  join(root, 'taxitime.co.nz/superadmin360taxi/TM-Flagged.aspx'),
+  'utf8',
+);
 const adminSrc = readFileSync(join(root, '..', 'INVT-admin', 'server.js'), 'utf8');
 
 test('fare_mismatch vs reference tariff', () => {
@@ -170,6 +285,106 @@ test('same_card_same_time_diff_taxi', () => {
   assert.ok(hit.reasons.includes('same_card_same_time_diff_taxi'));
 });
 
+test('limit_exceeded_daily flags only trips past the trip-count limit', () => {
+  // Fixed NZ afternoon so day key is stable
+  const day = Date.parse('2024-06-15T02:00:00.000Z'); // NZ winter afternoon
+  const cards = { TM99: { usageLimitDaily: 2 } };
+  const mk = (key, offsetMin, status = 'submitted') => ({
+    _cid: 'c1',
+    _rawKey: key,
+    status,
+    tmCardNumber: 'TM99',
+    startedAt: day + offsetMin * 60_000,
+    completedAt: day + offsetMin * 60_000 + 30_000,
+  });
+  const trips = [mk('t1', 0), mk('t2', 10), mk('t3', 20)];
+  const h1 = detectTripAnomalies(trips[0], { peers: trips, cardsByNumber: cards });
+  const h2 = detectTripAnomalies(trips[1], { peers: trips, cardsByNumber: cards });
+  const h3 = detectTripAnomalies(trips[2], { peers: trips, cardsByNumber: cards });
+  assert.equal(h1.reasons.includes('limit_exceeded_daily'), false);
+  assert.equal(h2.reasons.includes('limit_exceeded_daily'), false);
+  assert.ok(h3.reasons.includes('limit_exceeded_daily'));
+});
+
+test('limit_exceeded_monthly flags ordinal over monthly trip limit', () => {
+  const cards = { TM88: { usageLimitMonthly: 1 } };
+  const a = {
+    _cid: 'c1',
+    _rawKey: 'a',
+    status: 'approved',
+    tmCardNumber: 'TM88',
+    startedAt: Date.parse('2024-06-01T02:00:00.000Z'),
+  };
+  const b = {
+    _cid: 'c1',
+    _rawKey: 'b',
+    status: 'submitted',
+    tmCardNumber: 'TM88',
+    startedAt: Date.parse('2024-06-20T02:00:00.000Z'),
+  };
+  const hitA = detectTripAnomalies(a, { peers: [a, b], cardsByNumber: cards });
+  const hitB = detectTripAnomalies(b, { peers: [a, b], cardsByNumber: cards });
+  assert.equal(hitA.reasons.includes('limit_exceeded_monthly'), false);
+  assert.ok(hitB.reasons.includes('limit_exceeded_monthly'));
+});
+
+test('rejected trips do not count toward card limits', () => {
+  const cards = { TM77: { usageLimitDaily: 1 } };
+  const day = Date.parse('2024-06-15T02:00:00.000Z');
+  const rejected = {
+    _cid: 'c1',
+    _rawKey: 'r',
+    status: 'rejected',
+    tmCardNumber: 'TM77',
+    startedAt: day,
+  };
+  const ok = {
+    _cid: 'c1',
+    _rawKey: 'ok',
+    status: 'submitted',
+    tmCardNumber: 'TM77',
+    startedAt: day + 60_000,
+  };
+  const hit = detectTripAnomalies(ok, { peers: [rejected, ok], cardsByNumber: cards });
+  assert.equal(hit.reasons.includes('limit_exceeded_daily'), false);
+});
+
+test('card_expired when trip day is after registry expiryDate', () => {
+  const cards = { TM55: { expiryDate: '2024-01-10' } };
+  const expiredTrip = {
+    _cid: 'c1',
+    _rawKey: 'e',
+    status: 'submitted',
+    tmCardNumber: 'TM55',
+    startedAt: Date.parse('2024-01-12T02:00:00.000Z'),
+  };
+  const validTrip = {
+    _cid: 'c1',
+    _rawKey: 'v',
+    status: 'submitted',
+    tmCardNumber: 'TM55',
+    startedAt: Date.parse('2024-01-10T02:00:00.000Z'),
+  };
+  assert.ok(detectTripAnomalies(expiredTrip, { cardsByNumber: cards }).reasons.includes('card_expired'));
+  assert.equal(
+    detectTripAnomalies(validTrip, { cardsByNumber: cards }).reasons.includes('card_expired'),
+    false,
+  );
+});
+
+test('card_expired falls back to trip tmCardExpiry MM/YY when registry blank', () => {
+  const trip = {
+    _cid: 'c1',
+    _rawKey: 'x',
+    status: 'submitted',
+    tmCardNumber: 'TM44',
+    tmCardExpiry: '01/24',
+    startedAt: Date.parse('2024-02-05T02:00:00.000Z'),
+  };
+  const hit = detectTripAnomalies(trip, { cardsByNumber: { TM44: {} } });
+  assert.ok(hit.reasons.includes('card_expired'));
+});
+
 test('applyAnomalyScan flags submitted and clears clean flagged', () => {
   const trips = [
     {
@@ -191,6 +406,28 @@ test('applyAnomalyScan flags submitted and clears clean flagged', () => {
   assert.equal(y.patch.status, 'submitted');
 });
 
+test('applyAnomalyScan applies card_expired via cardsByNumber', () => {
+  const trips = [
+    {
+      _cid: 'c1',
+      _rawKey: 'z',
+      status: 'submitted',
+      tmCardNumber: 'EXP1',
+      startedAt: Date.parse('2025-01-01T02:00:00.000Z'),
+      fare: 5,
+      distanceKm: 1,
+      durationMin: 1,
+    },
+  ];
+  const patches = applyAnomalyScan(
+    trips,
+    { c1: { car: { base: 3, perKm: 2, perMin: 0.5, stopFee: 0 } } },
+    { EXP1: { expiryDate: '2024-01-01' } },
+  );
+  assert.equal(patches.length, 1);
+  assert.ok(patches[0].patch.flagReasons.includes('card_expired'));
+});
+
 test('isClaimEligibleStatus excludes flagged/revision/rejected', () => {
   assert.equal(isClaimEligibleStatus('approved'), true);
   assert.equal(isClaimEligibleStatus('paid'), true);
@@ -205,6 +442,20 @@ test('tmAnomaly source exports claim helper and rules', () => {
   assert.match(anomalySrc, /same_card_reuse_3min/);
   assert.match(anomalySrc, /same_card_same_time_diff_taxi/);
   assert.match(anomalySrc, /applyAnomalyScan/);
+  assert.match(anomalySrc, /limit_exceeded_daily/);
+  assert.match(anomalySrc, /limit_exceeded_monthly/);
+  assert.match(anomalySrc, /card_expired/);
+  assert.match(anomalySrc, /cardsByNumber/);
+  assert.match(anomalySrc, /cardUsageOrdinal/);
+});
+
+test('council portal loads tmCards into anomaly scan', () => {
+  assert.match(councilSrc, /loadTmCardsByNumber/);
+  assert.match(councilSrc, /fbRead\('tmCards'/);
+  assert.match(councilSrc, /applyAnomalyScan\(list, tariffByCid \|\| \{\}, cardsByNumber/);
+  assert.match(councilSrc, /limit_exceeded_daily/);
+  assert.match(councilSrc, /card_expired/);
+  assert.match(councilSrc, /Daily limit exceeded/);
 });
 
 test('council portal pending + anomalies + bulk endpoints', () => {
@@ -225,6 +476,11 @@ test('council portal pending + anomalies + bulk endpoints', () => {
   assert.match(councilSrc, /\/council-portal\/trips\?t=.*status=flagged/);
   assert.match(councilSrc, /Return unlocks company editing/);
   assert.match(councilSrc, /view-only for the company until you click Return/);
+});
+
+test('SA Flagged filter includes card_expired', () => {
+  assert.match(flaggedAspx, /limit_exceeded_daily/);
+  assert.match(flaggedAspx, /card_expired/);
 });
 
 test('owner panel shows flagged edit-warning on revision_needed', () => {
