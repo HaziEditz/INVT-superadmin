@@ -110,3 +110,84 @@ export function buildTripPaidPatch(who: string, now = Date.now()): Record<string
     paidBy: who,
   };
 }
+
+/** Claim Batches status tabs / dropdown values. */
+export type ClaimBatchStatusFilter =
+  | 'all'
+  | 'submitted'
+  | 'approved'
+  | 'paid'
+  | 'flagged';
+
+export function normalizeClaimBatchStatusFilter(
+  raw: string | null | undefined,
+): ClaimBatchStatusFilter {
+  const s = String(raw || '').trim().toLowerCase();
+  if (s === 'approved' || s === 'paid' || s === 'all' || s === 'flagged' || s === 'submitted') {
+    return s;
+  }
+  return 'submitted';
+}
+
+/**
+ * Batches that need attention: rejected / revision_needed, or paid without proof.
+ */
+export function isFlaggedClaimBatch(batch: Record<string, any> | null | undefined): boolean {
+  if (!batch || typeof batch !== 'object') return false;
+  const st = String(batch.status || '').trim().toLowerCase();
+  if (st === 'rejected' || st === 'revision_needed') return true;
+  return proofMissingFlag(batch);
+}
+
+/** YYYY-MM from a YYYY-MM-DD (or YYYY-MM) date string; null if invalid. */
+export function ymFromDateInput(raw: string | null | undefined): string | null {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  const m = s.match(/^(\d{4}-\d{2})(?:-\d{2})?$/);
+  return m ? m[1] : null;
+}
+
+/** Include batch month when it falls within optional From/To (inclusive by YYYY-MM). */
+export function batchYmInDateRange(
+  ym: string | null | undefined,
+  from?: string | null,
+  to?: string | null,
+): boolean {
+  const month = String(ym || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    // Unknown month: only include when no date filter is active
+    return !ymFromDateInput(from) && !ymFromDateInput(to);
+  }
+  const fromYm = ymFromDateInput(from);
+  const toYm = ymFromDateInput(to);
+  if (fromYm && month < fromYm) return false;
+  if (toYm && month > toYm) return false;
+  return true;
+}
+
+export function batchMatchesStatusFilter(
+  batch: Record<string, any> | null | undefined,
+  status: ClaimBatchStatusFilter,
+): boolean {
+  if (!batch || typeof batch !== 'object') return false;
+  if (status === 'all') return true;
+  if (status === 'flagged') return isFlaggedClaimBatch(batch);
+  return String(batch.status || '').trim().toLowerCase() === status;
+}
+
+/** Filter claim batches by status dropdown/tab + optional From/To month range. */
+export function filterClaimBatches<T extends { status?: string; _ym?: string }>(
+  batches: T[],
+  opts: {
+    status?: string | null;
+    from?: string | null;
+    to?: string | null;
+  } = {},
+): T[] {
+  const status = normalizeClaimBatchStatusFilter(opts.status);
+  return (batches || []).filter((b) => {
+    if (!batchMatchesStatusFilter(b, status)) return false;
+    return batchYmInDateRange(b._ym, opts.from, opts.to);
+  });
+}
+

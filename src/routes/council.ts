@@ -40,6 +40,9 @@ import {
   hasPaymentProof,
   proofMissingFlag,
   resolveBatchTripKeys,
+  normalizeClaimBatchStatusFilter,
+  filterClaimBatches,
+  isFlaggedClaimBatch,
 } from '../lib/tmBatchPaid';
 import { storeBatchProof, MAX_PROOF_BYTES } from '../lib/tmBatchStorage';
 import { compareTripsNewestFirst, tripActivityMs, tripMonthKey } from '../lib/tmTripSort';
@@ -2602,11 +2605,12 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
   const te = encodeURIComponent(token);
   const msg = (req.query.msg as string) || '';
   const mt = (req.query.mt as string) || '';
-  const tabRaw = String(req.query.tab || 'submitted').toLowerCase();
-  const tab =
-    tabRaw === 'approved' || tabRaw === 'paid' || tabRaw === 'all' || tabRaw === 'submitted'
-      ? tabRaw
-      : 'submitted';
+  const tab = normalizeClaimBatchStatusFilter(String(req.query.tab || 'submitted'));
+  const filterFrom = String(req.query.from || '').trim();
+  const filterTo = String(req.query.to || '').trim();
+  const qKeep =
+    (filterFrom ? '&from=' + encodeURIComponent(filterFrom) : '') +
+    (filterTo ? '&to=' + encodeURIComponent(filterTo) : '');
   const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
   loadCouncilTrips(sess.councilId, (_eT: any, councilTrips: any[]) => {
     const tripByKey: Record<string, any> = {};
@@ -2691,32 +2695,71 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
             submitted: '<span style="background:#E3F2FD;color:#1565C0;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">Submitted</span>',
             approved: '<span style="background:#E8F5E9;color:#2E7D32;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">Approved</span>',
             rejected: '<span style="background:#FFEBEE;color:#C62828;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">Rejected</span>',
+            revision_needed: '<span style="background:#FFF8E1;color:#E65100;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">Needs Revision</span>',
             paid: '<span style="background:#E0F2F1;color:#00695C;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;border:1px solid #80CBC4">&#10003; Paid</span>',
           };
           return m[s] || `<span style="background:#F5F5F5;color:#757575;padding:2px 8px;border-radius:10px;font-size:11px">${esc(s)}</span>`;
         };
-        const submitted = allBatches.filter((b) => b.status === 'submitted');
-        const approved = allBatches.filter((b) => b.status === 'approved');
-        const paid = allBatches.filter((b) => b.status === 'paid');
-        const filtered =
-          tab === 'all'
-            ? allBatches
-            : tab === 'approved'
-              ? approved
-              : tab === 'paid'
-                ? paid
-                : submitted;
+        const inDate = filterClaimBatches(allBatches, {
+          status: 'all',
+          from: filterFrom,
+          to: filterTo,
+        });
+        const submitted = inDate.filter((b) => b.status === 'submitted');
+        const approved = inDate.filter((b) => b.status === 'approved');
+        const paid = inDate.filter((b) => b.status === 'paid');
+        const flagged = inDate.filter((b) => isFlaggedClaimBatch(b));
+        const filtered = filterClaimBatches(allBatches, {
+          status: tab,
+          from: filterFrom,
+          to: filterTo,
+        });
         const totalPending = submitted.reduce((s, b) => s + Number(b._displaySubsidy || 0), 0);
         const totalApproved = approved.reduce((s, b) => s + Number(b._displaySubsidy || 0), 0);
         const totalPaid = paid.reduce((s, b) => s + Number(b._displaySubsidy || b.paidAmount || 0), 0);
         const paidMissingProof = paid.filter((b) => proofMissingFlag(b)).length;
-        const tabHref = (t: string) => `/council-portal/batches?t=${te}&tab=${t}`;
+        const tabHref = (t: string) => `/council-portal/batches?t=${te}&tab=${t}${qKeep}`;
         const tabsHtml = `<div class="cp-tabs">
   <a class="cp-tab${tab === 'submitted' ? ' on' : ''}" href="${tabHref('submitted')}">Submitted<span class="cp-tab-n">${submitted.length}</span></a>
   <a class="cp-tab${tab === 'approved' ? ' on' : ''}" href="${tabHref('approved')}">Approved (unpaid)<span class="cp-tab-n">${approved.length}</span></a>
   <a class="cp-tab${tab === 'paid' ? ' on' : ''}" href="${tabHref('paid')}">Paid<span class="cp-tab-n">${paid.length}</span></a>
-  <a class="cp-tab${tab === 'all' ? ' on' : ''}" href="${tabHref('all')}">All<span class="cp-tab-n">${allBatches.length}</span></a>
+  <a class="cp-tab${tab === 'flagged' ? ' on' : ''}" href="${tabHref('flagged')}">Flagged<span class="cp-tab-n">${flagged.length}</span></a>
+  <a class="cp-tab${tab === 'all' ? ' on' : ''}" href="${tabHref('all')}">All<span class="cp-tab-n">${inDate.length}</span></a>
 </div>`;
+        const statusOpts = [
+          ['submitted', 'Submitted'],
+          ['approved', 'Approved (unpaid)'],
+          ['paid', 'Paid'],
+          ['flagged', 'Flagged'],
+          ['all', 'All'],
+        ]
+          .map(
+            ([v, label]) =>
+              `<option value="${v}"${tab === v ? ' selected' : ''}>${label}</option>`,
+          )
+          .join('');
+        const filterBar = `<form method="GET" action="/council-portal/batches" class="cp-card" style="margin-bottom:14px;padding:12px 14px;display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
+  <input type="hidden" name="t" value="${esc(token)}"/>
+  <div>
+    <label style="display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:3px">Status</label>
+    <select name="tab" class="cp-input" style="min-width:170px">${statusOpts}</select>
+  </div>
+  <div>
+    <label style="display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:3px">From</label>
+    <input type="date" name="from" class="cp-input" value="${esc(filterFrom)}"/>
+  </div>
+  <div>
+    <label style="display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:3px">To</label>
+    <input type="date" name="to" class="cp-input" value="${esc(filterTo)}"/>
+  </div>
+  <button type="submit" class="cp-btn cp-btn-g">Apply</button>
+  ${
+    tab !== 'submitted' || filterFrom || filterTo
+      ? `<a href="/council-portal/batches?t=${te}" class="cp-btn" style="background:#eee;color:#333">Clear</a>`
+      : ''
+  }
+  <p style="flex-basis:100%;font-size:11.5px;color:#888;margin:0">From/To filter by claim month (YYYY-MM). Flagged = rejected, needs revision, or paid without proof.</p>
+</form>`;
         const rows = filtered
           .map((b) => {
             const subDt = b.submittedAt ? new Date(b.submittedAt).toLocaleDateString('en-NZ') : '—';
@@ -2743,6 +2786,8 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
   <input type="hidden" name="ym" value="${esc(b._ym)}"/>
   <input type="hidden" name="action" value="approve"/>
   <input type="hidden" name="tab" value="${esc(tab)}"/>
+  <input type="hidden" name="from" value="${esc(filterFrom)}"/>
+  <input type="hidden" name="to" value="${esc(filterTo)}"/>
   <button type="submit" class="cp-btn cp-btn-g" style="margin-right:4px">&#10003; Approve All</button>
 </form>
 <form method="POST" action="/api/council-batch-action" style="display:inline" onsubmit="return confirm('Reject this batch?')">
@@ -2751,6 +2796,8 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
   <input type="hidden" name="ym" value="${esc(b._ym)}"/>
   <input type="hidden" name="action" value="reject"/>
   <input type="hidden" name="tab" value="${esc(tab)}"/>
+  <input type="hidden" name="from" value="${esc(filterFrom)}"/>
+  <input type="hidden" name="to" value="${esc(filterTo)}"/>
   <button type="submit" class="cp-btn cp-btn-r">&#10007; Reject</button>
 </form>`
                 : b.status === 'approved'
@@ -2787,6 +2834,8 @@ ${(() => {
     <form method="POST" action="/api/council-batch-create" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
       <input type="hidden" name="_token" value="${esc(token)}"/>
       <input type="hidden" name="tab" value="${esc(tab)}"/>
+      <input type="hidden" name="from" value="${esc(filterFrom)}"/>
+      <input type="hidden" name="to" value="${esc(filterTo)}"/>
       <div>
         <label style="display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:3px">Operator</label>
         <select name="cid" class="cp-input" style="min-width:180px">
@@ -2811,12 +2860,13 @@ ${(() => {
   <div class="cp-stat"><div class="cp-stat-v">${paid.length}</div><div class="cp-stat-l">Paid</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totalPaid.toFixed(2)}</div><div class="cp-stat-l">Paid Claim Value${paidMissingProof ? ` · <span style="color:#E65100;font-size:11px">${paidMissingProof} missing proof</span>` : ''}</div></div>
 </div>
+${filterBar}
 ${tabsHtml}
 <div class="cp-card" style="overflow-x:auto">
 <p style="font-size:13px;color:#666;padding:12px 16px 0">Flow: <strong>Submitted → Approved → Paid</strong>. Marking Paid cascades all trips in the batch to Paid. Proof of payment / invoice is optional but flagged if missing.</p>
 ${filtered.length ? `<table class="cp-tbl" style="margin-top:8px">
 <thead><tr><th>Operator</th><th>Month</th><th style="text-align:right">Trips</th><th style="text-align:right">Council Claim</th><th>Status</th><th>Submitted</th><th>Approved</th><th>Proof</th><th>Action</th></tr></thead>
-<tbody>${rows}</tbody></table>` : '<div class="cp-empty">No batches in this tab.</div>'}
+<tbody>${rows}</tbody></table>` : '<div class="cp-empty">No batches match these filters.</div>'}
 </div>
 <div class="cp-ov" id="cp-paid-ov" onclick="if(event.target===this)cpCloseMarkPaid()">
   <div class="cp-modal" style="width:480px" onclick="event.stopPropagation()">
@@ -2840,6 +2890,8 @@ ${filtered.length ? `<table class="cp-tbl" style="margin-top:8px">
 <script>
 var _cpTok = ${JSON.stringify(token)};
 var _cpTab = ${JSON.stringify(tab)};
+var _cpFrom = ${JSON.stringify(filterFrom)};
+var _cpTo = ${JSON.stringify(filterTo)};
 var _paidCtx = null;
 function cpOpenMarkPaid(cid, ym, amt){
   _paidCtx = { cid: cid, ym: ym, attachOnly: false };
@@ -2892,6 +2944,8 @@ function cpSubmitMarkPaid(){
       ym: _paidCtx.ym,
       action: _paidCtx.attachOnly ? 'attach_proof' : 'paid',
       tab: _cpTab,
+      from: _cpFrom || '',
+      to: _cpTo || '',
       payRef: (document.getElementById('cp-paid-ref').value||'').trim(),
       paymentDocName: file ? file.name : '',
       paymentDocContentType: file ? (file.type||'') : '',
@@ -2909,7 +2963,10 @@ function cpSubmitMarkPaid(){
       errEl.style.display = 'block';
       return;
     }
-    location.href = '/council-portal/batches?t='+encodeURIComponent(_cpTok)+'&tab='+encodeURIComponent(res.j.tab||_cpTab)+'&msg='+encodeURIComponent(res.j.msg||'Saved')+'&mt=ok';
+    var qs = 't='+encodeURIComponent(_cpTok)+'&tab='+encodeURIComponent(res.j.tab||_cpTab)+'&msg='+encodeURIComponent(res.j.msg||'Saved')+'&mt=ok';
+    if(res.j.from || _cpFrom) qs += '&from='+encodeURIComponent(res.j.from||_cpFrom||'');
+    if(res.j.to || _cpTo) qs += '&to='+encodeURIComponent(res.j.to||_cpTo||'');
+    location.href = '/council-portal/batches?'+qs;
   }).catch(function(e){
     btn.disabled = false;
     errEl.textContent = e && e.message ? e.message : String(e);
@@ -2927,7 +2984,9 @@ router.post('/api/council-batch-create', (req, res) => {
   const token = (req.body._token as string) || '';
   const cidFilter = String(req.body.cid || '').trim();
   const ymFilter = String(req.body.ym || '').trim();
-  const tab = String(req.body.tab || 'submitted');
+  const tab = normalizeClaimBatchStatusFilter(String(req.body.tab || 'submitted'));
+  const filterFrom = String(req.body.from || '').trim();
+  const filterTo = String(req.body.to || '').trim();
   const sess = cpGetSession(token);
   const te = encodeURIComponent(token);
   const redirect = (msg: string, mt: string, t = tab) =>
@@ -2936,6 +2995,8 @@ router.post('/api/council-batch-create', (req, res) => {
         te +
         '&tab=' +
         encodeURIComponent(t) +
+        (filterFrom ? '&from=' + encodeURIComponent(filterFrom) : '') +
+        (filterTo ? '&to=' + encodeURIComponent(filterTo) : '') +
         '&msg=' +
         encodeURIComponent(msg) +
         '&mt=' +
@@ -3008,7 +3069,9 @@ router.post('/api/council-batch-action', (req, res) => {
   const ym = (req.body.ym as string) || '';
   const action = (req.body.action as string) || '';
   const payRef = ((req.body.payRef as string) || '').trim();
-  const tab = String(req.body.tab || 'submitted');
+  const tab = normalizeClaimBatchStatusFilter(String(req.body.tab || 'submitted'));
+  const filterFrom = String(req.body.from || '').trim();
+  const filterTo = String(req.body.to || '').trim();
   const sess = cpGetSession(token);
   const te = encodeURIComponent(token);
   const redirect = (msg: string, mt: string, t = tab) => {
@@ -3018,6 +3081,8 @@ router.post('/api/council-batch-action', (req, res) => {
         msg,
         error: mt === 'ok' ? undefined : msg,
         tab: t,
+        from: filterFrom || undefined,
+        to: filterTo || undefined,
       });
     }
     return res.redirect(
@@ -3025,6 +3090,8 @@ router.post('/api/council-batch-action', (req, res) => {
         te +
         '&tab=' +
         encodeURIComponent(t) +
+        (filterFrom ? '&from=' + encodeURIComponent(filterFrom) : '') +
+        (filterTo ? '&to=' + encodeURIComponent(filterTo) : '') +
         '&msg=' +
         encodeURIComponent(msg) +
         '&mt=' +

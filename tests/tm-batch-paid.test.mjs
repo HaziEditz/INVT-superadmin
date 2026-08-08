@@ -105,9 +105,73 @@ test('proofMissingFlag only for paid without doc', () => {
   assert.equal(proofMissingFlag({ status: 'paid', paymentDocUrl: 'rtdb:x' }), false);
 });
 
+function normalizeClaimBatchStatusFilter(raw) {
+  const s = String(raw || '').trim().toLowerCase();
+  if (s === 'approved' || s === 'paid' || s === 'all' || s === 'flagged' || s === 'submitted') return s;
+  return 'submitted';
+}
+
+function isFlaggedClaimBatch(batch) {
+  if (!batch || typeof batch !== 'object') return false;
+  const st = String(batch.status || '').trim().toLowerCase();
+  if (st === 'rejected' || st === 'revision_needed') return true;
+  return proofMissingFlag(batch);
+}
+
+function ymFromDateInput(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  const m = s.match(/^(\d{4}-\d{2})(?:-\d{2})?$/);
+  return m ? m[1] : null;
+}
+
+function batchYmInDateRange(ym, from, to) {
+  const month = String(ym || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    return !ymFromDateInput(from) && !ymFromDateInput(to);
+  }
+  const fromYm = ymFromDateInput(from);
+  const toYm = ymFromDateInput(to);
+  if (fromYm && month < fromYm) return false;
+  if (toYm && month > toYm) return false;
+  return true;
+}
+
+function filterClaimBatches(batches, opts = {}) {
+  const status = normalizeClaimBatchStatusFilter(opts.status);
+  return (batches || []).filter((b) => {
+    if (status === 'all') {
+      // keep
+    } else if (status === 'flagged') {
+      if (!isFlaggedClaimBatch(b)) return false;
+    } else if (String(b.status || '').toLowerCase() !== status) {
+      return false;
+    }
+    return batchYmInDateRange(b._ym, opts.from, opts.to);
+  });
+}
+
+test('filterClaimBatches status + From/To month range', () => {
+  const rows = [
+    { _ym: '2026-06', status: 'submitted' },
+    { _ym: '2026-07', status: 'approved' },
+    { _ym: '2026-08', status: 'paid', paymentDocUrl: 'x' },
+    { _ym: '2026-08', status: 'paid' },
+    { _ym: '2026-05', status: 'rejected' },
+  ];
+  assert.equal(filterClaimBatches(rows, { status: 'approved' }).length, 1);
+  assert.equal(filterClaimBatches(rows, { status: 'flagged' }).length, 2);
+  assert.deepEqual(
+    filterClaimBatches(rows, { status: 'all', from: '2026-07-01', to: '2026-08-31' }).map((b) => b._ym + ':' + b.status),
+    ['2026-07:approved', '2026-08:paid', '2026-08:paid'],
+  );
+});
+
 test('source exports paid helpers and storage', () => {
   assert.match(paidSrc, /export function resolveBatchTripKeys/);
   assert.match(paidSrc, /PROOF_MISSING_LABEL/);
+  assert.match(paidSrc, /export function filterClaimBatches/);
+  assert.match(paidSrc, /export function isFlaggedClaimBatch/);
   assert.match(storageSrc, /storeBatchProof/);
   assert.match(storageSrc, /firebase-admin|firebasestorage|tmBatchDocs/);
 });
@@ -120,6 +184,11 @@ test('council batches tabs + cascade + attach proof', () => {
   assert.match(councilSrc, /storeBatchProof/);
   assert.match(councilSrc, /\/api\/council-batch-doc/);
   assert.match(councilSrc, /cpOpenMarkPaid/);
+  assert.match(councilSrc, /filterClaimBatches/);
+  assert.match(councilSrc, /name="from"/);
+  assert.match(councilSrc, /name="to"/);
+  assert.match(councilSrc, /Flagged/);
+  assert.match(councilSrc, /normalizeClaimBatchStatusFilter/);
 });
 
 test('SA Mark Paid uploads proof and cascades trips', () => {
