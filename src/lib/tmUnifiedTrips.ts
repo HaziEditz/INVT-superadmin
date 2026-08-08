@@ -8,6 +8,7 @@ import { tripMatchesSearch, type SearchableTrip } from './tmTripSearch';
 export type UnifiedTripStatusFilter =
   | 'all'
   | 'pending'
+  | 'revision'
   | 'flagged'
   | 'archived'
   | 'approved'
@@ -17,12 +18,16 @@ export type UnifiedTripStatusFilter =
 export const UNIFIED_TRIP_STATUS_OPTIONS: Array<{ value: UnifiedTripStatusFilter; label: string }> = [
   { value: 'all', label: 'All' },
   { value: 'pending', label: 'Pending' },
+  { value: 'revision', label: 'Revision' },
   { value: 'flagged', label: 'Flagged' },
   { value: 'archived', label: 'Archived' },
   { value: 'approved', label: 'Approved' },
   { value: 'paid', label: 'Paid' },
   { value: 'rejected', label: 'Rejected' },
 ];
+
+/** Pending tab: council-queue submitted + pre-submit company pipeline statuses. */
+const PENDING_TAB_STATUSES = new Set(['submitted', 'pending', 'company_approved']);
 
 export type EntityType = 'company' | 'driver' | 'vehicle' | 'card' | 'passenger';
 
@@ -34,6 +39,7 @@ export function normalizeUnifiedTripStatus(
   const s = String(raw || '').trim().toLowerCase();
   if (
     s === 'pending' ||
+    s === 'revision' ||
     s === 'flagged' ||
     s === 'archived' ||
     s === 'approved' ||
@@ -44,7 +50,9 @@ export function normalizeUnifiedTripStatus(
     return s;
   }
   // Legacy aliases from old nav / returnTo
-  if (s === 'submitted' || s === 'anomalies') return s === 'anomalies' ? 'flagged' : 'pending';
+  if (s === 'revision_needed' || s === 'needs_revision') return 'revision';
+  if (s === 'submitted' || s === 'company_approved') return 'pending';
+  if (s === 'anomalies') return 'flagged';
   if (s === 'reports' || s === 'search' || s === 'trips') return 'all';
   return 'all';
 }
@@ -54,7 +62,8 @@ export function legacyReturnToStatus(returnTo: string | null | undefined): Unifi
   const rt = String(returnTo || '').trim().toLowerCase();
   if (rt === 'anomalies' || rt === 'flagged') return 'flagged';
   if (rt === 'archived') return 'archived';
-  if (rt === 'pending' || rt === 'submitted') return 'pending';
+  if (rt === 'pending' || rt === 'submitted' || rt === 'company_approved') return 'pending';
+  if (rt === 'revision' || rt === 'revision_needed') return 'revision';
   if (rt === 'approved') return 'approved';
   if (rt === 'paid') return 'paid';
   if (rt === 'rejected') return 'rejected';
@@ -83,7 +92,8 @@ export function tripMatchesUnifiedStatus(
   if (!trip) return false;
   const st = String(trip.status || '').trim().toLowerCase();
   if (status === 'all') return !isArchivedStatus(st);
-  if (status === 'pending') return st === 'submitted';
+  if (status === 'pending') return PENDING_TAB_STATUSES.has(st);
+  if (status === 'revision') return st === 'revision_needed';
   if (status === 'flagged') return st === 'flagged';
   if (status === 'archived') return isArchivedStatus(st);
   if (status === 'approved') return st === 'approved';
@@ -217,12 +227,30 @@ export function tripCardKeys(t: any): string[] {
   const keys: string[] = [];
   for (const v of [t?.tmCardNumber, t?.tmVoucherNo, t?.cardNumber]) {
     const s = String(v || '').trim();
-    if (s) keys.push(s);
+    if (s && s !== '—') keys.push(s);
   }
   if (Array.isArray(t?.allCardNums)) {
     for (const n of t.allCardNums) {
       const s = String(n || '').trim();
-      if (s) keys.push(s);
+      if (s && s !== '—') keys.push(s);
+    }
+  }
+  if (Array.isArray(t?.tmVoucherNumbers)) {
+    for (const n of t.tmVoucherNumbers) {
+      const s = String(n || '').trim();
+      if (s && s !== '—') keys.push(s);
+    }
+  }
+  if (t?.allCards) {
+    for (const part of String(t.allCards).split(/[,;]/)) {
+      const s = part.trim();
+      if (s && s !== '—') keys.push(s);
+    }
+  }
+  if (Array.isArray(t?.tmPassengers)) {
+    for (const p of t.tmPassengers) {
+      const s = String(p?.cardNumber || '').trim();
+      if (s && s !== '—') keys.push(s);
     }
   }
   return keys;
@@ -255,6 +283,29 @@ export function tripPassengerKey(t: any): string {
   );
 }
 
+/** Prefer the more complete display name (more tokens, then longer). */
+export function preferPassengerLabel(a: string, b: string): string {
+  const aa = String(a || '').trim();
+  const bb = String(b || '').trim();
+  if (!aa || aa === '—') return bb || '—';
+  if (!bb || bb === '—') return aa;
+  const aParts = aa.split(/\s+/).filter(Boolean).length;
+  const bParts = bb.split(/\s+/).filter(Boolean).length;
+  if (bParts !== aParts) return bParts > aParts ? bb : aa;
+  return bb.length > aa.length ? bb : aa;
+}
+
+/**
+ * Stable passenger identity for Insights: prefer TM card number so incomplete
+ * first-name-only captures don't split the same cardholder into two rows.
+ */
+export function tripPassengerIdentity(t: any): { key: string; label: string } {
+  const label = tripPassengerKey(t);
+  const card = tripCardKeys(t)[0];
+  if (card) return { key: 'card:' + normKey(card), label };
+  return { key: 'name:' + normKey(label), label };
+}
+
 export function tripMatchesEntity(
   trip: any,
   type: EntityType,
@@ -269,7 +320,14 @@ export function tripMatchesEntity(
   if (type === 'card') {
     return tripCardKeys(trip).some((k) => normKey(k) === wantN || k === want);
   }
-  if (type === 'passenger') return normKey(tripPassengerKey(trip)) === wantN;
+  if (type === 'passenger') {
+    const id = tripPassengerIdentity(trip);
+    if (normKey(id.key) === wantN || id.key === want) return true;
+    if (normKey(tripPassengerKey(trip)) === wantN) return true;
+    const bare = wantN.replace(/^card:/, '').replace(/^name:/, '');
+    if (tripCardKeys(trip).some((k) => normKey(k) === bare)) return true;
+    return false;
+  }
   return false;
 }
 
@@ -297,6 +355,7 @@ function bumpUsage(
   row.trips++;
   row.councilPays += councilPays;
   row.hoistPays += hoistPays;
+  if (label) row.label = preferPassengerLabel(row.label, label);
 }
 
 /** Usage buckets for Insights (scoped to already-filtered trips). Default: all rows. */
@@ -341,8 +400,8 @@ export function aggregateTripUsage(
     const vehicle = tripVehicleKey(t);
     bumpUsage(vehicles, vehicle, vehicle, pay, hoist);
 
-    const passenger = tripPassengerKey(t);
-    bumpUsage(passengers, passenger, passenger, pay, hoist);
+    const passenger = tripPassengerIdentity(t);
+    bumpUsage(passengers, passenger.key, passenger.label, pay, hoist);
   }
 
   const sortTop = (m: Map<string, UsageBucket>) => {
@@ -456,6 +515,7 @@ export function countTripsByUnifiedStatus(trips: any[]): Record<UnifiedTripStatu
   const out: Record<UnifiedTripStatusFilter, number> = {
     all: 0,
     pending: 0,
+    revision: 0,
     flagged: 0,
     archived: 0,
     approved: 0,
@@ -467,14 +527,49 @@ export function countTripsByUnifiedStatus(trips: any[]): Record<UnifiedTripStatu
     if (isArchivedStatus(st)) out.archived++;
     else {
       out.all++;
-      if (st === 'submitted') out.pending++;
+      if (PENDING_TAB_STATUSES.has(st)) out.pending++;
+      else if (st === 'revision_needed') out.revision++;
       else if (st === 'flagged') out.flagged++;
       else if (st === 'approved') out.approved++;
       else if (st === 'paid') out.paid++;
       else if (st === 'rejected') out.rejected++;
+      else out.pending++; // unknown non-archived → Pending so All always reconciles
     }
   }
   return out;
+}
+
+/** Distance km for summary totals (0 when missing/invalid). */
+export function tripDistanceKmOf(t: any): number {
+  const raw = t?.distanceKm ?? t?.distance ?? t?.distanceTravelled ?? t?.tripDistanceKm;
+  if (raw == null || raw === '') return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** Duration minutes for summary totals. */
+export function tripDurationMinOf(t: any): number {
+  if (t?.durationMin != null && t.durationMin !== '' && Number.isFinite(Number(t.durationMin))) {
+    const n = Number(t.durationMin);
+    return n > 0 ? n : 0;
+  }
+  const label = String(t?.duration || t?.durationLabel || t?.DurationMin || '');
+  const m = label.match(/([\d.]+)\s*min/i);
+  if (m) {
+    const n = Number(m[1]);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+  return 0;
+}
+
+export function formatDurationTotal(mins: number): string {
+  const total = Math.max(0, Math.round(Number(mins) || 0));
+  if (total <= 0) return '0 min';
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  if (h <= 0) return `${m} min`;
+  if (m === 0) return `${h}h`;
+  return `${h}h ${m}m`;
 }
 
 /**

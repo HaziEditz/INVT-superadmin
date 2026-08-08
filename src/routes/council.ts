@@ -46,6 +46,9 @@ import {
   hoistPaysOf,
   hoistUsesOf,
   subsidyOf,
+  tripDistanceKmOf,
+  tripDurationMinOf,
+  formatDurationTotal,
 } from '../lib/tmUnifiedTrips';
 import {
   buildTripEvent,
@@ -815,6 +818,9 @@ const COUNCIL_RETURN_TO_ALLOWED = new Set([
   'rejected',
   'submitted',
   'search',
+  'revision',
+  'revision_needed',
+  'company_approved',
 ]);
 
 function normalizeCouncilReturnTo(raw: string | undefined, fallback = 'pending'): string {
@@ -1247,14 +1253,20 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
           totCouncil = 0,
           totPax = 0,
           totHoist = 0,
-          totHoistUses = 0;
+          totHoistUses = 0,
+          totDistanceKm = 0,
+          totDurationMin = 0;
         details.forEach((d, i) => {
           totFare += d.meterFare;
           totCouncil += d.meterSubsidy;
           totPax += d.passengerPays;
           totHoist += hoistPaysOf(displayTrips[i]);
           totHoistUses += hoistUsesOf(displayTrips[i]);
+          totDistanceKm += tripDistanceKmOf(displayTrips[i]);
+          totDurationMin += tripDurationMinOf(displayTrips[i]);
         });
+        const totDistanceLabel = totDistanceKm > 0 ? totDistanceKm.toFixed(2) + ' km' : '0 km';
+        const totDurationLabel = formatDurationTotal(totDurationMin);
         const usage = aggregateTripUsage(displayTrips);
         const usageByDay = aggregateUsageByDay(displayTrips);
         const usageByMonth = aggregateUsageByMonth(displayTrips);
@@ -1518,6 +1530,8 @@ ${cb}
 <td>${esc(d.driverName || '—')}</td>
 <td>${esc(d.pickup)}</td>
 <td>${esc(d.dropoff)}</td>
+<td style="text-align:right;white-space:nowrap">${d.distanceKm ? esc(d.distanceKm + ' km') : '—'}</td>
+<td style="text-align:right;white-space:nowrap">${d.duration && d.duration !== '—' ? esc(d.duration) : '—'}</td>
 <td>$${d.meterFare.toFixed(2)}</td>
 <td style="color:#1565C0">${hoist$ > 0 ? '$' + hoist$.toFixed(2) : '—'}</td>
 <td style="text-align:right">${uses > 0 ? uses : '—'}</td>
@@ -1555,7 +1569,7 @@ ${cb}
         const hasFilters = !!(q || filterCompany || filterFrom || filterTo || status !== 'all');
         const thead =
           (showCheckbox ? '<th></th>' : '') +
-          '<th>Date</th><th>Operator</th><th>Passenger</th><th>Driver</th><th>Pickup</th><th>Dropoff</th><th>Meter</th><th>Hoist $</th><th>Uses</th><th>Council claim</th><th>Pax</th><th>Status</th><th>Actions</th>';
+          '<th>Date</th><th>Operator</th><th>Passenger</th><th>Driver</th><th>Pickup</th><th>Dropoff</th><th>Distance</th><th>Trip Time</th><th>Meter</th><th>Hoist $</th><th>Uses</th><th>Council claim</th><th>Pax</th><th>Status</th><th>Actions</th>';
 
         const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:6px">Trips</h2>
@@ -1597,9 +1611,12 @@ ${tabsHtml}
 <div class="cp-stats">
   <div class="cp-stat"><div class="cp-stat-v">${details.length}</div><div class="cp-stat-l">Trips in selection</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totFare.toFixed(2)}</div><div class="cp-stat-l">Total Meter Fare</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totHoist.toFixed(2)}</div><div class="cp-stat-l">Hoist $ (${totHoistUses} uses)</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totHoist.toFixed(2)}</div><div class="cp-stat-l">Hoist $</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">${totHoistUses}</div><div class="cp-stat-l">Hoist Uses</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totCouncil.toFixed(2)}</div><div class="cp-stat-l">Council claim (%/cap)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totPax.toFixed(2)}</div><div class="cp-stat-l">Total Passenger Pays</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">${esc(totDistanceLabel)}</div><div class="cp-stat-l">Total Distance</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">${esc(totDurationLabel)}</div><div class="cp-stat-l">Total Trip Time</div></div>
 </div>
 ${toolbar}
 ${insightsHtml}

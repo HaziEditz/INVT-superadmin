@@ -45,6 +45,7 @@ function normalizeUnifiedTripStatus(raw) {
   const s = String(raw || '').trim().toLowerCase();
   if (
     s === 'pending' ||
+    s === 'revision' ||
     s === 'flagged' ||
     s === 'archived' ||
     s === 'approved' ||
@@ -54,15 +55,19 @@ function normalizeUnifiedTripStatus(raw) {
   ) {
     return s;
   }
-  if (s === 'submitted' || s === 'anomalies') return s === 'anomalies' ? 'flagged' : 'pending';
+  if (s === 'revision_needed' || s === 'needs_revision') return 'revision';
+  if (s === 'submitted' || s === 'company_approved') return 'pending';
+  if (s === 'anomalies') return 'flagged';
   if (s === 'reports' || s === 'search' || s === 'trips') return 'all';
   return 'all';
 }
+const PENDING_TAB_STATUSES = new Set(['submitted', 'pending', 'company_approved']);
 function tripMatchesUnifiedStatus(trip, status) {
   if (!trip) return false;
   const st = String(trip.status || '').trim().toLowerCase();
   if (status === 'all') return !isArchivedStatus(st);
-  if (status === 'pending') return st === 'submitted';
+  if (status === 'pending') return PENDING_TAB_STATUSES.has(st);
+  if (status === 'revision') return st === 'revision_needed';
   if (status === 'flagged') return st === 'flagged';
   if (status === 'archived') return isArchivedStatus(st);
   if (status === 'approved') return st === 'approved';
@@ -99,6 +104,22 @@ function subsidyOf(t) {
     parseFloat(String(t.tmSubsidy != null ? t.tmSubsidy : t.tmCouncilPays || 0)) || 0;
   return Math.max(0, +(combined - hoist).toFixed(2));
 }
+function preferPassengerLabel(a, b) {
+  const aa = String(a || '').trim();
+  const bb = String(b || '').trim();
+  if (!aa || aa === '—') return bb || '—';
+  if (!bb || bb === '—') return aa;
+  const aParts = aa.split(/\s+/).filter(Boolean).length;
+  const bParts = bb.split(/\s+/).filter(Boolean).length;
+  if (bParts !== aParts) return bParts > aParts ? bb : aa;
+  return bb.length > aa.length ? bb : aa;
+}
+function tripPassengerIdentity(t) {
+  const label = String(t.tmCardName || t.tmPassengerName || t.passengerName || '—').trim() || '—';
+  const card = String(t.tmCardNumber || t.tmVoucherNo || '').trim();
+  if (card) return { key: 'card:' + card.toLowerCase(), label };
+  return { key: 'name:' + label.toLowerCase(), label };
+}
 function aggregateTripUsage(trips, limitOrOpts = Number.POSITIVE_INFINITY) {
   const limit =
     typeof limitOrOpts === 'number'
@@ -116,6 +137,7 @@ function aggregateTripUsage(trips, limitOrOpts = Number.POSITIVE_INFINITY) {
     row.trips++;
     row.councilPays += pay;
     row.hoistPays += hoist || 0;
+    if (label) row.label = preferPassengerLabel(row.label, label);
   };
   const cards = new Map();
   const drivers = new Map();
@@ -131,7 +153,8 @@ function aggregateTripUsage(trips, limitOrOpts = Number.POSITIVE_INFINITY) {
     bump(drivers, driver, driver, pay, hoist);
     const vehicle = String(t.vehicleId || t.taxiNumber || '—').trim() || '—';
     bump(vehicles, vehicle, vehicle, pay, hoist);
-    bump(passengers, cardLabel, cardLabel, pay, hoist);
+    const passenger = tripPassengerIdentity(t);
+    bump(passengers, passenger.key, passenger.label, pay, hoist);
   }
   const sortTop = (m) => {
     let rows = Array.from(m.values())
@@ -155,6 +178,7 @@ function countTripsByUnifiedStatus(trips) {
   const out = {
     all: 0,
     pending: 0,
+    revision: 0,
     flagged: 0,
     archived: 0,
     approved: 0,
@@ -166,11 +190,13 @@ function countTripsByUnifiedStatus(trips) {
     if (isArchivedStatus(st)) out.archived++;
     else {
       out.all++;
-      if (st === 'submitted') out.pending++;
+      if (PENDING_TAB_STATUSES.has(st)) out.pending++;
+      else if (st === 'revision_needed') out.revision++;
       else if (st === 'flagged') out.flagged++;
       else if (st === 'approved') out.approved++;
       else if (st === 'paid') out.paid++;
       else if (st === 'rejected') out.rejected++;
+      else out.pending++;
     }
   }
   return out;
@@ -270,12 +296,61 @@ test('aggregateTripUsage and countTripsByUnifiedStatus', () => {
   assert.equal(counts.all, 3);
 });
 
+test('company pending + revision_needed map into tab buckets', () => {
+  const trips = [
+    { status: 'pending' },
+    { status: 'submitted' },
+    { status: 'company_approved' },
+    { status: 'revision_needed' },
+    { status: 'flagged' },
+    { status: 'approved' },
+    { status: 'paid' },
+    { status: 'rejected' },
+    { status: 'archived' },
+  ];
+  const counts = countTripsByUnifiedStatus(trips);
+  assert.equal(counts.all, 8);
+  assert.equal(counts.pending, 3);
+  assert.equal(counts.revision, 1);
+  assert.equal(counts.flagged, 1);
+  assert.equal(counts.approved, 1);
+  assert.equal(counts.paid, 1);
+  assert.equal(counts.rejected, 1);
+  assert.equal(counts.archived, 1);
+  assert.equal(
+    counts.pending + counts.revision + counts.flagged + counts.approved + counts.paid + counts.rejected,
+    counts.all,
+  );
+  assert.equal(filterTripsUnified(trips, { status: 'pending' }).length, 3);
+  assert.equal(filterTripsUnified(trips, { status: 'revision' }).length, 1);
+});
+
+test('byPassenger keys by card and prefers fuller name', () => {
+  const usage = aggregateTripUsage([
+    { status: 'paid', tmCardNumber: '41353203', tmPassengerName: 'Marianne', tmSubsidy: 15.65 },
+    {
+      status: 'approved',
+      tmCardNumber: '41353203',
+      tmPassengerName: 'Marianne Hodges',
+      tmSubsidy: 9.87,
+    },
+  ]);
+  assert.equal(usage.byPassenger.length, 1);
+  assert.equal(usage.byPassenger[0].trips, 2);
+  assert.equal(usage.byPassenger[0].label, 'Marianne Hodges');
+  assert.match(usage.byPassenger[0].key, /^card:/);
+});
+
 test('tmUnifiedTrips source exports helpers', () => {
   assert.match(unifiedSrc, /export function normalizeUnifiedTripStatus/);
   assert.match(unifiedSrc, /export function filterTripsUnified/);
   assert.match(unifiedSrc, /export function aggregateTripUsage/);
   assert.match(unifiedSrc, /export function countTripsByUnifiedStatus/);
+  assert.match(unifiedSrc, /export function tripPassengerIdentity/);
+  assert.match(unifiedSrc, /revision_needed/);
+  assert.match(unifiedSrc, /PENDING_TAB_STATUSES/);
   assert.match(unifiedSrc, /UNIFIED_TRIP_STATUS_OPTIONS/);
+  assert.match(unifiedSrc, /value: 'revision'/);
 });
 
 test('council.ts slim nav + unified trips wiring', () => {
@@ -300,6 +375,10 @@ test('council.ts slim nav + unified trips wiring', () => {
   assert.match(councilSrc, /legacyReturnToStatus/);
   assert.match(councilSrc, /status=pending/);
   assert.match(councilSrc, /status=flagged/);
+  assert.match(councilSrc, /Hoist Uses/);
+  assert.match(councilSrc, /Total Distance/);
+  assert.match(councilSrc, /Total Trip Time/);
+  assert.match(councilSrc, /<th>Distance<\/th><th>Trip Time<\/th>/);
 });
 
 test('legacy trip pages redirect to unified trips', () => {
