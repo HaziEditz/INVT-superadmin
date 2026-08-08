@@ -659,3 +659,55 @@ window.updateCompanyPlan = function(companyId, planData) {
 
   return Promise.all(writes);
 };
+
+/* ── TM trip activity / hoist helpers (SA ASPX lists) ───────────────────────── */
+function coerceTimeMs(raw) {
+  if (raw == null || raw === '') return 0;
+  if (typeof raw === 'number') {
+    if (!isFinite(raw) || raw <= 0) return 0;
+    return raw < 1e12 ? Math.round(raw * 1000) : Math.round(raw);
+  }
+  var s = String(raw).trim();
+  if (!s) return 0;
+  if (/^\d{10,13}$/.test(s)) {
+    var n = Number(s);
+    if (!isFinite(n) || n <= 0) return 0;
+    if (n < 1e12) n *= 1000;
+    return Math.round(n);
+  }
+  var parsed = Date.parse(s);
+  return isFinite(parsed) ? parsed : 0;
+}
+
+/** Newest-first activity ms — accepts ASPX startTime/endTime and ISO/epoch fields. */
+function tripActivityMs(t) {
+  if (!t || typeof t !== 'object') return 0;
+  return (
+    coerceTimeMs(t.startedAt_ISO) ||
+    coerceTimeMs(t.startedAt) ||
+    coerceTimeMs(t.startTime) ||
+    coerceTimeMs(t.completedAt_ISO) ||
+    coerceTimeMs(t.completedAt) ||
+    coerceTimeMs(t.endTime) ||
+    coerceTimeMs(t.JobCompleteTime) ||
+    coerceTimeMs(t.submittedAt) ||
+    coerceTimeMs(t.approvedAt) ||
+    coerceTimeMs(t.createdAt) ||
+    coerceTimeMs(t.CreatedAt) ||
+    0
+  );
+}
+
+function hoistPaysOf(t) {
+  if (!t) return 0;
+  return parseFloat(t.tmSubsidyHoist != null ? t.tmSubsidyHoist : (t.hoistTotal != null ? t.hoistTotal : (t.hoistCost || 0))) || 0;
+}
+
+/** Prefer tmHoists[].length, then tmHoistCount / hoistCount, then $ → 1. */
+function hoistUsesOf(t) {
+  if (!t) return 0;
+  if (Array.isArray(t.tmHoists) && t.tmHoists.length) return t.tmHoists.length;
+  var counted = parseInt(String(t.tmHoistCount != null ? t.tmHoistCount : (t.hoistCount != null ? t.hoistCount : t.hoistUsed)), 10);
+  if (isFinite(counted) && counted > 0) return counted;
+  return hoistPaysOf(t) > 0 ? 1 : 0;
+}

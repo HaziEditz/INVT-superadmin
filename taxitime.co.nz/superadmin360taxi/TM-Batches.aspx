@@ -322,7 +322,7 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
     <table class="tm-tbl" style="min-width:900px">
       <thead><tr>
         <th>Job ID</th><th>Date</th><th>Driver</th><th>Card #</th><th>Passenger</th>
-        <th>Pickup</th><th>Dropoff</th><th>Fare</th><th>TM Sub.</th><th>Hoist</th><th>Pax Pays</th><th>Total Claim</th><th>Status</th>
+        <th>Pickup</th><th>Dropoff</th><th>Fare</th><th>TM Sub.</th><th>Hoist</th><th>Uses</th><th>Pax Pays</th><th>Total Claim</th><th>Status</th>
       </tr></thead>
       <tbody id="trips-tb"></tbody>
     </table>
@@ -809,26 +809,28 @@ function renderTripDetail(){
   var fS=document.getElementById('td-f-status').value;
   var trips=detailBatch.trips.map(function(id){ return {id:id,t:allTrips[id]}; }).filter(function(x){
     return x.t && (!fS||x.t.status===fS);
-  }).sort(function(a,b){ return (b.t.startTime||'').localeCompare(a.t.startTime||''); });
+  }).sort(function(a,b){ return tripActivityMs(b.t) - tripActivityMs(a.t); });
 
   /* stat bar */
-  var totClaim=0,totFare=0,totHoist=0,totPax=0,cntFlag=0;
-  trips.forEach(function(x){ var t=x.t; totClaim+=t.totalCouncilPays; totFare+=t.meterFare; totHoist+=t.hoistTotal; totPax+=t.passengerPays; if(t.status==='flagged') cntFlag++; });
+  var totClaim=0,totFare=0,totHoist=0,totPax=0,totUses=0,cntFlag=0;
+  trips.forEach(function(x){ var t=x.t; totClaim+=t.totalCouncilPays; totFare+=t.meterFare; totHoist+=t.hoistTotal; totPax+=t.passengerPays; totUses+=hoistUsesOf(t); if(t.status==='flagged') cntFlag++; });
   document.getElementById('trips-stats').innerHTML=
     statBox(trips.length,'Trips shown','#37474F')+
     statBox(fmt(totFare),'Meter Fares','')+
     statBox(fmt(totClaim),'Total Claim','#2E7D32')+
+    statBox(fmt(totHoist)+' / '+totUses,'Hoist $ / Uses','#1565C0')+
     statBox(fmt(totPax),'Pax Pays','')+
     (cntFlag>0?statBox(cntFlag,'Flagged','#C62828'):'');
 
   if(!trips.length){
-    document.getElementById('trips-tb').innerHTML='<tr><td colspan="13" style="text-align:center;padding:24px;color:#9e9e9e">No trips match filter.</td></tr>';
+    document.getElementById('trips-tb').innerHTML='<tr><td colspan="14" style="text-align:center;padding:24px;color:#9e9e9e">No trips match filter.</td></tr>';
     return;
   }
   document.getElementById('trips-tb').innerHTML=trips.map(function(x){
     var id=x.id, t=x.t;
     var dt=t.startTime?(t.startTime.slice(0,10)+' '+t.startTime.slice(11,16)):'—';
     var hoistAmt=parseFloat(t.hoistTotal||0);
+    var uses=hoistUsesOf(t);
     return '<tr>'+
       '<td style="font-family:monospace;font-size:11px">'+esc(id)+'</td>'+
       '<td style="white-space:nowrap;font-size:12px">'+esc(dt)+'</td>'+
@@ -840,6 +842,7 @@ function renderTripDetail(){
       '<td>$'+parseFloat(t.meterFare||0).toFixed(2)+'</td>'+
       '<td style="color:#2E7D32;font-weight:600">$'+parseFloat(t.tmSubsidyFare||0).toFixed(2)+'</td>'+
       '<td>'+(hoistAmt>0?'<span style="color:#1565C0;font-weight:600">$'+hoistAmt.toFixed(2)+'</span>':'—')+'</td>'+
+      '<td>'+(uses>0?uses:'—')+'</td>'+
       '<td>$'+parseFloat(t.passengerPays||0).toFixed(2)+'</td>'+
       '<td style="font-weight:700;color:#2E7D32">$'+parseFloat(t.totalCouncilPays||0).toFixed(2)+'</td>'+
       '<td>'+tripBadge(t.status)+'</td>'+

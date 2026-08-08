@@ -303,7 +303,7 @@ function renderFL() {
     if (fSt && t.status !== fSt) return false;
     return true;
   });
-  entries.sort(function(a,b) { return (b[1].startTime || '').localeCompare(a[1].startTime || ''); });
+  entries.sort(function(a,b) { return tripActivityMs(b[1]) - tripActivityMs(a[1]); });
   document.getElementById('fl-count').textContent = entries.length + ' flagged trip(s)';
   if (!entries.length) { document.getElementById('fl-tb').innerHTML = '<tr><td colspan="10" style="text-align:center;padding:40px;color:#9e9e9e">No flagged trips \u2014 all clear!</td></tr>'; return; }
   var cnames = {}; Object.entries(flCouncils).forEach(function(kv) { cnames[kv[0]] = (kv[1].name) || kv[0]; });

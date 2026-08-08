@@ -26,7 +26,7 @@ function hoistPaysOf(t) {
 }
 function hoistUsesOf(t) {
   if (Array.isArray(t?.tmHoists) && t.tmHoists.length) return t.tmHoists.length;
-  const counted = parseInt(String(t?.hoistCount ?? t?.hoistUsed ?? ''), 10);
+  const counted = parseInt(String(t?.tmHoistCount ?? t?.hoistCount ?? t?.hoistUsed ?? ''), 10);
   if (Number.isFinite(counted) && counted > 0) return counted;
   return hoistPaysOf(t) > 0 ? 1 : 0;
 }
@@ -254,6 +254,12 @@ test('aggregateHoistByDay buckets two trips on different days', () => {
   assert.equal(rows[1].hoistPays, 5);
   const totalUses = rows.reduce((s, r) => s + r.uses, 0);
   assert.equal(totalUses, 2);
+});
+
+test('hoistUsesOf counts tmHoistCount when tmHoists absent', () => {
+  assert.equal(hoistUsesOf({ tmHoistCount: 2, tmSubsidyHoist: 20 }), 2);
+  assert.equal(hoistUsesOf({ tmHoists: [{}, {}], tmHoistCount: 9 }), 2);
+  assert.equal(hoistUsesOf({ fare: 10 }), 0);
 });
 
 test('aggregateTripUsage returns all cards (not capped at 8) with hoist', () => {

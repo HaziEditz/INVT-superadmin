@@ -180,9 +180,9 @@ firebase.initializeApp(config);
     <table class="tm-tbl">
       <thead><tr>
         <th>Job ID</th><th>Driver</th><th>Vehicle</th><th>Card #</th><th>Passenger</th>
-        <th>Date</th><th>Pickup</th><th>Dropoff</th><th>Dist</th><th>Fare</th><th>TM Sub.</th><th>Hoist</th><th>Pax Pays</th><th>Hoist Used</th><th>Status</th>
+        <th>Date</th><th>Pickup</th><th>Dropoff</th><th>Dist</th><th>Fare</th><th>TM Sub.</th><th>Hoist</th><th>Uses</th><th>Pax Pays</th><th>Hoist Used</th><th>Status</th>
       </tr></thead>
-      <tbody id="rp-detail-tb"><tr><td colspan="15" style="text-align:center;padding:20px;color:#9e9e9e">Select filters above to see trip detail.</td></tr></tbody>
+      <tbody id="rp-detail-tb"><tr><td colspan="16" style="text-align:center;padding:20px;color:#9e9e9e">Select filters above to see trip detail.</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -321,14 +321,15 @@ function renderRP() {
         '<td>$' + a.paxTotal.toFixed(2) + '</td>' +
         '<td style="font-size:11px;color:#9e9e9e">' + stBreak + '</td></tr>';
     }).join('');
-  var detailRows = filtered.sort(function(a,b) { return (b[1].startTime || '').localeCompare(a[1].startTime || ''); });
+  var detailRows = filtered.sort(function(a,b) { return tripActivityMs(b[1]) - tripActivityMs(a[1]); });
   document.getElementById('rp-detail-count').textContent = detailRows.length + ' trips';
   document.getElementById('rp-detail-tb').innerHTML = !detailRows.length
-    ? '<tr><td colspan="15" style="text-align:center;padding:20px;color:#9e9e9e">No trips.</td></tr>'
+    ? '<tr><td colspan="16" style="text-align:center;padding:20px;color:#9e9e9e">No trips.</td></tr>'
     : detailRows.map(function(kv) {
       var id = kv[0], t = kv[1];
       var dt = t.startTime ? (t.startTime.slice(0,10) + ' ' + t.startTime.slice(11,16)) : '\u2014';
       var stMap = { pending: '<span class="bx bx-gr">Pending</span>', flagged: '<span class="bx bx-r">Flagged</span>', company_approved: '<span class="bx bx-b">Co.Approved</span>', approved: '<span class="bx bx-g">Approved</span>', rejected: '<span class="bx bx-r">Rejected</span>' };
+      var uses = hoistUsesOf(t);
       return '<tr>' +
         '<td style="font-family:monospace;font-size:12px">' + id + '</td>' +
         '<td>' + (t.driverName || '\u2014') + '</td>' +
@@ -342,8 +343,9 @@ function renderRP() {
         '<td>$' + parseFloat(t.meterFare || 0).toFixed(2) + '</td>' +
         '<td style="color:#2E7D32;font-weight:600">$' + parseFloat(t.tmSubsidyFare || 0).toFixed(2) + '</td>' +
         '<td style="color:#1565C0">$' + parseFloat(t.tmSubsidyHoist || 0).toFixed(2) + '</td>' +
+        '<td>' + (uses > 0 ? uses : '\u2014') + '</td>' +
         '<td>$' + parseFloat(t.passengerPays || 0).toFixed(2) + '</td>' +
-        '<td>' + (t.hoistUsed ? 'Yes (' + t.hoistCount + ')' : 'No') + '</td>' +
+        '<td>' + (t.hoistUsed || uses > 0 ? 'Yes (' + uses + ')' : 'No') + '</td>' +
         '<td>' + (stMap[t.status] || t.status || '\u2014') + '</td></tr>';
     }).join('');
 }

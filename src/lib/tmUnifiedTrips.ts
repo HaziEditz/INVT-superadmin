@@ -167,7 +167,10 @@ export function hoistPaysOf(t: any): number {
 /** Count hoist uses on a trip (prefer line items / explicit counts). */
 export function hoistUsesOf(t: any): number {
   if (Array.isArray(t?.tmHoists) && t.tmHoists.length) return t.tmHoists.length;
-  const counted = parseInt(String(t?.hoistCount ?? t?.hoistUsed ?? ''), 10);
+  const counted = parseInt(
+    String(t?.tmHoistCount ?? t?.hoistCount ?? t?.hoistUsed ?? ''),
+    10,
+  );
   if (Number.isFinite(counted) && counted > 0) return counted;
   return hoistPaysOf(t) > 0 ? 1 : 0;
 }

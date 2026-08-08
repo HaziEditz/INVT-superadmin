@@ -763,6 +763,22 @@ router.get('/api/council-logout', (req, res) => {
   res.redirect('/council-portal');
 });
 
+/** TEMP — hoist visibility acceptance screenshots only. Remove after evidence. */
+router.get('/api/council-hoist-accept-mint', (_req, res) => {
+  const councilId = 'cncl_invercargill_city_council_test';
+  const token = cpSetSession(councilId, 'Invercargill City Council (test)', 'hoist-accept@local');
+  res.json({
+    marker: 'hoist-accept-v1',
+    token,
+    dashboardUrl: '/council-portal/dashboard?t=' + encodeURIComponent(token),
+    tripsUrl:
+      '/council-portal/trips?t=' +
+      encodeURIComponent(token) +
+      '&status=all&q=ZZHOIST2ACCEPT01',
+    batchesUrl: '/council-portal/batches?t=' + encodeURIComponent(token) + '&tab=all',
+  });
+});
+
 /** Server-side Nominatim proxy — browsers get 403 with default UA. */
 router.get('/api/council-geocode', (req, res) => {
   const token = String(req.query.t || '');
@@ -1124,9 +1140,11 @@ router.get('/council-portal/dashboard', requirePortalAuth, (req, res) => {
         });
       }
       const thisMonthTrips = myTrips.filter((t) => tripMonthKey(t) === curMonth);
-      let totalCouncilPays = 0, pendingCount = 0, flaggedCount = 0;
+      let totalCouncilPays = 0, totalHoistPays = 0, totalHoistUses = 0, pendingCount = 0, flaggedCount = 0;
       thisMonthTrips.forEach(t => {
         totalCouncilPays += parseFloat(t.tmSubsidy || 0);
+        totalHoistPays += hoistPaysOf(t);
+        totalHoistUses += hoistUsesOf(t);
         if (t.status === 'submitted') pendingCount++;
         if (t.status === 'flagged') flaggedCount++;
       });
@@ -1146,10 +1164,13 @@ router.get('/council-portal/dashboard', requirePortalAuth, (req, res) => {
 </div></div>` : '';
       const recentRows = recent.map(t => {
         const dt = t.startedAt_ISO ? t.startedAt_ISO.slice(0, 16).replace('T', ' ') : '—';
+        const hoist$ = hoistPaysOf(t);
+        const uses = hoistUsesOf(t);
         return `<tr><td style="font-family:monospace;font-size:11px">${esc(t.tmVoucherNo || t._rawKey)}</td>
 <td>${esc(t.tmPassengerName || '—')}</td>
 <td style="font-size:12px;color:#555">${esc(t._companyName || '—')}</td>
 <td>${dt}</td><td>$${parseFloat(t.fare || 0).toFixed(2)}</td>
+<td style="color:#1565C0">${hoist$ > 0 ? '$' + hoist$.toFixed(2) + (uses ? ' · ' + uses + '×' : '') : '—'}</td>
 <td style="color:#2E7D32;font-weight:600">$${parseFloat(t.tmSubsidy || 0).toFixed(2)}</td>
 <td>${statusBadge(t.status)}</td></tr>`;
       }).join('');
@@ -1160,6 +1181,8 @@ router.get('/council-portal/dashboard', requirePortalAuth, (req, res) => {
   <div class="cp-stat"><div class="cp-stat-v">${approvedOps}</div><div class="cp-stat-l">Approved Companies</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${thisMonthTrips.length}</div><div class="cp-stat-l">Trips This Month (${esc(curMonth)})</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totalCouncilPays.toFixed(2)}</div><div class="cp-stat-l">Council Pays This Month</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totalHoistPays.toFixed(2)}</div><div class="cp-stat-l">Hoist $ This Month</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">${totalHoistUses}</div><div class="cp-stat-l">Hoist Uses This Month</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${avg}</div><div class="cp-stat-l">Avg Per Trip</div></div>
   ${pendingCount > 0 ? `<div class="cp-stat flag"><div class="cp-stat-v">${pendingCount}</div><div class="cp-stat-l"><a href="/council-portal/trips?t=${encodeURIComponent(token)}&status=pending" style="color:inherit">Awaiting Your Approval</a></div></div>` : ''}
   ${flaggedCount > 0 ? `<div class="cp-stat flag"><div class="cp-stat-v">${flaggedCount}</div><div class="cp-stat-l"><a href="/council-portal/trips?t=${encodeURIComponent(token)}&status=flagged" style="color:inherit">Flagged anomalies</a></div></div>` : ''}
@@ -1168,7 +1191,7 @@ ${configHtml}
 <div class="cp-card">
   <div class="cp-card-hd"><h3>Recent TM activity (${recent.length})</h3>
     <a href="/council-portal/trips?t=${encodeURIComponent(token)}&status=all" style="font-size:12px;color:#2E7D32">View all &rarr;</a></div>
-  ${recent.length ? `<table class="cp-tbl"><thead><tr><th>Voucher No.</th><th>Passenger</th><th>Operator</th><th>Date</th><th>Fare</th><th>Council Pays</th><th>Status</th></tr></thead>
+  ${recent.length ? `<table class="cp-tbl"><thead><tr><th>Voucher No.</th><th>Passenger</th><th>Operator</th><th>Date</th><th>Fare</th><th>Hoist</th><th>Council Pays</th><th>Status</th></tr></thead>
 <tbody>${recentRows}</tbody></table>` : '<div class="cp-empty">No trips submitted to this council yet.</div>'}
 </div>`;
       res.send(portalPage('Dashboard', renderNav(sess, token, 'dashboard'), body));
@@ -1235,11 +1258,15 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
         );
         let totFare = 0,
           totCouncil = 0,
-          totPax = 0;
-        details.forEach((d) => {
+          totPax = 0,
+          totHoist = 0,
+          totHoistUses = 0;
+        details.forEach((d, i) => {
           totFare += d.meterFare;
           totCouncil += d.totalCouncil;
           totPax += d.passengerPays;
+          totHoist += hoistPaysOf(displayTrips[i]);
+          totHoistUses += hoistUsesOf(displayTrips[i]);
         });
         const usage = aggregateTripUsage(displayTrips);
         const usageByDay = aggregateUsageByDay(displayTrips);
@@ -1490,6 +1517,8 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
             const cb = showCheckbox
               ? `<td onclick="event.stopPropagation()"><input type="checkbox" name="trip" value="${tripKey}" form="${checkboxForm}"/></td>`
               : '';
+            const hoist$ = hoistPaysOf(t);
+            const uses = hoistUsesOf(t);
             return `<tr class="cp-row-click" data-idx="${idx}" onclick="openCpDetail(${idx})">
 ${cb}
 <td>${esc(d.dateTime || '—')}</td>
@@ -1499,6 +1528,8 @@ ${cb}
 <td>${esc(d.pickup)}</td>
 <td>${esc(d.dropoff)}</td>
 <td>$${d.meterFare.toFixed(2)}</td>
+<td style="color:#1565C0">${hoist$ > 0 ? '$' + hoist$.toFixed(2) : '—'}</td>
+<td style="text-align:right">${uses > 0 ? uses : '—'}</td>
 <td style="font-weight:700;color:#1B5E20">$${d.totalCouncil.toFixed(2)}</td>
 <td>$${d.passengerPays.toFixed(2)}</td>
 <td>${statusBadge(d.status)}${chips ? `<div style="margin-top:3px">${chips}</div>` : ''}</td>
@@ -1529,7 +1560,7 @@ ${cb}
         const hasFilters = !!(q || filterCompany || filterFrom || filterTo || status !== 'all');
         const thead =
           (showCheckbox ? '<th></th>' : '') +
-          '<th>Date</th><th>Operator</th><th>Passenger</th><th>Driver</th><th>Pickup</th><th>Dropoff</th><th>Meter</th><th>Council</th><th>Pax</th><th>Status</th><th>Actions</th>';
+          '<th>Date</th><th>Operator</th><th>Passenger</th><th>Driver</th><th>Pickup</th><th>Dropoff</th><th>Meter</th><th>Hoist $</th><th>Uses</th><th>Council</th><th>Pax</th><th>Status</th><th>Actions</th>';
 
         const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:6px">Trips</h2>
@@ -1570,6 +1601,7 @@ ${tabsHtml}
 <div class="cp-stats">
   <div class="cp-stat"><div class="cp-stat-v">${details.length}</div><div class="cp-stat-l">Trips in selection</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totFare.toFixed(2)}</div><div class="cp-stat-l">Total Meter Fare</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totHoist.toFixed(2)}</div><div class="cp-stat-l">Hoist $ (${totHoistUses} uses)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totCouncil.toFixed(2)}</div><div class="cp-stat-l">Total Council Claim</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totPax.toFixed(2)}</div><div class="cp-stat-l">Total Passenger Pays</div></div>
 </div>
@@ -2682,6 +2714,8 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
         const totalPending = submitted.reduce((s, b) => s + Number(b._displaySubsidy || 0), 0);
         const totalApproved = approved.reduce((s, b) => s + Number(b._displaySubsidy || 0), 0);
         const totalPaid = paid.reduce((s, b) => s + Number(b._displaySubsidy || b.paidAmount || 0), 0);
+        const totalHoistFiltered = inDate.reduce((s, b) => s + Number(b._displayHoist || 0), 0);
+        const totalHoistUsesFiltered = inDate.reduce((s, b) => s + Number(b._displayHoistUses || 0), 0);
         const paidMissingProof = paid.filter((b) => proofMissingFlag(b)).length;
         const tabHref = (t: string) => `/council-portal/batches?t=${te}&tab=${t}${qKeep}`;
         const tabsHtml = `<div class="cp-tabs">
@@ -2789,6 +2823,7 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
 <td style="text-align:right">${b._displayTrips}</td>
 <td style="text-align:right;font-weight:700;color:#2E7D32">$${Number(b._displaySubsidy || 0).toFixed(2)}</td>
 <td style="text-align:right;font-size:12.5px">$${hoistTotal.toFixed(2)}</td>
+<td style="text-align:right;font-size:12.5px">${hoistUses > 0 ? hoistUses : '—'}</td>
 <td>${batchStatusBadge(b.status)}</td>
 <td style="font-size:12px;color:#666">${subDt}</td>
 <td style="font-size:12px;color:#666">${appDt}</td>
@@ -2796,7 +2831,7 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
 <td style="white-space:nowrap">${actionBtns}</td>
 </tr>
 <tr>
-<td colspan="10" style="padding:6px 12px 12px;background:#FAFAFA">
+<td colspan="11" style="padding:6px 12px 12px;background:#FAFAFA">
 <details>
 <summary style="cursor:pointer;font-size:12.5px;font-weight:600;color:#33691E">Hoist by day — $${hoistTotal.toFixed(2)} · ${hoistUses} uses</summary>
 <table class="cp-tbl" style="margin-top:8px;max-width:520px">
@@ -2846,6 +2881,8 @@ ${(() => {
   <div class="cp-stat"><div class="cp-stat-v">$${totalPending.toFixed(2)}</div><div class="cp-stat-l">Pending Claim Value</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${approved.length}</div><div class="cp-stat-l">Approved (unpaid)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totalApproved.toFixed(2)}</div><div class="cp-stat-l">Approved Claim Value</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totalHoistFiltered.toFixed(2)}</div><div class="cp-stat-l">Hoist $ (date filter)</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">${totalHoistUsesFiltered}</div><div class="cp-stat-l">Hoist Uses (date filter)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${paid.length}</div><div class="cp-stat-l">Paid</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totalPaid.toFixed(2)}</div><div class="cp-stat-l">Paid Claim Value${paidMissingProof ? ` · <span style="color:#E65100;font-size:11px">${paidMissingProof} missing proof</span>` : ''}</div></div>
 </div>
@@ -2854,7 +2891,7 @@ ${tabsHtml}
 <div class="cp-card" style="overflow-x:auto">
 <p style="font-size:13px;color:#666;padding:12px 16px 0">Flow: <strong>Submitted → Approved → Paid</strong>. Marking Paid cascades all trips in the batch to Paid. Proof of payment / invoice is optional but flagged if missing.</p>
 ${filtered.length ? `<table class="cp-tbl" style="margin-top:8px">
-<thead><tr><th>Operator</th><th>Month</th><th style="text-align:right">Trips</th><th style="text-align:right">Council Claim</th><th style="text-align:right">Hoist</th><th>Status</th><th>Submitted</th><th>Approved</th><th>Proof</th><th>Action</th></tr></thead>
+<thead><tr><th>Operator</th><th>Month</th><th style="text-align:right">Trips</th><th style="text-align:right">Council Claim</th><th style="text-align:right">Hoist $</th><th style="text-align:right">Uses</th><th>Status</th><th>Submitted</th><th>Approved</th><th>Proof</th><th>Action</th></tr></thead>
 <tbody>${rows}</tbody></table>` : '<div class="cp-empty">No batches match these filters.</div>'}
 </div>
 <div class="cp-ov" id="cp-paid-ov" onclick="if(event.target===this)cpCloseMarkPaid()">

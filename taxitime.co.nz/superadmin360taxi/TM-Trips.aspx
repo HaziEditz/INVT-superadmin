@@ -192,9 +192,9 @@ firebase.initializeApp(config);
       <thead><tr>
         <th style="width:36px"></th>
         <th>Job ID</th><th>Driver</th><th>Vehicle</th><th>Voucher #</th><th>Passenger</th><th>Council</th>
-        <th>Date</th><th>Pickup</th><th>Dropoff</th><th>Fare</th><th>TM Sub.</th><th>Hoist</th><th>Pax Pays</th><th>Status</th><th>Actions</th>
+        <th>Date</th><th>Pickup</th><th>Dropoff</th><th>Fare</th><th>TM Sub.</th><th>Hoist</th><th>Uses</th><th>Pax Pays</th><th>Status</th><th>Actions</th>
       </tr></thead>
-      <tbody id="tt-tb"><tr><td colspan="16" style="text-align:center;padding:40px;color:#9e9e9e">Loading&#8230;</td></tr></tbody>
+      <tbody id="tt-tb"><tr><td colspan="17" style="text-align:center;padding:40px;color:#9e9e9e">Loading&#8230;</td></tr></tbody>
     </table>
   </div>
 </div></div>
@@ -470,11 +470,11 @@ function renderTT() {
     if (fQ) { var s = (kv[0] + ' ' + (t.driverName || '') + ' ' + (t.cardNumber || '') + ' ' + ((t.allCardNums||[]).join(' ')) + ' ' + (t.passengerName || '') + ' ' + (t.vehicleId || '')).toLowerCase(); if (!s.includes(fQ)) return false; }
     return true;
   });
-  entries.sort(function(a,b) { return (b[1].startTime || '').localeCompare(a[1].startTime || ''); });
+  entries.sort(function(a,b) { return tripActivityMs(b[1]) - tripActivityMs(a[1]); });
   document.getElementById('tt-count').textContent = entries.length + ' of ' + Object.keys(ttData).length + ' trip(s)';
   var checkAll = document.getElementById('tt-check-all');
   if (checkAll) checkAll.checked = false;
-  if (!entries.length) { document.getElementById('tt-tb').innerHTML = '<tr><td colspan="16" style="text-align:center;padding:40px;color:#9e9e9e">No trips found.</td></tr>'; return; }
+  if (!entries.length) { document.getElementById('tt-tb').innerHTML = '<tr><td colspan="17" style="text-align:center;padding:40px;color:#9e9e9e">No trips found.</td></tr>'; return; }
   var cnames = {}; Object.entries(ttCouncils).forEach(function(kv) { cnames[kv[0]] = (kv[1].name) || kv[0]; });
   document.getElementById('tt-tb').innerHTML = entries.map(function(kv) {
     var id = kv[0], t = kv[1], sid = "'" + String(id).replace(/\\/g,'\\\\').replace(/'/g,"\\'") + "'";
@@ -482,7 +482,8 @@ function renderTT() {
     var statusBadge = ttStatusBadge(t.status);
     var flagHtml = flags.length ? flags.map(function(f) { return '<span class="fc">' + f + '</span>'; }).join('') : '';
     var dt = t.startTime ? _tzFmtDT(t.startTime) : '\u2014';
-    var hoistAmt = parseFloat(t.hoistTotal || 0);
+    var hoistAmt = parseFloat(t.hoistTotal || t.tmSubsidyHoist || 0);
+    var uses = hoistUsesOf(t);
     var isArch = t.status === 'archived';
     var archBtn = isArch
       ? '<button class="tm-btn tm-btn-ok" onclick="restoreTT(' + sid + ')" title="Restore" style="margin-right:4px">Restore</button>'
@@ -501,6 +502,7 @@ function renderTT() {
       '<td style="font-weight:600">$' + parseFloat(t.meterFare || 0).toFixed(2) + '</td>' +
       '<td style="color:#2E7D32;font-weight:600">$' + parseFloat(t.tmSubsidyFare || 0).toFixed(2) + '</td>' +
       '<td>' + (hoistAmt > 0 ? '<span style="color:#1565C0;font-weight:600">$' + hoistAmt.toFixed(2) + '</span>' : '\u2014') + '</td>' +
+      '<td>' + (uses > 0 ? uses : '\u2014') + '</td>' +
       '<td>' +
         '<strong>$' + parseFloat(t.passengerPays || 0).toFixed(2) + '</strong>' +
         (t.payMethod ? '<br><span class="bx" style="font-size:10px;margin-top:2px;background:#E3F2FD;color:#1565C0">' + t.payMethod + '</span>' : '') +

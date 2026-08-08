@@ -363,3 +363,37 @@ test('bulk approve/archive/restore respect active Trips filters', () => {
   assert.match(councilSrc, /name="company" value="\$\{esc\(filterCompany\)\}"/);
   assert.match(councilSrc, /matching the current filters/);
 });
+
+test('hoistUsesOf prefers tmHoists length then tmHoistCount', () => {
+  assert.match(unifiedSrc, /tmHoistCount \?\? t\?\.hoistCount \?\? t\?\.hoistUsed/);
+
+  function hoistPaysOf(t) {
+    return parseFloat(String(t.tmSubsidyHoist ?? t.hoistTotal ?? t.hoistCost ?? 0)) || 0;
+  }
+  function hoistUsesOf(t) {
+    if (Array.isArray(t?.tmHoists) && t.tmHoists.length) return t.tmHoists.length;
+    const counted = parseInt(String(t?.tmHoistCount ?? t?.hoistCount ?? t?.hoistUsed ?? ''), 10);
+    if (Number.isFinite(counted) && counted > 0) return counted;
+    return hoistPaysOf(t) > 0 ? 1 : 0;
+  }
+
+  assert.equal(
+    hoistUsesOf({
+      tmHoists: [{ cardNumber: 'A' }, { cardNumber: 'B' }],
+      tmHoistCount: 9,
+      tmSubsidyHoist: 20,
+    }),
+    2,
+  );
+  assert.equal(hoistUsesOf({ tmHoistCount: 2, tmSubsidyHoist: 20 }), 2);
+  assert.equal(hoistUsesOf({ hoistCount: 3, tmSubsidyHoist: 30 }), 3);
+  assert.equal(hoistUsesOf({ tmSubsidyHoist: 10 }), 1);
+  assert.equal(hoistUsesOf({ fare: 12 }), 0);
+});
+
+test('council Trips/Dashboard/Batches expose hoist uses', () => {
+  assert.match(councilSrc, /hoistUsesOf/);
+  assert.match(councilSrc, /Hoist Uses This Month|Hoist \$ This Month/);
+  assert.match(councilSrc, /<th>Hoist \$<\/th><th>Uses<\/th>/);
+  assert.match(councilSrc, /_displayHoistUses/);
+});
