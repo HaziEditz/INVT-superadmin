@@ -249,6 +249,8 @@ function renderNav(session: any, token: string, activePage: string): string {
 function portalPage(title: string, nav: string, body: string): string {
   return `<!DOCTYPE html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate"/>
+<meta http-equiv="Pragma" content="no-cache"/>
 <title>${esc(title)} — Council Portal</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -625,6 +627,9 @@ function requirePortalAuth(req: Request, res: Response, next: NextFunction): voi
   if (!session) { res.redirect('/council-portal?err=session'); return; }
   (req as any).cpSession = session;
   (req as any).cpToken = token;
+  // Portal is SSR one-shot — never cache HTML so status/claim changes show on reload.
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
   next();
 }
 
@@ -1494,7 +1499,11 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
         const rows = displayTrips
           .map((t, idx) => {
             const d = details[idx];
-            const chips = flagReasonChips(t.flagReasons, t.anomalyDetail);
+            const st = String(d.status || t.status || '').toLowerCase();
+            const chips =
+              st === 'flagged' || st === 'revision_needed'
+                ? flagReasonChips(t.flagReasons, t.anomalyDetail)
+                : '';
             const tripKey = esc(String(t._cid) + '|' + String(t._rawKey));
             const cb = showCheckbox
               ? `<td onclick="event.stopPropagation()"><input type="checkbox" name="trip" value="${tripKey}" form="${checkboxForm}"/></td>`
@@ -1522,7 +1531,11 @@ ${cb}
 
         const bodyHtmlByIdx = details.map((d, idx) => {
           const src = displayTrips[idx] || {};
-          const chips = flagReasonChips(src.flagReasons, src.anomalyDetail);
+          const st = String(d.status || src.status || '').toLowerCase();
+          const chips =
+            st === 'flagged' || st === 'revision_needed'
+              ? flagReasonChips(src.flagReasons, src.anomalyDetail)
+              : '';
           const chipBlock = chips
             ? `<div style="margin:10px 0 0;padding:8px 10px;border-radius:6px;background:#FFEBEE;font-size:12px"><strong style="color:#C62828">Anomaly flags</strong><div style="margin-top:4px">${chips}</div>${src.anomalyDetail ? `<div style="margin-top:4px;color:#888">${esc(String(src.anomalyDetail))}</div>` : ''}</div>`
             : '';
@@ -1579,6 +1592,7 @@ ${tabsHtml}
     ${hasFilters ? `<a href="/council-portal/trips?t=${te}&status=all" class="cp-btn" style="background:#eee;color:#333">Clear all</a>` : ''}
   </form>
   <a href="/council-portal/export?t=${te}${exportQs}" class="cp-btn cp-btn-g" style="margin-left:auto">&#11015; Download CSV</a>
+  <a href="/council-portal/trips?t=${te}${exportQs}" class="cp-btn" style="background:#eee;color:#333" title="Reload trips from live data">↻ Refresh</a>
 </div>
 <div class="cp-stats">
   <div class="cp-stat"><div class="cp-stat-v">${details.length}</div><div class="cp-stat-l">Trips in selection</div></div>
