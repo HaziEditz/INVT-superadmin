@@ -87,6 +87,8 @@ test('council Reports has three-action approve + edit + map', () => {
   assert.match(councilSrc, /leaflet/i);
   assert.match(councilSrc, /buildEditPanel/);
   assert.match(councilSrc, /startedAtRaw/);
+  assert.match(councilSrc, /initCpTripMap/);
+  assert.match(councilSrc, /nominatim/i);
 });
 
 test('Reports detail script does not nest single-quoted alert inside single-quoted h+=', () => {

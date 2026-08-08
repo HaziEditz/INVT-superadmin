@@ -131,7 +131,7 @@ test('council Reports has company selector, date range, detail modal, full CSV',
   assert.match(councilSrc, /All Companies/);
   assert.match(councilSrc, /name="from"/);
   assert.match(councilSrc, /name="to"/);
-  assert.match(councilSrc, /openRptDetail/);
+  assert.match(councilSrc, /openCpDetail/);
   assert.match(councilSrc, /tripDetailModalHtml/);
   assert.match(councilSrc, /TM_TRIP_CSV_HEADERS/);
   assert.match(councilSrc, /buildTmTripDetail/);

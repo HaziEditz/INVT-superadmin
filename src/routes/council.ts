@@ -33,6 +33,15 @@ import {
   normalizeTripEvents,
   formatEventLabel,
 } from '../lib/tmTripEvents';
+import {
+  PROOF_MISSING_LABEL,
+  buildPaidBatchPatch,
+  buildTripPaidPatch,
+  hasPaymentProof,
+  proofMissingFlag,
+  resolveBatchTripKeys,
+} from '../lib/tmBatchPaid';
+import { storeBatchProof, MAX_PROOF_BYTES } from '../lib/tmBatchStorage';
 
 const router = Router();
 
@@ -95,7 +104,9 @@ a{color:inherit;text-decoration:none}
 .cp-modal-bd{padding:18px}
 .cp-modal-ft{padding:12px 18px;border-top:1px solid #eee;display:flex;justify-content:flex-end;gap:8px}
 .cp-input{padding:7px 10px;border:1px solid #ddd;border-radius:4px;font-size:13px}
-#cp-trip-map{height:220px;border-radius:6px;margin-top:12px;z-index:1}
+#cp-trip-map-wrap{margin-top:12px}
+#cp-trip-map{height:220px;border-radius:6px;z-index:1;background:#E8F5E9}
+#cp-trip-map-status{font-size:12px;color:#666;margin:0 0 6px;min-height:16px}
 .cp-bdg-mismatch{background:#FFEBEE;color:#C62828;display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700}
 .cp-edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;margin-top:10px}
 .cp-edit-grid label{display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:2px}
@@ -107,6 +118,12 @@ a{color:inherit;text-decoration:none}
 .cp-timeline-item{border-left:3px solid #A5D6A7;padding:4px 0 10px 12px;margin-left:4px}
 .cp-timeline-item:last-child{padding-bottom:2px}
 .cp-timeline-when{font-size:11px;color:#888}
+.cp-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.cp-tab{display:inline-block;padding:7px 14px;border-radius:16px;font-size:12.5px;font-weight:600;background:#eee;color:#555;border:1px solid #ddd}
+.cp-tab.on{background:#1B5E20;color:#fff;border-color:#1B5E20}
+.cp-tab .cp-tab-n{opacity:.85;font-weight:700;margin-left:4px}
+.cp-proof-miss{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;background:#FFF8E1;color:#E65100;border:1px solid #FFE082}
+.cp-proof-ok{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:#E8F5E9;color:#2E7D32;border:1px solid #A5D6A7}
 .cp-timeline-label{font-size:12.5px;color:#333;margin-top:1px}
 `;
 
@@ -1062,6 +1079,244 @@ function cpBulkRestoreAll(n){
 }
 </script>`;
 
+/** Shared Leaflet map + geocode (coords or address fallback, same idea as Closed Jobs). */
+const CP_TRIP_MAP_SCRIPT = `
+<script>
+var _cpMap = null;
+var _cpGeocache = {};
+var _cpGeocodeQueue = [];
+var _cpGeocoding = false;
+function cpMapStatus(msg){
+  var el = document.getElementById('cp-trip-map-status');
+  if(!el) return;
+  el.textContent = msg || '';
+  el.style.display = msg ? 'block' : 'none';
+}
+function cpDestroyTripMap(){
+  if(_cpMap){ try{_cpMap.remove();}catch(e){} _cpMap=null; }
+}
+function cpGeocodeAddr(addr){
+  addr = String(addr||'').trim();
+  if(!addr || addr==='—') return Promise.resolve(null);
+  if(_cpGeocache[addr]) return Promise.resolve(_cpGeocache[addr]);
+  return new Promise(function(resolve){
+    _cpGeocodeQueue.push({addr:addr, resolve:resolve});
+    cpProcessGeocodeQueue();
+  });
+}
+function cpProcessGeocodeQueue(){
+  if(_cpGeocoding || !_cpGeocodeQueue.length) return;
+  _cpGeocoding = true;
+  var item = _cpGeocodeQueue.shift();
+  if(_cpGeocache[item.addr]){
+    item.resolve(_cpGeocache[item.addr]);
+    _cpGeocoding = false;
+    cpProcessGeocodeQueue();
+    return;
+  }
+  fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=nz&q='+encodeURIComponent(item.addr),{
+    headers:{'Accept-Language':'en','User-Agent':'BookaWaka-CouncilPortal/1.0'}
+  }).then(function(r){ return r.json(); }).then(function(arr){
+    var ll = null;
+    if(arr && arr[0] && arr[0].lat && arr[0].lon){
+      ll = [Number(arr[0].lat), Number(arr[0].lon)];
+      _cpGeocache[item.addr] = ll;
+    }
+    item.resolve(ll);
+  }).catch(function(){ item.resolve(null); }).then(function(){
+    _cpGeocoding = false;
+    setTimeout(cpProcessGeocodeQueue, 1100);
+  });
+}
+function cpDrawTripMap(puLL, duLL){
+  var el = document.getElementById('cp-trip-map');
+  if(!el || typeof L==='undefined') return;
+  cpDestroyTripMap();
+  if(!puLL && !duLL){
+    cpMapStatus('Map unavailable — no coordinates or geocodable addresses.');
+    return;
+  }
+  var center = puLL || duLL;
+  _cpMap = L.map(el).setView(center, 13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '&copy; OpenStreetMap'
+  }).addTo(_cpMap);
+  var bounds = [];
+  if(puLL){
+    L.marker(puLL).addTo(_cpMap).bindPopup('Pickup');
+    bounds.push(puLL);
+  }
+  if(duLL){
+    L.marker(duLL).addTo(_cpMap).bindPopup('Dropoff');
+    bounds.push(duLL);
+  }
+  if(puLL && duLL){
+    L.polyline([puLL, duLL], {color:'#1B5E20', weight:3}).addTo(_cpMap);
+  }
+  if(bounds.length > 1) _cpMap.fitBounds(bounds, {padding:[24,24]});
+  else if(bounds.length === 1) _cpMap.setView(bounds[0], 15);
+  setTimeout(function(){ if(_cpMap) _cpMap.invalidateSize(); }, 120);
+}
+function initCpTripMap(d){
+  cpDestroyTripMap();
+  cpMapStatus('');
+  var el = document.getElementById('cp-trip-map');
+  if(!el || typeof L==='undefined') return;
+  var plat = Number(d.pickupLat), plng = Number(d.pickupLng);
+  var dlat = Number(d.dropLat), dlng = Number(d.dropLng);
+  var hasPu = Number.isFinite(plat) && Number.isFinite(plng) && plat !== 0 && plng !== 0;
+  var hasDu = Number.isFinite(dlat) && Number.isFinite(dlng) && dlat !== 0 && dlng !== 0;
+  if(hasPu || hasDu){
+    cpDrawTripMap(hasPu ? [plat, plng] : null, hasDu ? [dlat, dlng] : null);
+    return;
+  }
+  var pickup = String(d.pickup || '').trim();
+  var dropoff = String(d.dropoff || '').trim();
+  if((!pickup || pickup==='—') && (!dropoff || dropoff==='—')){
+    cpMapStatus('Map unavailable — no pickup/dropoff addresses.');
+    return;
+  }
+  cpMapStatus('Locating addresses on map…');
+  Promise.all([cpGeocodeAddr(pickup), cpGeocodeAddr(dropoff)]).then(function(r){
+    if(!r[0] && !r[1]){
+      cpMapStatus('Address not found on map.');
+      return;
+    }
+    cpMapStatus('');
+    cpDrawTripMap(r[0], r[1]);
+  });
+}
+</script>`;
+
+function cpTripDetailOverlayHtml(): string {
+  return `<div class="cp-ov" id="cp-detail-ov" onclick="if(event.target===this)closeCpDetail()">
+  <div class="cp-modal" onclick="event.stopPropagation()">
+    <div class="cp-modal-hd"><h3 id="cp-detail-title">Trip detail</h3>
+      <button type="button" onclick="closeCpDetail()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:20px;line-height:1">&#x2715;</button></div>
+    <div class="cp-modal-bd" id="cp-detail-body"></div>
+    <div class="cp-modal-ft" id="cp-detail-ft" style="flex-wrap:wrap;justify-content:space-between;align-items:flex-start">
+      <div id="cp-detail-actions" style="flex:1;display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start"></div>
+      <button type="button" class="cp-btn" style="background:#eee;color:#333" onclick="closeCpDetail()">Close</button>
+    </div>
+  </div>
+</div>`;
+}
+
+/** Client detail open/close + action/edit panels. Expects _cpTrips, _cpBodies, _cpToken, _cpReturnTo. */
+function cpTripDetailBehaviorScript(includeEditPanel: boolean): string {
+  const editFn = includeEditPanel
+    ? `function buildEditPanel(d){
+  if(d.status==='archived') return '';
+  var html = '<details style="margin-top:14px;border:1px solid #FFE082;border-radius:6px;padding:10px 12px;background:#FFFDE7" '+(d.status==='revision_needed'?'open':'')+'>';
+  html += '<summary style="cursor:pointer;font-weight:700;color:#E65100">Edit all fields</summary>';
+  html += '<form method="POST" action="/api/council-trip-edit" style="margin-top:10px">';
+  html += '<input type="hidden" name="_token" value="'+_escAttr(_cpToken)+'"/>';
+  html += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
+  html += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
+  html += '<input type="hidden" name="returnTo" value="'+_escAttr(_cpReturnTo)+'"/>';
+  html += '<div class="cp-edit-grid">';
+  html += _fld('tmCardName','Passenger / cardholder',d.passengerName);
+  html += _fld('tmVoucherNo','Voucher / card no',d.voucherNo);
+  html += _fld('pickupAddress','Pickup',d.pickup,true);
+  html += _fld('dropAddress','Dropoff',d.dropoff,true);
+  html += _fld('fare','Meter fare',d.meterFare);
+  html += _fld('waitingCost','Waiting charge',d.waitingCharge);
+  html += _fld('tmSubsidyFare','Meter subsidy',d.meterSubsidy);
+  html += _fld('tmSubsidyHoist','Hoist (council)',d.hoistCouncil);
+  html += _fld('tmSubsidy','Total council',d.totalCouncil);
+  html += _fld('tmPassengerPays','Passenger pays',d.passengerPays);
+  html += _fld('startedAt_ISO','Start (ISO or epoch ms)',d.startedAtRaw||'');
+  html += _fld('completedAt_ISO','End (ISO or epoch ms)',d.completedAtRaw||'');
+  html += _fld('paymentMethod','Payment method',d.paymentMethod);
+  html += _fld('distanceKm','Distance km',d.distanceKm);
+  html += _fld('durationLabel','Duration',d.duration);
+  html += _fld('tmTripCategory','Trip category',d.tripCategory);
+  html += _fld('driverName','Driver',d.driverName);
+  html += _fld('vehicleId','Vehicle / cab',d.vehicleId);
+  html += '</div>';
+  html += '<label style="display:flex;align-items:center;gap:6px;margin:12px 0 8px;font-size:12.5px"><input type="checkbox" name="resubmit" value="1"/> Mark status as submitted after save</label>';
+  html += '<button type="submit" class="cp-btn cp-btn-g">Save trip fields</button>';
+  html += '</form></details>';
+  return html;
+}`
+    : `function buildEditPanel(d){ return ''; }`;
+
+  return `<script>
+var _ACTIONABLE = {submitted:1,company_approved:1,flagged:1,pending:1};
+function _escAttr(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+function _fld(name,label,val,full){
+  return '<div'+(full?' style="grid-column:1/-1"':'')+'><label>'+label+'</label><input class="cp-input" name="'+name+'" value="'+_escAttr(val)+'"/></div>';
+}
+${editFn}
+function buildActionForms(d){
+  var h = '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start;width:100%">';
+  if(d.status==='archived'){
+    h += '<form method="POST" action="/api/council-restore" onsubmit="return confirm(&#39;Restore this trip to its previous status?&#39;)">';
+    h += '<input type="hidden" name="_token" value="'+_escAttr(_cpToken)+'"/>';
+    h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
+    h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
+    h += '<input type="hidden" name="returnTo" value="'+_escAttr(_cpReturnTo)+'"/>';
+    h += '<button type="submit" class="cp-btn cp-btn-g">&#8634; Restore</button></form>';
+    h += '</div>';
+    return h;
+  }
+  if(_ACTIONABLE[d.status]){
+    h += '<form method="POST" action="/api/council-approve">';
+    h += '<input type="hidden" name="_token" value="'+_escAttr(_cpToken)+'"/>';
+    h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
+    h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
+    h += '<input type="hidden" name="action" value="approve"/>';
+    h += '<input type="hidden" name="returnTo" value="'+_escAttr(_cpReturnTo)+'"/>';
+    h += '<button type="submit" class="cp-btn cp-btn-g">&#10003; Approve</button></form>';
+    h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFCDD2;border-radius:6px;background:#FFEBEE" onsubmit="return !!this.note.value.trim()||(alert(&#39;Reject note required&#39;),false)">';
+    h += '<input type="hidden" name="_token" value="'+_escAttr(_cpToken)+'"/>';
+    h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
+    h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
+    h += '<input type="hidden" name="action" value="reject"/>';
+    h += '<input type="hidden" name="returnTo" value="'+_escAttr(_cpReturnTo)+'"/>';
+    h += '<select name="flagReason" class="cp-input" style="width:auto">';
+    h += '<option value="fare_mismatch">fare_mismatch</option>';
+    h += '<option value="waiting_charged">waiting_charged</option>';
+    h += '<option value="hoist_rate_mismatch">hoist_rate_mismatch</option>';
+    h += '<option value="other">other</option></select>';
+    h += '<input name="note" class="cp-input" placeholder="Reject note (required)" style="min-width:160px" required/>';
+    h += '<button type="submit" class="cp-btn cp-btn-r">&#10007; Reject / Red-flag</button></form>';
+    h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFE082;border-radius:6px;background:#FFF8E1" onsubmit="return !!this.note.value.trim()||(alert(&#39;Revision note required&#39;),false)">';
+    h += '<input type="hidden" name="_token" value="'+_escAttr(_cpToken)+'"/>';
+    h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
+    h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
+    h += '<input type="hidden" name="action" value="return"/>';
+    h += '<input type="hidden" name="returnTo" value="'+_escAttr(_cpReturnTo)+'"/>';
+    h += (d.status==='flagged' ? '<div style="flex-basis:100%;font-size:12px;color:#5d4037;margin-bottom:2px"><strong>Return unlocks company editing.</strong> Trip stays view-only for the company until you click Return — so council can review the original flagged data before anything is edited.</div>' : '');
+    h += '<input name="note" class="cp-input" placeholder="Revision note (required)" style="min-width:160px" required/>';
+    h += '<button type="submit" class="cp-btn" style="background:#E65100;color:#fff">&#8617; Return to company</button></form>';
+  }
+  h += '<form method="POST" action="/api/council-archive" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #E0E0E0;border-radius:6px;background:#FAFAFA" onsubmit="return confirm(&#39;Archive this trip? You can restore it later.&#39;)">';
+  h += '<input type="hidden" name="_token" value="'+_escAttr(_cpToken)+'"/>';
+  h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
+  h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
+  h += '<input type="hidden" name="returnTo" value="'+_escAttr(_cpReturnTo)+'"/>';
+  h += '<input name="note" class="cp-input" placeholder="Archive note (optional)" style="min-width:160px"/>';
+  h += '<button type="submit" class="cp-btn" style="background:#757575;color:#fff">&#128193; Archive</button></form>';
+  h += '</div>';
+  return h;
+}
+function openCpDetail(i){
+  var d = _cpTrips[i], html = _cpBodies[i];
+  if(!d || !html) return;
+  document.getElementById('cp-detail-body').innerHTML = html + buildEditPanel(d);
+  document.getElementById('cp-detail-title').textContent = 'Trip detail — ' + (d.id || '');
+  document.getElementById('cp-detail-actions').innerHTML = buildActionForms(d);
+  document.getElementById('cp-detail-ov').classList.add('open');
+  initCpTripMap(d);
+}
+function closeCpDetail(){
+  document.getElementById('cp-detail-ov').classList.remove('open');
+  cpDestroyTripMap();
+}
+</script>`;
+}
+
 // ── Hybrid search ──────────────────────────────────────────────────────────────
 router.get('/council-portal/search', requirePortalAuth, (req, res) => {
   const sess = (req as any).cpSession;
@@ -1175,13 +1430,20 @@ router.get('/council-portal/pending', requirePortalAuth, (req, res) => {
         companyOpts,
       );
       const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
-      const rows = pending.map((t) => {
-        const d = buildTmTripDetail(t);
+      const details = pending.map((t) => buildTmTripDetail(t));
+      const bodyHtmlByIdx = pending.map((t, idx) => {
+        const d = details[idx];
+        return tripDetailModalHtml(d) + tripHistoryHtml(t);
+      });
+      const tripsJson = JSON.stringify(details).replace(/</g, '\\u003c');
+      const bodiesJson = JSON.stringify(bodyHtmlByIdx).replace(/</g, '\\u003c');
+      const rows = pending.map((t, idx) => {
+        const d = details[idx];
         const dt = d.dateTime || '—';
         const submittedDt = t.submittedAt ? new Date(t.submittedAt).toLocaleString('en-NZ') : '—';
         const tripKey = esc(String(t._cid) + '|' + String(t._rawKey));
-        return `<tr>
-<td><input type="checkbox" name="trip" value="${tripKey}" form="cp-bulk-archive"/></td>
+        return `<tr class="cp-row-click" data-idx="${idx}" onclick="openCpDetail(${idx})">
+<td onclick="event.stopPropagation()"><input type="checkbox" name="trip" value="${tripKey}" form="cp-bulk-archive"/></td>
 <td style="font-family:monospace;font-size:11px">${esc(d.voucherNo)}</td>
 <td>${esc(d.passengerName)}</td>
 <td style="font-size:12px;color:#555">${esc(d.companyName)}</td>
@@ -1192,7 +1454,8 @@ router.get('/council-portal/pending', requirePortalAuth, (req, res) => {
 <td style="font-weight:700;color:#2E7D32">$${d.totalCouncil.toFixed(2)}</td>
 <td>$${d.passengerPays.toFixed(2)}</td>
 <td style="font-size:11px;color:#888">${submittedDt}</td>
-<td style="white-space:nowrap">
+<td style="white-space:nowrap" onclick="event.stopPropagation()">
+  <button type="button" class="cp-btn-sm" style="margin-right:4px" onclick="openCpDetail(${idx})">Details</button>
   <form method="POST" action="/api/council-approve" style="display:inline">
     <input type="hidden" name="_token" value="${esc(token)}"/>
     <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
@@ -1256,14 +1519,23 @@ router.get('/council-portal/pending', requirePortalAuth, (req, res) => {
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Pending Approval (${pending.length})</h2>
 ${noticeHtml}
 ${searchForm}
-<p style="font-size:13px;color:#666;margin-bottom:12px">Clean submitted trips (no anomaly flags). Approve, reject, return, or archive individually — or approve / archive all clean trips at once. Flagged trips appear under <a href="/council-portal/anomalies?t=${te}${qKeep}" style="color:#2E7D32;font-weight:600">Flagged</a>.</p>
+<p style="font-size:13px;color:#666;margin-bottom:12px">Clean submitted trips (no anomaly flags). Click a row or Details for full trip, map, and history. Approve, reject, return, or archive individually — or approve / archive all clean trips at once. Flagged trips appear under <a href="/council-portal/anomalies?t=${te}${qKeep}" style="color:#2E7D32;font-weight:600">Flagged</a>.</p>
 ${approveAllForm || archiveToolbar ? `<div style="margin-bottom:14px">${approveAllForm}${archiveToolbar}</div>` : ''}
 <div class="cp-card" style="overflow-x:auto">
 ${pending.length ? `<table class="cp-tbl">
 <thead><tr><th></th><th>Voucher No.</th><th>Passenger</th><th>Operator</th><th>Category</th><th>Date</th><th>Pickup</th><th>Fare</th><th>Council Pays</th><th>Pax Pays</th><th>Submitted</th><th>Action</th></tr></thead>
 <tbody>${rows}</tbody></table>` : '<div class="cp-empty">No clean trips pending your approval. All clear!</div>'}
 </div>
-${CP_TRIP_ACTION_SCRIPT}`;
+${cpTripDetailOverlayHtml()}
+${CP_TRIP_ACTION_SCRIPT}
+${CP_TRIP_MAP_SCRIPT}
+<script>
+var _cpTrips = ${tripsJson};
+var _cpBodies = ${bodiesJson};
+var _cpToken = ${JSON.stringify(token)};
+var _cpReturnTo = 'pending';
+</script>
+${cpTripDetailBehaviorScript(true)}`;
       res.send(portalPage('Pending Approval', renderNav(sess, token, 'pending'), body));
     });
   });
@@ -1300,13 +1572,24 @@ router.get('/council-portal/anomalies', requirePortalAuth, (req, res) => {
         companyOpts,
       );
       const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
-      const rows = rowsList.map((t) => {
-        const d = buildTmTripDetail(t);
+      const details = rowsList.map((t) => buildTmTripDetail(t));
+      const bodyHtmlByIdx = rowsList.map((t, idx) => {
+        const d = details[idx];
+        const chips = flagReasonChips(t.flagReasons, t.anomalyDetail);
+        const chipBlock = chips
+          ? `<div style="margin:10px 0 0;padding:8px 10px;border-radius:6px;background:#FFEBEE;font-size:12px"><strong style="color:#C62828">Anomaly flags</strong><div style="margin-top:4px">${chips}</div>${t.anomalyDetail ? `<div style="margin-top:4px;color:#888">${esc(String(t.anomalyDetail))}</div>` : ''}</div>`
+          : '';
+        return tripDetailModalHtml(d) + chipBlock + tripHistoryHtml(t);
+      });
+      const tripsJson = JSON.stringify(details).replace(/</g, '\\u003c');
+      const bodiesJson = JSON.stringify(bodyHtmlByIdx).replace(/</g, '\\u003c');
+      const rows = rowsList.map((t, idx) => {
+        const d = details[idx];
         const dt = d.dateTime || '—';
         const chips = flagReasonChips(t.flagReasons, t.anomalyDetail);
         const tripKey = esc(String(t._cid) + '|' + String(t._rawKey));
-        return `<tr>
-<td><input type="checkbox" name="trip" value="${tripKey}" form="cp-bulk-return"/></td>
+        return `<tr class="cp-row-click" data-idx="${idx}" onclick="openCpDetail(${idx})">
+<td onclick="event.stopPropagation()"><input type="checkbox" name="trip" value="${tripKey}" form="cp-bulk-return"/></td>
 <td style="font-family:monospace;font-size:11px">${esc(d.voucherNo)}</td>
 <td>${esc(d.passengerName)}</td>
 <td style="font-size:12px;color:#555">${esc(d.companyName)}</td>
@@ -1314,7 +1597,8 @@ router.get('/council-portal/anomalies', requirePortalAuth, (req, res) => {
 <td>$${d.meterFare.toFixed(2)}</td>
 <td style="font-weight:700;color:#2E7D32">$${d.totalCouncil.toFixed(2)}</td>
 <td style="max-width:220px">${chips || '<span class="cp-bdg-r">flagged</span>'}${t.anomalyDetail ? `<div style="font-size:11px;color:#888;margin-top:3px">${esc(String(t.anomalyDetail))}</div>` : ''}</td>
-<td style="white-space:nowrap">
+<td style="white-space:nowrap" onclick="event.stopPropagation()">
+  <button type="button" class="cp-btn-sm" style="margin-right:4px" onclick="openCpDetail(${idx})">Details</button>
   <form method="POST" action="/api/council-approve" style="display:inline" onsubmit="return cpReturnTrip(this)">
     <input type="hidden" name="_token" value="${esc(token)}"/>
     <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
@@ -1347,7 +1631,7 @@ router.get('/council-portal/anomalies', requirePortalAuth, (req, res) => {
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Flagged / Anomalies (${rowsList.length})</h2>
 ${noticeHtml}
 ${searchForm}
-<p style="font-size:13px;color:#666;margin-bottom:8px">Trips automatically flagged for fare mismatch or card reuse. Return selected trips to the company with a note, archive, or reject individually. Clean trips are under <a href="/council-portal/pending?t=${te}${qKeep}" style="color:#2E7D32;font-weight:600">Pending Approval</a>.</p>
+<p style="font-size:13px;color:#666;margin-bottom:8px">Trips automatically flagged for fare mismatch or card reuse. Click a row or Details for full trip, map, and history. Return selected trips to the company with a note, archive, or reject individually. Clean trips are under <a href="/council-portal/pending?t=${te}${qKeep}" style="color:#2E7D32;font-weight:600">Pending Approval</a>.</p>
 <p style="font-size:12.5px;color:#5d4037;margin-bottom:12px;padding:10px 12px;background:#FFF8E1;border-left:4px solid #E65100;border-radius:4px"><strong>Return unlocks company editing.</strong> The trip stays view-only for the company until you click Return — this ensures council reviews the original flagged data before anything can be edited.</p>
 ${rowsList.length ? `<form id="cp-bulk-return" method="POST" action="/api/council-bulk-return" style="margin-bottom:12px" onsubmit="return cpBulkReturn(this)">
   <input type="hidden" name="_token" value="${esc(token)}"/>
@@ -1374,8 +1658,14 @@ ${rowsList.length ? `<table class="cp-tbl">
 <thead><tr><th></th><th>Voucher No.</th><th>Passenger</th><th>Operator</th><th>Date</th><th>Fare</th><th>Council Pays</th><th>Reasons</th><th>Action</th></tr></thead>
 <tbody>${rows}</tbody></table>` : '<div class="cp-empty">No flagged trips. All clear!</div>'}
 </div>
+${cpTripDetailOverlayHtml()}
 ${CP_TRIP_ACTION_SCRIPT}
+${CP_TRIP_MAP_SCRIPT}
 <script>
+var _cpTrips = ${tripsJson};
+var _cpBodies = ${bodiesJson};
+var _cpToken = ${JSON.stringify(token)};
+var _cpReturnTo = 'anomalies';
 function cpBulkReturn(form){
   var boxes = document.querySelectorAll('input[name="trip"]:checked');
   if(!boxes.length){ alert('Select at least one trip.'); return false; }
@@ -1392,7 +1682,8 @@ function cpBulkReturn(form){
   });
   return confirm('Return '+boxes.length+' flagged trip(s) to company?');
 }
-</script>`;
+</script>
+${cpTripDetailBehaviorScript(true)}`;
       res.send(portalPage('Flagged', renderNav(sess, token, 'anomalies'), body));
     });
   });
@@ -1908,15 +2199,6 @@ function filterTripsForReports(
   return rows;
 }
 
-function hasValidTripCoords(d: TmTripDetail): boolean {
-  return (
-    Number.isFinite(d.pickupLat) &&
-    Number.isFinite(d.pickupLng) &&
-    d.pickupLat !== 0 &&
-    d.pickupLng !== 0
-  );
-}
-
 /** Static trip detail body (map placeholder + fare/expected meter). Client adds Leaflet + actions. */
 function tripDetailModalHtml(d: TmTripDetail, stOrTrip?: any): string {
   const money = (n: number) => '$' + n.toFixed(2);
@@ -1924,7 +2206,6 @@ function tripDetailModalHtml(d: TmTripDetail, stOrTrip?: any): string {
     `<div><div style="font-size:11px;color:#888;font-weight:600;margin-bottom:2px">${l}</div><div style="font-size:13px;font-weight:500">${v}</div></div>`;
   const frow = (l: string, v: string, c = '#333') =>
     `<tr><td style="padding:3px 0;color:${c}">${l}</td><td style="text-align:right;color:${c}">${v}</td></tr>`;
-  const showMap = hasValidTripCoords(d);
   const expectedBlock =
     d.expectedMeter != null
       ? `<div style="margin:10px 0 0;padding:10px 12px;border-radius:6px;background:${d.fareMismatch ? '#FFEBEE' : '#E8F5E9'};font-size:13px">
@@ -1962,7 +2243,10 @@ function tripDetailModalHtml(d: TmTripDetail, stOrTrip?: any): string {
   ${row('Passengers (TM)', String(d.passengerCount))}
 </div>
 ${revisionBlock}
-${showMap ? '<div id="cp-trip-map"></div>' : ''}
+<div id="cp-trip-map-wrap">
+  <div id="cp-trip-map-status" style="display:none"></div>
+  <div id="cp-trip-map"></div>
+</div>
 ${expectedBlock}
 <div style="background:#F1F8E9;border-radius:6px;padding:14px;font-size:13px;margin-top:12px">
 <strong>Fare Breakdown</strong>
@@ -2084,7 +2368,7 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
   <input type="hidden" name="returnTo" value="reports"/>
   <button type="submit" class="cp-btn-sm" style="background:#757575">Archive</button>
 </form>`;
-              return `<tr class="cp-row-click" data-idx="${idx}" onclick="openRptDetail(${idx})">
+              return `<tr class="cp-row-click" data-idx="${idx}" onclick="openCpDetail(${idx})">
 <td>${esc(d.dateTime)}</td>
 <td>${esc(d.companyName)}</td>
 <td>${esc(d.passengerName)}</td>
@@ -2095,7 +2379,7 @@ router.get('/council-portal/reports', requirePortalAuth, (req, res) => {
 <td style="font-weight:700;color:#1B5E20">$${d.totalCouncil.toFixed(2)}</td>
 <td>$${d.passengerPays.toFixed(2)}</td>
 <td>${statusBadge(d.status)}${chips ? `<div style="margin-top:3px">${chips}</div>` : ''}</td>
-<td style="white-space:nowrap"><button type="button" class="cp-btn-sm" onclick="event.stopPropagation();openRptDetail(${idx})">Details</button> ${rowArchiveBtn}</td>
+<td style="white-space:nowrap"><button type="button" class="cp-btn-sm" onclick="event.stopPropagation();openCpDetail(${idx})">Details</button> ${rowArchiveBtn}</td>
 </tr>`;
             })
             .join('');
@@ -2150,150 +2434,15 @@ ${noticeHtml}
 <thead><tr><th>Date</th><th>Operator</th><th>Passenger</th><th>Voucher</th><th>Pickup</th><th>Dropoff</th><th>Meter</th><th>Council</th><th>Pax Pays</th><th>Status</th><th></th></tr></thead>
 <tbody>${summaryRows}</tbody></table>` : '<div class="cp-empty">No trips for this selection.</div>'}
 </div>
-<div class="cp-ov" id="rpt-ov" onclick="if(event.target===this)closeRptDetail()">
-  <div class="cp-modal" onclick="event.stopPropagation()">
-    <div class="cp-modal-hd"><h3 id="rpt-dtitle">Trip detail</h3>
-      <button type="button" onclick="closeRptDetail()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:20px;line-height:1">&#x2715;</button></div>
-    <div class="cp-modal-bd" id="rpt-detail-body"></div>
-    <div class="cp-modal-ft" id="rpt-detail-ft" style="flex-wrap:wrap;justify-content:space-between;align-items:flex-start">
-      <div id="rpt-actions" style="flex:1;display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start"></div>
-      <button type="button" class="cp-btn" style="background:#eee;color:#333" onclick="closeRptDetail()">Close</button>
-    </div>
-  </div>
-</div>
+${cpTripDetailOverlayHtml()}
+${CP_TRIP_MAP_SCRIPT}
 <script>
-var _rptTrips = ${tripsJson};
-var _rptBodies = ${bodiesJson};
-var _rptToken = ${JSON.stringify(token)};
-var _rptMap = null;
-var _ACTIONABLE = {submitted:1,company_approved:1,flagged:1,pending:1};
-function _escAttr(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
-function _fld(name,label,val,full){
-  return '<div'+(full?' style="grid-column:1/-1"':'')+'><label>'+label+'</label><input class="cp-input" name="'+name+'" value="'+_escAttr(val)+'"/></div>';
-}
-function buildEditPanel(d){
-  if(d.status==='archived') return '';
-  var html = '<details style="margin-top:14px;border:1px solid #FFE082;border-radius:6px;padding:10px 12px;background:#FFFDE7" '+(d.status==='revision_needed'?'open':'')+'>';
-  html += '<summary style="cursor:pointer;font-weight:700;color:#E65100">Edit all fields</summary>';
-  html += '<form method="POST" action="/api/council-trip-edit" style="margin-top:10px">';
-  html += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
-  html += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
-  html += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
-  html += '<input type="hidden" name="returnTo" value="reports"/>';
-  html += '<div class="cp-edit-grid">';
-  html += _fld('tmCardName','Passenger / cardholder',d.passengerName);
-  html += _fld('tmVoucherNo','Voucher / card no',d.voucherNo);
-  html += _fld('pickupAddress','Pickup',d.pickup,true);
-  html += _fld('dropAddress','Dropoff',d.dropoff,true);
-  html += _fld('fare','Meter fare',d.meterFare);
-  html += _fld('waitingCost','Waiting charge',d.waitingCharge);
-  html += _fld('tmSubsidyFare','Meter subsidy',d.meterSubsidy);
-  html += _fld('tmSubsidyHoist','Hoist (council)',d.hoistCouncil);
-  html += _fld('tmSubsidy','Total council',d.totalCouncil);
-  html += _fld('tmPassengerPays','Passenger pays',d.passengerPays);
-  html += _fld('startedAt_ISO','Start (ISO or epoch ms)',d.startedAtRaw||'');
-  html += _fld('completedAt_ISO','End (ISO or epoch ms)',d.completedAtRaw||'');
-  html += _fld('paymentMethod','Payment method',d.paymentMethod);
-  html += _fld('distanceKm','Distance km',d.distanceKm);
-  html += _fld('durationLabel','Duration',d.duration);
-  html += _fld('tmTripCategory','Trip category',d.tripCategory);
-  html += _fld('driverName','Driver',d.driverName);
-  html += _fld('vehicleId','Vehicle / cab',d.vehicleId);
-  html += '</div>';
-  html += '<label style="display:flex;align-items:center;gap:6px;margin:12px 0 8px;font-size:12.5px"><input type="checkbox" name="resubmit" value="1"/> Mark status as submitted after save</label>';
-  html += '<button type="submit" class="cp-btn cp-btn-g">Save trip fields</button>';
-  html += '</form></details>';
-  return html;
-}
-function buildActionForms(d){
-  var h = '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start;width:100%">';
-  if(d.status==='archived'){
-    h += '<form method="POST" action="/api/council-restore" onsubmit="return confirm(&#39;Restore this trip to its previous status?&#39;)">';
-    h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
-    h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
-    h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
-    h += '<input type="hidden" name="returnTo" value="reports"/>';
-    h += '<button type="submit" class="cp-btn cp-btn-g">&#8634; Restore</button></form>';
-    h += '</div>';
-    return h;
-  }
-  if(_ACTIONABLE[d.status]){
-    h += '<form method="POST" action="/api/council-approve">';
-    h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
-    h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
-    h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
-    h += '<input type="hidden" name="action" value="approve"/>';
-    h += '<input type="hidden" name="returnTo" value="reports"/>';
-    h += '<button type="submit" class="cp-btn cp-btn-g">&#10003; Approve</button></form>';
-    h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFCDD2;border-radius:6px;background:#FFEBEE" onsubmit="return !!this.note.value.trim()||(alert(&#39;Reject note required&#39;),false)">';
-    h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
-    h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
-    h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
-    h += '<input type="hidden" name="action" value="reject"/>';
-    h += '<input type="hidden" name="returnTo" value="reports"/>';
-    h += '<select name="flagReason" class="cp-input" style="width:auto">';
-    h += '<option value="fare_mismatch">fare_mismatch</option>';
-    h += '<option value="waiting_charged">waiting_charged</option>';
-    h += '<option value="hoist_rate_mismatch">hoist_rate_mismatch</option>';
-    h += '<option value="other">other</option></select>';
-    h += '<input name="note" class="cp-input" placeholder="Reject note (required)" style="min-width:160px" required/>';
-    h += '<button type="submit" class="cp-btn cp-btn-r">&#10007; Reject / Red-flag</button></form>';
-    h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFE082;border-radius:6px;background:#FFF8E1" onsubmit="return !!this.note.value.trim()||(alert(&#39;Revision note required&#39;),false)">';
-    h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
-    h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
-    h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
-    h += '<input type="hidden" name="action" value="return"/>';
-    h += '<input type="hidden" name="returnTo" value="reports"/>';
-    h += (d.status==='flagged' ? '<div style="flex-basis:100%;font-size:12px;color:#5d4037;margin-bottom:2px"><strong>Return unlocks company editing.</strong> Trip stays view-only for the company until you click Return — so council can review the original flagged data before anything is edited.</div>' : '');
-    h += '<input name="note" class="cp-input" placeholder="Revision note (required)" style="min-width:160px" required/>';
-    h += '<button type="submit" class="cp-btn" style="background:#E65100;color:#fff">&#8617; Return to company</button></form>';
-  }
-  h += '<form method="POST" action="/api/council-archive" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #E0E0E0;border-radius:6px;background:#FAFAFA" onsubmit="return confirm(&#39;Archive this trip? You can restore it later.&#39;)">';
-  h += '<input type="hidden" name="_token" value="'+_escAttr(_rptToken)+'"/>';
-  h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
-  h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
-  h += '<input type="hidden" name="returnTo" value="reports"/>';
-  h += '<input name="note" class="cp-input" placeholder="Archive note (optional)" style="min-width:160px"/>';
-  h += '<button type="submit" class="cp-btn" style="background:#757575;color:#fff">&#128193; Archive</button></form>';
-  h += '</div>';
-  return h;
-}
-function initRptMap(d){
-  if(_rptMap){ try{_rptMap.remove();}catch(e){} _rptMap=null; }
-  var el = document.getElementById('cp-trip-map');
-  if(!el || typeof L==='undefined') return;
-  var plat = Number(d.pickupLat), plng = Number(d.pickupLng);
-  var dlat = Number(d.dropLat), dlng = Number(d.dropLng);
-  if(!plat && !plng) return;
-  _rptMap = L.map(el).setView([plat, plng], 13);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '&copy; OpenStreetMap'
-  }).addTo(_rptMap);
-  var bounds = [];
-  var m1 = L.marker([plat, plng]).addTo(_rptMap).bindPopup('Pickup');
-  bounds.push([plat, plng]);
-  if(dlat && dlng){
-    L.marker([dlat, dlng]).addTo(_rptMap).bindPopup('Dropoff');
-    bounds.push([dlat, dlng]);
-    L.polyline([[plat,plng],[dlat,dlng]], {color:'#1B5E20',weight:3}).addTo(_rptMap);
-  }
-  if(bounds.length>1) _rptMap.fitBounds(bounds, {padding:[24,24]});
-  setTimeout(function(){ if(_rptMap) _rptMap.invalidateSize(); }, 120);
-}
-function openRptDetail(i){
-  var d = _rptTrips[i], html = _rptBodies[i];
-  if(!d || !html) return;
-  document.getElementById('rpt-detail-body').innerHTML = html + buildEditPanel(d);
-  document.getElementById('rpt-dtitle').textContent = 'Trip detail — ' + (d.id || '');
-  document.getElementById('rpt-actions').innerHTML = buildActionForms(d);
-  document.getElementById('rpt-ov').classList.add('open');
-  initRptMap(d);
-}
-function closeRptDetail(){
-  document.getElementById('rpt-ov').classList.remove('open');
-  if(_rptMap){ try{_rptMap.remove();}catch(e){} _rptMap=null; }
-}
-</script>`;
+var _cpTrips = ${tripsJson};
+var _cpBodies = ${bodiesJson};
+var _cpToken = ${JSON.stringify(token)};
+var _cpReturnTo = 'reports';
+</script>
+${cpTripDetailBehaviorScript(true)}`;
           res.send(portalPage('Reports', renderNav(sess, token, 'reports'), body));
         };
         if (pendingTariffs === 0) return renderReports();
@@ -2316,12 +2465,48 @@ function closeRptDetail(){
 });
 
 // ── Claim Batches ──────────────────────────────────────────────────────────────
+function cascadeBatchTripsToPaid(
+  batch: any,
+  companyCid: string,
+  ym: string,
+  who: string,
+  done: () => void,
+): void {
+  const keys = resolveBatchTripKeys(batch, companyCid);
+  if (!keys.length) return done();
+  let left = keys.length;
+  const now = Date.now();
+  const patch = buildTripPaidPatch(who, now);
+  keys.forEach(({ cid, rawKey }) => {
+    fbWrite('PATCH', 'tmTripStatus/' + cid + '/' + rawKey, patch, () => {
+      appendTripEvent(
+        cid,
+        rawKey,
+        buildTripEvent('paid', {
+          by: who,
+          byRole: 'council',
+          note: 'Claim batch ' + ym + ' marked paid',
+          toStatus: 'paid',
+        }),
+        () => {
+          if (--left <= 0) done();
+        },
+      );
+    });
+  });
+}
+
 router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
   const sess = (req as any).cpSession;
   const token = (req as any).cpToken;
   const te = encodeURIComponent(token);
   const msg = (req.query.msg as string) || '';
   const mt = (req.query.mt as string) || '';
+  const tabRaw = String(req.query.tab || 'submitted').toLowerCase();
+  const tab =
+    tabRaw === 'approved' || tabRaw === 'paid' || tabRaw === 'all' || tabRaw === 'submitted'
+      ? tabRaw
+      : 'submitted';
   const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
   loadCouncilTrips(sess.councilId, (_eT: any, councilTrips: any[]) => {
     const tripByKey: Record<string, any> = {};
@@ -2331,7 +2516,6 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
       if (t.batchId) tripByKey['batch:' + String(t.batchId) + ':' + String(t._rawKey)] = t;
       if (String(t.status || '').toLowerCase() === 'flagged') flaggedExcluded++;
     });
-    // Count line links to Flagged tab (full detail lives there — no duplicate trip list here).
     const claimNotice =
       `<p style="font-size:12.5px;color:#666;margin:-4px 0 14px;padding:10px 12px;background:#FFF8E1;border-left:4px solid #E65100;border-radius:4px">` +
       `Trips with status flagged, revision_needed, rejected, or archived are excluded from claims. Only approved trips are claimable.` +
@@ -2348,9 +2532,9 @@ ${noticeHtml}${claimNotice}<div class="cp-card"><div class="cp-empty">No batches
       if (cidKeys.length === 0) return res.send(portalPage('Claim Batches', renderNav(sess, token, 'batches'), emptyBody));
       let pending2 = cidKeys.length;
       const namesMap: Record<string, string> = {};
-      cidKeys.forEach(cid => {
+      cidKeys.forEach((cid) => {
         fbRead('superClients/' + cid, (e2: any, sc: any) => {
-          namesMap[cid] = (sc && sc.name) ? sc.name : ('Operator ' + cid);
+          namesMap[cid] = sc && sc.name ? sc.name : 'Operator ' + cid;
           if (--pending2 === 0) buildBatchPage();
         });
       });
@@ -2388,7 +2572,7 @@ ${noticeHtml}${claimNotice}<div class="cp-card"><div class="cp-empty">No batches
       }
       function buildBatchPage() {
         const allBatches: any[] = [];
-        cidKeys.forEach(cid => {
+        cidKeys.forEach((cid) => {
           const months = batchData[cid] || {};
           Object.entries(months).forEach(([ym, b]: [string, any]) => {
             if (!b) return;
@@ -2410,20 +2594,58 @@ ${noticeHtml}${claimNotice}<div class="cp-card"><div class="cp-empty">No batches
             submitted: '<span style="background:#E3F2FD;color:#1565C0;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">Submitted</span>',
             approved: '<span style="background:#E8F5E9;color:#2E7D32;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">Approved</span>',
             rejected: '<span style="background:#FFEBEE;color:#C62828;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600">Rejected</span>',
-            paid: '<span style="background:#E8F5E9;color:#1B5E20;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;border:1px solid #A5D6A7">&#10003; Paid</span>'
+            paid: '<span style="background:#E0F2F1;color:#00695C;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;border:1px solid #80CBC4">&#10003; Paid</span>',
           };
           return m[s] || `<span style="background:#F5F5F5;color:#757575;padding:2px 8px;border-radius:10px;font-size:11px">${esc(s)}</span>`;
         };
-        const rows = allBatches.map(b => {
-          const subDt = b.submittedAt ? new Date(b.submittedAt).toLocaleDateString('en-NZ') : '—';
-          const appDt = b.approvedAt ? new Date(b.approvedAt).toLocaleDateString('en-NZ') : '—';
-          const paidDt = b.paidAt ? new Date(b.paidAt).toLocaleDateString('en-NZ') : '—';
-          const actionBtns = b.status === 'submitted' ? `
+        const submitted = allBatches.filter((b) => b.status === 'submitted');
+        const approved = allBatches.filter((b) => b.status === 'approved');
+        const paid = allBatches.filter((b) => b.status === 'paid');
+        const filtered =
+          tab === 'all'
+            ? allBatches
+            : tab === 'approved'
+              ? approved
+              : tab === 'paid'
+                ? paid
+                : submitted;
+        const totalPending = submitted.reduce((s, b) => s + Number(b._displaySubsidy || 0), 0);
+        const totalApproved = approved.reduce((s, b) => s + Number(b._displaySubsidy || 0), 0);
+        const totalPaid = paid.reduce((s, b) => s + Number(b._displaySubsidy || b.paidAmount || 0), 0);
+        const paidMissingProof = paid.filter((b) => proofMissingFlag(b)).length;
+        const tabHref = (t: string) => `/council-portal/batches?t=${te}&tab=${t}`;
+        const tabsHtml = `<div class="cp-tabs">
+  <a class="cp-tab${tab === 'submitted' ? ' on' : ''}" href="${tabHref('submitted')}">Submitted<span class="cp-tab-n">${submitted.length}</span></a>
+  <a class="cp-tab${tab === 'approved' ? ' on' : ''}" href="${tabHref('approved')}">Approved (unpaid)<span class="cp-tab-n">${approved.length}</span></a>
+  <a class="cp-tab${tab === 'paid' ? ' on' : ''}" href="${tabHref('paid')}">Paid<span class="cp-tab-n">${paid.length}</span></a>
+  <a class="cp-tab${tab === 'all' ? ' on' : ''}" href="${tabHref('all')}">All<span class="cp-tab-n">${allBatches.length}</span></a>
+</div>`;
+        const rows = filtered
+          .map((b) => {
+            const subDt = b.submittedAt ? new Date(b.submittedAt).toLocaleDateString('en-NZ') : '—';
+            const appDt = b.approvedAt ? new Date(b.approvedAt).toLocaleDateString('en-NZ') : '—';
+            const paidDt = b.paidAt ? new Date(b.paidAt).toLocaleDateString('en-NZ') : '—';
+            const proofCell = (() => {
+              if (b.status !== 'paid') return '—';
+              if (hasPaymentProof(b)) {
+                const href =
+                  String(b.paymentDocUrl || '').indexOf('rtdb:') === 0
+                    ? `/api/council-batch-doc?t=${te}&cid=${encodeURIComponent(b._cid)}&ym=${encodeURIComponent(b._ym)}`
+                    : esc(String(b.paymentDocUrl));
+                return `<a class="cp-proof-ok" href="${href}" target="_blank" rel="noopener">&#128196; ${esc(b.paymentDocName || 'Download proof')}</a>`;
+              }
+              return `<span class="cp-proof-miss">${PROOF_MISSING_LABEL}</span>
+<button type="button" class="cp-btn-sm" style="margin-left:6px;background:#E65100" onclick="cpAttachProof('${esc(b._cid)}','${esc(b._ym)}')">Upload</button>`;
+            })();
+            const actionBtns =
+              b.status === 'submitted'
+                ? `
 <form method="POST" action="/api/council-batch-action" style="display:inline">
   <input type="hidden" name="_token" value="${esc(token)}"/>
   <input type="hidden" name="cid" value="${esc(b._cid)}"/>
   <input type="hidden" name="ym" value="${esc(b._ym)}"/>
   <input type="hidden" name="action" value="approve"/>
+  <input type="hidden" name="tab" value="${esc(tab)}"/>
   <button type="submit" class="cp-btn cp-btn-g" style="margin-right:4px">&#10003; Approve All</button>
 </form>
 <form method="POST" action="/api/council-batch-action" style="display:inline" onsubmit="return confirm('Reject this batch?')">
@@ -2431,17 +2653,16 @@ ${noticeHtml}${claimNotice}<div class="cp-card"><div class="cp-empty">No batches
   <input type="hidden" name="cid" value="${esc(b._cid)}"/>
   <input type="hidden" name="ym" value="${esc(b._ym)}"/>
   <input type="hidden" name="action" value="reject"/>
+  <input type="hidden" name="tab" value="${esc(tab)}"/>
   <button type="submit" class="cp-btn cp-btn-r">&#10007; Reject</button>
-</form>` : b.status === 'approved' ? `
-<form method="POST" action="/api/council-batch-action" style="display:inline">
-  <input type="hidden" name="_token" value="${esc(token)}"/>
-  <input type="hidden" name="cid" value="${esc(b._cid)}"/>
-  <input type="hidden" name="ym" value="${esc(b._ym)}"/>
-  <input type="hidden" name="action" value="paid"/>
-  <input type="text" name="payRef" placeholder="Payment ref (optional)" style="padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:12px;width:150px;margin-right:4px"/>
-  <button type="submit" class="cp-btn cp-btn-g">&#128181; Mark Paid</button>
-</form>` : b.status === 'paid' ? `<span style="font-size:12px;color:#555">${esc(b.payRef || '')}${b.payRef ? '<br>' : ''}<span style="color:#888;font-size:11px">Paid ${paidDt}</span></span>` : '—';
-          return `<tr>
+</form>`
+                : b.status === 'approved'
+                  ? `
+<button type="button" class="cp-btn cp-btn-g" onclick="cpOpenMarkPaid('${esc(b._cid)}','${esc(b._ym)}',${Number(b._displaySubsidy || 0)})">&#128181; Mark Paid</button>`
+                  : b.status === 'paid'
+                    ? `<span style="font-size:12px;color:#555">${esc(b.payRef || b.paidRef || '')}${b.payRef || b.paidRef ? '<br>' : ''}<span style="color:#888;font-size:11px">Paid ${paidDt}</span></span>`
+                    : '—';
+            return `<tr>
 <td style="font-weight:600">${esc(b._cname)}</td>
 <td style="font-family:monospace">${esc(b._ym)}</td>
 <td style="text-align:right">${b._displayTrips}</td>
@@ -2449,29 +2670,129 @@ ${noticeHtml}${claimNotice}<div class="cp-card"><div class="cp-empty">No batches
 <td>${batchStatusBadge(b.status)}</td>
 <td style="font-size:12px;color:#666">${subDt}</td>
 <td style="font-size:12px;color:#666">${appDt}</td>
+<td style="font-size:12px">${proofCell}</td>
 <td style="white-space:nowrap">${actionBtns}</td>
 </tr>`;
-        }).join('');
-        const submitted = allBatches.filter(b => b.status === 'submitted');
-        const approved = allBatches.filter(b => b.status === 'approved');
-        const totalPending = submitted.reduce((s, b) => s + Number(b._displaySubsidy || 0), 0);
-        const totalApproved = approved.reduce((s, b) => s + Number(b._displaySubsidy || 0), 0);
+          })
+          .join('');
         const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Claim Batches</h2>
 ${noticeHtml}
 ${claimNotice}
 <div class="cp-stats" style="margin-bottom:18px">
-  <div class="cp-stat"><div class="cp-stat-v">${submitted.length}</div><div class="cp-stat-l">Awaiting Your Approval</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">${submitted.length}</div><div class="cp-stat-l">Awaiting Approval</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totalPending.toFixed(2)}</div><div class="cp-stat-l">Pending Claim Value</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${approved.length}</div><div class="cp-stat-l">Approved (unpaid)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totalApproved.toFixed(2)}</div><div class="cp-stat-l">Approved Claim Value</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">${paid.length}</div><div class="cp-stat-l">Paid</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totalPaid.toFixed(2)}</div><div class="cp-stat-l">Paid Claim Value${paidMissingProof ? ` · <span style="color:#E65100;font-size:11px">${paidMissingProof} missing proof</span>` : ''}</div></div>
 </div>
+${tabsHtml}
 <div class="cp-card" style="overflow-x:auto">
-<p style="font-size:13px;color:#666;padding:12px 16px 0">Batches are submitted monthly by each taxi operator. Approve a batch to confirm all trips in it. Once approved, mark it paid when your payment is processed.</p>
-${allBatches.length ? `<table class="cp-tbl" style="margin-top:8px">
-<thead><tr><th>Operator</th><th>Month</th><th style="text-align:right">Trips</th><th style="text-align:right">Council Claim</th><th>Status</th><th>Submitted</th><th>Approved</th><th>Action</th></tr></thead>
-<tbody>${rows}</tbody></table>` : '<div class="cp-empty">No batches yet.</div>'}
-</div>`;
+<p style="font-size:13px;color:#666;padding:12px 16px 0">Flow: <strong>Submitted → Approved → Paid</strong>. Marking Paid cascades all trips in the batch to Paid. Proof of payment / invoice is optional but flagged if missing.</p>
+${filtered.length ? `<table class="cp-tbl" style="margin-top:8px">
+<thead><tr><th>Operator</th><th>Month</th><th style="text-align:right">Trips</th><th style="text-align:right">Council Claim</th><th>Status</th><th>Submitted</th><th>Approved</th><th>Proof</th><th>Action</th></tr></thead>
+<tbody>${rows}</tbody></table>` : '<div class="cp-empty">No batches in this tab.</div>'}
+</div>
+<div class="cp-ov" id="cp-paid-ov" onclick="if(event.target===this)cpCloseMarkPaid()">
+  <div class="cp-modal" style="width:480px" onclick="event.stopPropagation()">
+    <div class="cp-modal-hd"><h3 id="cp-paid-title">Mark batch paid</h3>
+      <button type="button" onclick="cpCloseMarkPaid()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:20px;line-height:1">&#x2715;</button></div>
+    <div class="cp-modal-bd">
+      <p id="cp-paid-sub" style="font-size:13px;color:#666;margin-bottom:12px"></p>
+      <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">Payment ref (optional)</label>
+      <input id="cp-paid-ref" class="cp-input" style="width:100%;margin-bottom:10px" placeholder="Bank transfer / EFT ref"/>
+      <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">Proof of payment / invoice (optional)</label>
+      <input id="cp-paid-file" type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/*" style="width:100%;margin-bottom:6px"/>
+      <p style="font-size:11.5px;color:#888;margin-bottom:10px">PDF or image, max ~4.5 MB. If skipped, the batch is flagged &ldquo;${PROOF_MISSING_LABEL}&rdquo;.</p>
+      <div id="cp-paid-err" style="display:none;color:#C62828;font-size:12.5px;margin-bottom:8px"></div>
+    </div>
+    <div class="cp-modal-ft">
+      <button type="button" class="cp-btn" style="background:#eee;color:#333" onclick="cpCloseMarkPaid()">Cancel</button>
+      <button type="button" class="cp-btn cp-btn-g" id="cp-paid-go" onclick="cpSubmitMarkPaid()">&#128181; Confirm Paid</button>
+    </div>
+  </div>
+</div>
+<script>
+var _cpTok = ${JSON.stringify(token)};
+var _cpTab = ${JSON.stringify(tab)};
+var _paidCtx = null;
+function cpOpenMarkPaid(cid, ym, amt){
+  _paidCtx = { cid: cid, ym: ym, attachOnly: false };
+  document.getElementById('cp-paid-title').textContent = 'Mark batch paid';
+  document.getElementById('cp-paid-sub').textContent = 'Company '+cid+' · '+ym+(amt!=null?' · $'+Number(amt).toFixed(2):'');
+  document.getElementById('cp-paid-ref').value = '';
+  document.getElementById('cp-paid-file').value = '';
+  document.getElementById('cp-paid-err').style.display = 'none';
+  document.getElementById('cp-paid-go').textContent = 'Confirm Paid';
+  document.getElementById('cp-paid-ov').classList.add('open');
+}
+function cpAttachProof(cid, ym){
+  _paidCtx = { cid: cid, ym: ym, attachOnly: true };
+  document.getElementById('cp-paid-title').textContent = 'Upload proof of payment';
+  document.getElementById('cp-paid-sub').textContent = 'Company '+cid+' · '+ym;
+  document.getElementById('cp-paid-ref').value = '';
+  document.getElementById('cp-paid-file').value = '';
+  document.getElementById('cp-paid-err').style.display = 'none';
+  document.getElementById('cp-paid-go').textContent = 'Upload proof';
+  document.getElementById('cp-paid-ov').classList.add('open');
+}
+function cpCloseMarkPaid(){ document.getElementById('cp-paid-ov').classList.remove('open'); _paidCtx=null; }
+function cpReadFileAsDataUrl(file){
+  return new Promise(function(resolve, reject){
+    if(!file) return resolve(null);
+    if(file.size > ${Math.floor(MAX_PROOF_BYTES)}) return reject(new Error('File too large (max ~4.5 MB)'));
+    var r = new FileReader();
+    r.onload = function(){ resolve(String(r.result||'')); };
+    r.onerror = function(){ reject(new Error('Could not read file')); };
+    r.readAsDataURL(file);
+  });
+}
+function cpSubmitMarkPaid(){
+  if(!_paidCtx) return;
+  var errEl = document.getElementById('cp-paid-err');
+  errEl.style.display = 'none';
+  var fileInput = document.getElementById('cp-paid-file');
+  var file = fileInput && fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+  if(_paidCtx.attachOnly && !file){
+    errEl.textContent = 'Choose a proof file to upload.';
+    errEl.style.display = 'block';
+    return;
+  }
+  var btn = document.getElementById('cp-paid-go');
+  btn.disabled = true;
+  cpReadFileAsDataUrl(file).then(function(dataUrl){
+    var body = {
+      _token: _cpTok,
+      cid: _paidCtx.cid,
+      ym: _paidCtx.ym,
+      action: _paidCtx.attachOnly ? 'attach_proof' : 'paid',
+      tab: _cpTab,
+      payRef: (document.getElementById('cp-paid-ref').value||'').trim(),
+      paymentDocName: file ? file.name : '',
+      paymentDocContentType: file ? (file.type||'') : '',
+      paymentDocBase64: dataUrl || ''
+    };
+    return fetch('/api/council-batch-action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function(r){ return r.json().then(function(j){ return { ok: r.ok, j: j }; }); });
+  }).then(function(res){
+    btn.disabled = false;
+    if(!res.ok || !res.j || !res.j.ok){
+      errEl.textContent = (res.j && res.j.error) || 'Update failed';
+      errEl.style.display = 'block';
+      return;
+    }
+    location.href = '/council-portal/batches?t='+encodeURIComponent(_cpTok)+'&tab='+encodeURIComponent(res.j.tab||_cpTab)+'&msg='+encodeURIComponent(res.j.msg||'Saved')+'&mt=ok';
+  }).catch(function(e){
+    btn.disabled = false;
+    errEl.textContent = e && e.message ? e.message : String(e);
+    errEl.style.display = 'block';
+  });
+}
+</script>`;
         res.send(portalPage('Claim Batches', renderNav(sess, token, 'batches'), body));
       }
     });
@@ -2479,30 +2800,158 @@ ${allBatches.length ? `<table class="cp-tbl" style="margin-top:8px">
 });
 
 router.post('/api/council-batch-action', (req, res) => {
+  const wantsJson =
+    String(req.headers.accept || '').indexOf('application/json') >= 0 ||
+    String(req.headers['content-type'] || '').indexOf('application/json') >= 0;
   const token = (req.body._token as string) || '';
   const cid = (req.body.cid as string) || '';
   const ym = (req.body.ym as string) || '';
   const action = (req.body.action as string) || '';
   const payRef = ((req.body.payRef as string) || '').trim();
+  const tab = String(req.body.tab || 'submitted');
   const sess = cpGetSession(token);
   const te = encodeURIComponent(token);
-  if (!sess || !cid || !ym || !['approve', 'reject', 'paid'].includes(action)) {
-    return res.redirect('/council-portal/batches?t=' + te + '&msg=Invalid+request&mt=err');
+  const redirect = (msg: string, mt: string, t = tab) => {
+    if (wantsJson) {
+      return res.status(mt === 'ok' ? 200 : 400).json({
+        ok: mt === 'ok',
+        msg,
+        error: mt === 'ok' ? undefined : msg,
+        tab: t,
+      });
+    }
+    return res.redirect(
+      '/council-portal/batches?t=' +
+        te +
+        '&tab=' +
+        encodeURIComponent(t) +
+        '&msg=' +
+        encodeURIComponent(msg) +
+        '&mt=' +
+        mt,
+    );
+  };
+  if (!sess || !cid || !ym || !['approve', 'reject', 'paid', 'attach_proof'].includes(action)) {
+    return redirect('Invalid request', 'err');
   }
   const path = 'tmBatches/' + sess.councilId + '/' + cid + '/' + ym;
-  let patch: any;
-  if (action === 'approve') {
-    patch = { status: 'approved', approvedAt: Date.now(), approvedBy: sess.name || sess.councilId };
-  } else if (action === 'reject') {
-    patch = { status: 'rejected', rejectedAt: Date.now(), rejectedBy: sess.name || sess.councilId };
-  } else {
-    patch = { status: 'paid', paidAt: Date.now(), paidBy: sess.name || sess.councilId };
-    if (payRef) patch.payRef = payRef;
+  const who = sess.name || sess.councilId;
+
+  const finishPaid = (batch: any, docMeta: any | null, attachOnly: boolean) => {
+    const patch = attachOnly
+      ? {
+          paymentDocUrl: docMeta.paymentDocUrl,
+          paymentDocName: docMeta.paymentDocName,
+          paymentDocPath: docMeta.paymentDocPath,
+          paymentDocUploadedAt: docMeta.paymentDocUploadedAt,
+          paymentDocUploadedBy: who,
+          paymentDocMissing: false,
+        }
+      : buildPaidBatchPatch({
+          who,
+          payRef,
+          doc: docMeta
+            ? {
+                paymentDocUrl: docMeta.paymentDocUrl,
+                paymentDocName: docMeta.paymentDocName,
+                paymentDocPath: docMeta.paymentDocPath,
+                paymentDocUploadedAt: docMeta.paymentDocUploadedAt,
+                paymentDocUploadedBy: who,
+                paymentDocMissing: false,
+              }
+            : null,
+        });
+    fbWrite('PATCH', path, patch, (err: any) => {
+      if (err) return redirect('Update failed', 'err');
+      if (attachOnly) {
+        return redirect('Proof of payment uploaded.', 'ok', 'paid');
+      }
+      cascadeBatchTripsToPaid(batch || {}, cid, ym, who, () => {
+        const miss = !docMeta;
+        redirect(
+          miss
+            ? 'Batch marked paid (trips updated). Reminder: no proof uploaded.'
+            : 'Batch marked paid; trips updated to Paid.',
+          'ok',
+          'paid',
+        );
+      });
+    });
+  };
+
+  if (action === 'approve' || action === 'reject') {
+    const patch =
+      action === 'approve'
+        ? { status: 'approved', approvedAt: Date.now(), approvedBy: who }
+        : { status: 'rejected', rejectedAt: Date.now(), rejectedBy: who };
+    return fbWrite('PATCH', path, patch, (err: any) => {
+      if (err) return redirect('Update failed', 'err');
+      redirect(action === 'approve' ? 'Batch approved.' : 'Batch rejected.', 'ok', action === 'approve' ? 'approved' : tab);
+    });
   }
-  fbWrite('PATCH', path, patch, (err: any) => {
-    if (err) return res.redirect('/council-portal/batches?t=' + te + '&msg=Update+failed&mt=err');
-    const msgs: Record<string, string> = { approve: 'Batch approved.', reject: 'Batch rejected.', paid: 'Batch marked as paid.' };
-    res.redirect('/council-portal/batches?t=' + te + '&msg=' + encodeURIComponent(msgs[action]) + '&mt=ok');
+
+  // paid | attach_proof
+  fbRead(path, (eRead: any, batch: any) => {
+    if (eRead || !batch) return redirect('Batch not found', 'err');
+    if (action === 'attach_proof' && String(batch.status || '') !== 'paid') {
+      return redirect('Only paid batches can attach proof', 'err', 'paid');
+    }
+    if (action === 'paid' && String(batch.status || '') !== 'approved') {
+      return redirect('Only approved batches can be marked paid', 'err', 'approved');
+    }
+    const b64 = String(req.body.paymentDocBase64 || '').trim();
+    const docName = String(req.body.paymentDocName || '').trim() || 'proof.pdf';
+    const docType = String(req.body.paymentDocContentType || '').trim();
+    if (!b64) {
+      if (action === 'attach_proof') return redirect('Proof file required', 'err', 'paid');
+      return finishPaid(batch, null, false);
+    }
+    storeBatchProof(
+      {
+        councilId: sess.councilId,
+        cid,
+        ym,
+        filename: docName,
+        contentType: docType || undefined,
+        dataBase64: b64,
+        uploadedBy: who,
+      },
+      (errStore, stored) => {
+        if (errStore || !stored) {
+          return redirect(errStore ? errStore.message : 'Proof upload failed', 'err');
+        }
+        finishPaid(batch, stored, action === 'attach_proof');
+      },
+    );
+  });
+});
+
+router.get('/api/council-batch-doc', requirePortalAuth, (req, res) => {
+  const sess = (req as any).cpSession;
+  const cid = String(req.query.cid || '').trim();
+  const ym = String(req.query.ym || '').trim();
+  if (!cid || !ym) return res.status(400).send('Missing cid/ym');
+  const rtdbPath = 'tmBatchDocs/' + sess.councilId + '/' + cid + '/' + ym;
+  fbRead(rtdbPath, (err: any, doc: any) => {
+    if (err || !doc || !doc.data) {
+      // Maybe batch has external Storage URL
+      return fbRead('tmBatches/' + sess.councilId + '/' + cid + '/' + ym, (e2: any, b: any) => {
+        const url = b && b.paymentDocUrl ? String(b.paymentDocUrl) : '';
+        if (url && url.indexOf('http') === 0) return res.redirect(url);
+        return res.status(404).send('Document not found');
+      });
+    }
+    try {
+      const buf = Buffer.from(String(doc.data), 'base64');
+      res.setHeader('Content-Type', doc.contentType || 'application/octet-stream');
+      res.setHeader(
+        'Content-Disposition',
+        'inline; filename="' + String(doc.filename || 'proof.bin').replace(/"/g, '') + '"',
+      );
+      res.send(buf);
+    } catch {
+      res.status(500).send('Corrupt document');
+    }
   });
 });
 

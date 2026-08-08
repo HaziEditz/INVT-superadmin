@@ -65,8 +65,8 @@ app.use((req, res, next) => {
 });
 
 // ── Body parsers ───────────────────────────────────────────────────────────────
-app.use(express.json({ limit: '2mb' }));
-app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+app.use(express.json({ limit: '6mb' }));
+app.use(express.urlencoded({ extended: true, limit: '6mb' }));
 
 // ── Session (company-earnings portal + any other portal that needs it) ────────
 app.use(session({

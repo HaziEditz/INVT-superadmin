@@ -190,6 +190,7 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
     </select>
     <button class="tm-btn tm-btn-n" onclick="clearFilters()">Clear</button>
   </div>
+  <div id="sa-batch-tabs" style="display:flex;gap:6px;flex-wrap:wrap;padding:0 4px 10px"></div>
   <div style="overflow-x:auto">
   <table class="tm-tbl">
     <thead><tr>
@@ -282,6 +283,11 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
     <div class="modal-field">
       <label>Notes <span style="color:#aaa;font-weight:400;font-size:11px">optional</span></label>
       <input type="text" id="paid-notes" placeholder="Any additional payment notes"/>
+    </div>
+    <div class="modal-field">
+      <label>Proof of payment / invoice <span style="color:#aaa;font-weight:400;font-size:11px">optional — flagged if missing</span></label>
+      <input type="file" id="paid-file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/*"/>
+      <div style="font-size:11px;color:#888;margin-top:4px">PDF or image, max ~4.5 MB. Company can download from owner Claim Batches.</div>
     </div>
     <div class="modal-actions">
       <button onclick="closeModal('modal-paid')" class="tm-btn tm-btn-n">Cancel</button>
@@ -495,7 +501,10 @@ function computeBatches(){
     a.approvedRef = saved.approvedRef||'';
     a.paidAt      = saved.paidAt||null;
     a.paidAmount  = saved.paidAmount||null;
-    a.paidRef     = saved.paidRef||'';
+    a.paidRef     = saved.paidRef||saved.payRef||'';
+    a.paymentDocUrl = saved.paymentDocUrl||null;
+    a.paymentDocName = saved.paymentDocName||null;
+    a.paymentDocMissing = saved.paymentDocMissing===true || (a.batchStatus==='paid' && !saved.paymentDocUrl);
     a.revisionNote= saved.revisionNote||'';
     a.notes       = saved.notes||'';
     return a;
@@ -536,6 +545,18 @@ function renderBatches(){
   document.getElementById('kpi-paid').textContent=kPaid;
   document.getElementById('kpi-claim').textContent=fmt(kClaim);
   document.getElementById('batch-count').textContent=filtered.length+' of '+batches.length+' batch(es)';
+  var tabWrap=document.getElementById('sa-batch-tabs');
+  if(tabWrap){
+    var cur=document.getElementById('f-status').value||'';
+    function tabBtn(val,label,n){
+      var on=cur===val;
+      return '<button type="button" class="tm-btn '+(on?'tm-btn-green':'tm-btn-n')+'" style="padding:5px 12px;font-size:12px" onclick="document.getElementById(\'f-status\').value=\''+val+'\';renderBatches()">'+label+' ('+n+')</button>';
+    }
+    var nSub=batches.filter(function(b){return b.batchStatus==='submitted';}).length;
+    var nApp=batches.filter(function(b){return b.batchStatus==='approved';}).length;
+    var nPaid=batches.filter(function(b){return b.batchStatus==='paid';}).length;
+    tabWrap.innerHTML=tabBtn('','All',batches.length)+tabBtn('submitted','Submitted',nSub)+tabBtn('approved','Approved',nApp)+tabBtn('paid','Paid',nPaid);
+  }
 
   if(!filtered.length){
     document.getElementById('batch-tb').innerHTML='<tr><td colspan="11" style="text-align:center;padding:40px;color:#9e9e9e">No batches match the current filters.</td></tr>';
@@ -551,7 +572,14 @@ function renderBatches(){
     var submittedCol=b.submittedAt?'<span style="font-size:12px">'+fmtDate(b.submittedAt)+(b.submittedRef?'<br><span style="color:#888;font-family:monospace">'+esc(b.submittedRef)+'</span>':'')+'</span>':'<span style="color:#ccc">—</span>';
     var paidCol='<span style="color:#ccc">—</span>';
     if(b.batchStatus==='approved'&&b.approvedAt) paidCol='<span style="font-size:12px;color:#2E7D32">Approved '+fmtDate(b.approvedAt)+'</span>';
-    if(b.batchStatus==='paid'&&b.paidAt) paidCol='<span style="font-size:12px;color:#00695C">Paid '+fmtDate(b.paidAt)+(b.paidAmount?'<br><strong>'+fmt(b.paidAmount)+'</strong>':'')+'</span>';
+    if(b.batchStatus==='paid'&&b.paidAt){
+      paidCol='<span style="font-size:12px;color:#00695C">Paid '+fmtDate(b.paidAt)+(b.paidAmount?'<br><strong>'+fmt(b.paidAmount)+'</strong>':'')+'</span>';
+      if(b.paymentDocUrl){
+        paidCol+='<br><span style="font-size:11px;color:#2E7D32;font-weight:600">&#128196; '+(esc(b.paymentDocName)||'Proof on file')+'</span>';
+      } else {
+        paidCol+='<br><span style="font-size:11px;background:#FFF8E1;color:#E65100;padding:1px 6px;border-radius:8px;font-weight:700">No proof uploaded</span>';
+      }
+    }
     if(b.batchStatus==='revision_needed') paidCol='<span style="font-size:12px;color:#E65100">Revision requested</span>';
 
     var bkStr=esc(b.batchKey);
@@ -665,7 +693,44 @@ function openPaid(bk){
   document.getElementById('paid-date').value=new Date().toISOString().split('T')[0];
   document.getElementById('paid-ref').value='';
   document.getElementById('paid-notes').value='';
+  var pf=document.getElementById('paid-file'); if(pf) pf.value='';
   document.getElementById('modal-paid').classList.add('open');
+}
+function readPaidFileAsDataUrl(file){
+  return new Promise(function(resolve, reject){
+    if(!file) return resolve(null);
+    if(file.size > 4.5*1024*1024) return reject(new Error('File too large (max ~4.5 MB)'));
+    var r=new FileReader();
+    r.onload=function(){ resolve(String(r.result||'')); };
+    r.onerror=function(){ reject(new Error('Could not read file')); };
+    r.readAsDataURL(file);
+  });
+}
+function cascadeTripsPaid(b, who){
+  var trips=Array.isArray(b.trips)?b.trips:[];
+  var tasks=trips.map(function(item){
+    var cid=b.cid, rawKey='';
+    if(item && typeof item==='object'){
+      rawKey=String(item.rawKey||item._rawKey||item.id||item.bookingId||'');
+      cid=String(item.cid||item._cid||cid);
+    } else {
+      var s=String(item||'');
+      if(s.indexOf('/')>0){ var p=s.split('/'); cid=p[0]; rawKey=p.slice(1).join('/'); }
+      else rawKey=s;
+    }
+    if(!cid||!rawKey) return Promise.resolve();
+    var now=Date.now();
+    var evKey='-e'+now+'_'+Math.random().toString(36).slice(2,7);
+    return adminWrite('tmTripStatus/'+cid+'/'+rawKey,'PATCH',{
+      status:'paid', paidAt:now, paidBy:who||'superadmin'
+    }).then(function(){
+      return adminWrite('tmTripStatus/'+cid+'/'+rawKey+'/events/'+evKey,'PUT',{
+        at:now, type:'paid', by:who||'superadmin', byRole:'sa',
+        note:'Claim batch '+b.month+' marked paid', toStatus:'paid'
+      });
+    }).catch(function(){});
+  });
+  return Promise.all(tasks);
 }
 function confirmPaid(){
   if(!activeBatch) return;
@@ -673,19 +738,52 @@ function confirmPaid(){
   var amount=+(document.getElementById('paid-amount').value||0);
   var date=document.getElementById('paid-date').value;
   if(!amount||!date){ toastr.warning('Amount and date are required.'); return; }
-  var payload={
-    status:'paid',
-    paidAt:Date.now(),
-    paidDate:date,
-    paidAmount:amount,
-    paidRef:document.getElementById('paid-ref').value.trim()||null,
-    notes:document.getElementById('paid-notes').value.trim()||null
-  };
-  saveBatch(b,payload).then(function(){
-    toastr.success('Payment recorded. Batch marked as paid.');
-    closeModal('modal-paid');
-    loadAll();
-  }).catch(function(e){ toastr.error('Error: '+e); });
+  var fileEl=document.getElementById('paid-file');
+  var file=fileEl&&fileEl.files&&fileEl.files[0]?fileEl.files[0]:null;
+  var who=(window.SA_USER_EMAIL||window.SA_ADMIN_EMAIL||'superadmin');
+  readPaidFileAsDataUrl(file).then(function(dataUrl){
+    var payload={
+      status:'paid',
+      paidAt:Date.now(),
+      paidDate:date,
+      paidAmount:amount,
+      paidRef:document.getElementById('paid-ref').value.trim()||null,
+      payRef:document.getElementById('paid-ref').value.trim()||null,
+      notes:document.getElementById('paid-notes').value.trim()||null,
+      paymentDocMissing:!dataUrl
+    };
+    var chain=Promise.resolve();
+    if(dataUrl){
+      var docPath='tmBatchDocs/'+b.councilId+'/'+b.cid+'/'+b.month;
+      var fname=file?file.name:'proof.pdf';
+      chain=adminWrite(docPath,'PUT',{
+        filename:fname,
+        contentType:file&&file.type?file.type:'application/octet-stream',
+        encoding:'base64',
+        data:String(dataUrl).replace(/^data:[^;]+;base64,/,''),
+        size:file?file.size:0,
+        uploadedAt:Date.now(),
+        uploadedBy:who,
+        storage:'rtdb'
+      }).then(function(){
+        payload.paymentDocUrl='rtdb:'+docPath;
+        payload.paymentDocName=fname;
+        payload.paymentDocPath=docPath;
+        payload.paymentDocUploadedAt=Date.now();
+        payload.paymentDocUploadedBy=who;
+        payload.paymentDocMissing=false;
+      });
+    }
+    return chain.then(function(){ return saveBatch(b,payload); })
+      .then(function(){ return cascadeTripsPaid(b, who); })
+      .then(function(){
+        toastr.success(dataUrl
+          ? 'Payment recorded. Trips marked paid. Proof stored.'
+          : 'Payment recorded. Trips marked paid. Reminder: no proof uploaded.');
+        closeModal('modal-paid');
+        loadAll();
+      });
+  }).catch(function(e){ toastr.error('Error: '+(e&&e.message?e.message:e)); });
 }
 
 /* ── save batch to Firebase ─────────────────────── */

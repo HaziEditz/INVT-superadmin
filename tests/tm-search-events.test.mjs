@@ -119,3 +119,22 @@ test('owner can archive revision_needed but not restore', () => {
   assert.doesNotMatch(adminSrc, /function restoreOwnerTrip/);
   assert.match(adminSrc, /council or BookaWaka admin can restore/i);
 });
+
+test('owner fix comment required on resubmit and stored on events', () => {
+  assert.match(adminSrc, /te-fixComment/);
+  assert.match(adminSrc, /fix comment is required before resubmitting/);
+  assert.match(adminSrc, /note: fixComment/);
+  assert.match(adminSrc, /type: 'resubmitted'/);
+  assert.match(adminSrc, /type: 'owner_edited'/);
+});
+
+test('council detail map geocodes and is on pending + flagged + reports', () => {
+  assert.match(councilSrc, /initCpTripMap/);
+  assert.match(councilSrc, /nominatim\.openstreetmap\.org/);
+  assert.match(councilSrc, /cp-trip-map-wrap/);
+  assert.match(councilSrc, /openCpDetail/);
+  assert.match(councilSrc, /_cpReturnTo = 'pending'/);
+  assert.match(councilSrc, /_cpReturnTo = 'anomalies'/);
+  assert.match(councilSrc, /_cpReturnTo = 'reports'/);
+  assert.doesNotMatch(councilSrc, /function initRptMap|openRptDetail/);
+});

@@ -133,6 +133,7 @@ export function formatEventLabel(e: TripEvent): string {
     owner_edited: 'Edited by owner',
     resubmitted: 'Resubmitted',
     approved: 'Approved',
+    paid: 'Paid',
     rejected: 'Rejected',
     archived: 'Archived',
     restored: 'Restored',
@@ -140,7 +141,10 @@ export function formatEventLabel(e: TripEvent): string {
   };
   let line = labels[type] || type;
   if (e.reasons && e.reasons.length) line += ' (' + e.reasons.join(', ') + ')';
-  if (e.note) line += ' — ' + e.note;
+  if (e.note) {
+    if (type === 'owner_edited' || type === 'resubmitted') line += ' — Owner: ' + e.note;
+    else line += ' — ' + e.note;
+  }
   if (e.fromStatus && e.toStatus && type === 'archived') {
     line += ` [from ${e.fromStatus}]`;
   }
