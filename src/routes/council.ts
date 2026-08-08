@@ -45,6 +45,7 @@ import {
   ENTITY_TYPES,
   hoistPaysOf,
   hoistUsesOf,
+  subsidyOf,
 } from '../lib/tmUnifiedTrips';
 import {
   buildTripEvent,
@@ -127,11 +128,7 @@ function afterCouncilApproveAddToBatch(
       _cid: tripCid,
       _rawKey: tripRawKey,
       status: 'approved',
-      tmSubsidy:
-        (job && (job.tmSubsidy ?? job.tmCouncilPays)) ??
-        st.tmSubsidy ??
-        st.tmCouncilPays ??
-        0,
+      ...normalizeTmTripEconomics(job && typeof job === 'object' ? job : {}),
     };
     upsertApprovedTripIntoMonthBatch(councilId, tripLike, who, cb);
   });
@@ -154,12 +151,12 @@ a{color:inherit;text-decoration:none}
 .cp-card-hd{padding:13px 18px;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;justify-content:space-between}
 .cp-card-hd h3{font-size:14px;font-weight:700;color:#1B5E20;display:flex;align-items:center;gap:6px}
 .cp-card-bd{padding:16px 18px}
-.cp-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin-bottom:18px}
-.cp-stat{background:#fff;border-radius:6px;padding:14px 18px;box-shadow:0 1px 4px rgba(0,0,0,.1);border-left:4px solid #2E7D32}
+.cp-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px}
+.cp-stat{background:#fff;border-radius:6px;padding:8px 12px;box-shadow:0 1px 4px rgba(0,0,0,.1);border-left:4px solid #2E7D32}
 .cp-stat.warn{border-left-color:#E65100}.cp-stat.flag{border-left-color:#C62828}
-.cp-stat-v{font-size:26px;font-weight:700;color:#1B5E20;line-height:1.1}
+.cp-stat-v{font-size:18px;font-weight:700;color:#1B5E20;line-height:1.15}
 .cp-stat.warn .cp-stat-v{color:#E65100}.cp-stat.flag .cp-stat-v{color:#C62828}
-.cp-stat-l{font-size:11.5px;color:#888;margin-top:4px}
+.cp-stat-l{font-size:11px;color:#888;margin-top:2px}
 .cp-tbl{width:100%;border-collapse:collapse;font-size:12.5px}
 .cp-tbl th{background:#F1F8E9;padding:9px 11px;text-align:left;font-size:11.5px;font-weight:700;color:#33691E;border-bottom:2px solid #C5E1A5;white-space:nowrap}
 .cp-tbl td{padding:8px 11px;border-bottom:1px solid #f5f5f5;vertical-align:middle}
@@ -302,20 +299,20 @@ function normalizeTmTripEconomics(job: any): {
   const meterFare = Number(job.tmMeterFare ?? job.meterFare ?? 0) || 0;
   const legacyFare = Number(job.fare ?? job.totalFare ?? job.tmTotalFare ?? 0) || 0;
   const fare = meterFare || Math.max(0, legacyFare - (job.hoistTotal || job.tmSubsidyHoist ? hoist : 0));
-  const subsidyFare = Number(
-    job.tmSubsidyFare ??
-      (job.tmCouncilPays != null ? Math.max(0, Number(job.tmCouncilPays) - hoist) : job.tmSubsidy) ??
-      0,
-  ) || 0;
-  const totalCouncil =
-    Number(job.tmCouncilPays ?? job.councilPays ?? subsidyFare + hoist) || 0;
+  const combined =
+    Number(job.tmCouncilPays ?? job.councilPays ?? job.tmSubsidy ?? 0) || 0;
+  // Meter %/cap claim only — tmSubsidy must not include flat hoist.
+  const subsidyFare =
+    job.tmSubsidyFare != null && job.tmSubsidyFare !== ''
+      ? Number(job.tmSubsidyFare) || 0
+      : Math.max(0, combined - hoist);
   const pax =
     Number(job.tmPassengerPays ?? job.passengerPays ?? Math.max(0, fare - subsidyFare)) || 0;
   return {
     fare: +fare.toFixed(2),
     tmSubsidyFare: +subsidyFare.toFixed(2),
     tmSubsidyHoist: +hoist.toFixed(2),
-    tmSubsidy: +totalCouncil.toFixed(2),
+    tmSubsidy: +subsidyFare.toFixed(2),
     tmPassengerPays: +pax.toFixed(2),
   };
 }
@@ -1127,7 +1124,7 @@ router.get('/council-portal/dashboard', requirePortalAuth, (req, res) => {
       const thisMonthTrips = myTrips.filter((t) => tripMonthKey(t) === curMonth);
       let totalCouncilPays = 0, totalHoistPays = 0, totalHoistUses = 0, pendingCount = 0, flaggedCount = 0;
       thisMonthTrips.forEach(t => {
-        totalCouncilPays += parseFloat(t.tmSubsidy || 0);
+        totalCouncilPays += subsidyOf(t);
         totalHoistPays += hoistPaysOf(t);
         totalHoistUses += hoistUsesOf(t);
         if (t.status === 'submitted') pendingCount++;
@@ -1156,7 +1153,7 @@ router.get('/council-portal/dashboard', requirePortalAuth, (req, res) => {
 <td style="font-size:12px;color:#555">${esc(t._companyName || '—')}</td>
 <td>${dt}</td><td>$${parseFloat(t.fare || 0).toFixed(2)}</td>
 <td style="color:#1565C0">${hoist$ > 0 ? '$' + hoist$.toFixed(2) + (uses ? ' · ' + uses + '×' : '') : '—'}</td>
-<td style="color:#2E7D32;font-weight:600">$${parseFloat(t.tmSubsidy || 0).toFixed(2)}</td>
+<td style="color:#2E7D32;font-weight:600">$${subsidyOf(t).toFixed(2)}</td>
 <td>${statusBadge(t.status)}</td></tr>`;
       }).join('');
       const body = `
@@ -1165,8 +1162,8 @@ router.get('/council-portal/dashboard', requirePortalAuth, (req, res) => {
 <div class="cp-stats">
   <div class="cp-stat"><div class="cp-stat-v">${approvedOps}</div><div class="cp-stat-l">Approved Companies</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${thisMonthTrips.length}</div><div class="cp-stat-l">Trips This Month (${esc(curMonth)})</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totalCouncilPays.toFixed(2)}</div><div class="cp-stat-l">Council Pays This Month</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totalHoistPays.toFixed(2)}</div><div class="cp-stat-l">Hoist $ This Month</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totalCouncilPays.toFixed(2)}</div><div class="cp-stat-l">Council claim (%/cap) This Month</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totalHoistPays.toFixed(2)}</div><div class="cp-stat-l">Hoist $ This Month (${totalHoistUses} use${totalHoistUses === 1 ? '' : 's'})</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${totalHoistUses}</div><div class="cp-stat-l">Hoist Uses This Month</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${avg}</div><div class="cp-stat-l">Avg Per Trip</div></div>
   ${pendingCount > 0 ? `<div class="cp-stat flag"><div class="cp-stat-v">${pendingCount}</div><div class="cp-stat-l"><a href="/council-portal/trips?t=${encodeURIComponent(token)}&status=pending" style="color:inherit">Awaiting Your Approval</a></div></div>` : ''}
@@ -1176,7 +1173,7 @@ ${configHtml}
 <div class="cp-card">
   <div class="cp-card-hd"><h3>Recent TM activity (${recent.length})</h3>
     <a href="/council-portal/trips?t=${encodeURIComponent(token)}&status=all" style="font-size:12px;color:#2E7D32">View all &rarr;</a></div>
-  ${recent.length ? `<table class="cp-tbl"><thead><tr><th>Voucher No.</th><th>Passenger</th><th>Operator</th><th>Date</th><th>Fare</th><th>Hoist</th><th>Council Pays</th><th>Status</th></tr></thead>
+  ${recent.length ? `<table class="cp-tbl"><thead><tr><th>Voucher No.</th><th>Passenger</th><th>Operator</th><th>Date</th><th>Fare</th><th>Hoist</th><th>Council claim</th><th>Status</th></tr></thead>
 <tbody>${recentRows}</tbody></table>` : '<div class="cp-empty">No trips submitted to this council yet.</div>'}
 </div>`;
       res.send(portalPage('Dashboard', renderNav(sess, token, 'dashboard'), body));
@@ -1248,7 +1245,7 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
           totHoistUses = 0;
         details.forEach((d, i) => {
           totFare += d.meterFare;
-          totCouncil += d.totalCouncil;
+          totCouncil += d.meterSubsidy;
           totPax += d.passengerPays;
           totHoist += hoistPaysOf(displayTrips[i]);
           totHoistUses += hoistUsesOf(displayTrips[i]);
@@ -1515,7 +1512,7 @@ ${cb}
 <td>$${d.meterFare.toFixed(2)}</td>
 <td style="color:#1565C0">${hoist$ > 0 ? '$' + hoist$.toFixed(2) : '—'}</td>
 <td style="text-align:right">${uses > 0 ? uses : '—'}</td>
-<td style="font-weight:700;color:#1B5E20">$${d.totalCouncil.toFixed(2)}</td>
+<td style="font-weight:700;color:#1B5E20">$${d.meterSubsidy.toFixed(2)}</td>
 <td>$${d.passengerPays.toFixed(2)}</td>
 <td>${statusBadge(d.status)}${chips ? `<div style="margin-top:3px">${chips}</div>` : ''}</td>
 <td style="white-space:nowrap" onclick="event.stopPropagation()">${rowActions(t, idx, d)}</td>
@@ -1545,7 +1542,7 @@ ${cb}
         const hasFilters = !!(q || filterCompany || filterFrom || filterTo || status !== 'all');
         const thead =
           (showCheckbox ? '<th></th>' : '') +
-          '<th>Date</th><th>Operator</th><th>Passenger</th><th>Driver</th><th>Pickup</th><th>Dropoff</th><th>Meter</th><th>Hoist $</th><th>Uses</th><th>Council</th><th>Pax</th><th>Status</th><th>Actions</th>';
+          '<th>Date</th><th>Operator</th><th>Passenger</th><th>Driver</th><th>Pickup</th><th>Dropoff</th><th>Meter</th><th>Hoist $</th><th>Uses</th><th>Council claim</th><th>Pax</th><th>Status</th><th>Actions</th>';
 
         const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:6px">Trips</h2>
@@ -1587,7 +1584,7 @@ ${tabsHtml}
   <div class="cp-stat"><div class="cp-stat-v">${details.length}</div><div class="cp-stat-l">Trips in selection</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totFare.toFixed(2)}</div><div class="cp-stat-l">Total Meter Fare</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totHoist.toFixed(2)}</div><div class="cp-stat-l">Hoist $ (${totHoistUses} uses)</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totCouncil.toFixed(2)}</div><div class="cp-stat-l">Total Council Claim</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totCouncil.toFixed(2)}</div><div class="cp-stat-l">Council claim (%/cap)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totPax.toFixed(2)}</div><div class="cp-stat-l">Total Passenger Pays</div></div>
 </div>
 ${toolbar}
@@ -1869,9 +1866,9 @@ function cpTripDetailBehaviorScript(includeEditPanel: boolean): string {
   html += _fld('dropAddress','Dropoff',d.dropoff,true);
   html += _fld('fare','Meter fare',d.meterFare);
   html += _fld('waitingCost','Waiting charge',d.waitingCharge);
-  html += _fld('tmSubsidyFare','Meter subsidy',d.meterSubsidy);
+  html += _fld('tmSubsidyFare','Meter subsidy (%/cap)',d.meterSubsidy);
   html += _fld('tmSubsidyHoist','Hoist (council)',d.hoistCouncil);
-  html += _fld('tmSubsidy','Total council',d.totalCouncil);
+  html += _fld('tmSubsidy','Council claim (%/cap)',d.meterSubsidy);
   html += _fld('tmPassengerPays','Passenger pays',d.passengerPays);
   html += _fld('startedAt_ISO','Start (ISO or epoch ms)',d.startedAtRaw||'');
   html += _fld('completedAt_ISO','End (ISO or epoch ms)',d.completedAtRaw||'');
@@ -2524,10 +2521,10 @@ ${d.expectedMeter != null ? frow('Expected meter (ref list)', money(d.expectedMe
 ${d.waitingCharge > 0 ? frow('Waiting Charge (passenger pays, not TM)', money(d.waitingCharge), '#9e9e9e') : ''}
 <tr><td colspan="2" style="padding:4px 0;border-top:1px dashed #ccc"></td></tr>
 ${d.splitNote ? frow(esc(d.splitNote), '', '#1565C0') : ''}
-${frow('Line 1 — Meter subsidy', '<span style="color:#2E7D32;font-weight:600">' + money(d.meterSubsidy) + '</span>')}
-${frow('Line 2 — Hoist (100% council)', '<span style="color:#2E7D32;font-weight:600">' + money(d.hoistCouncil) + '</span>')}
+${frow('Line 1 — Meter subsidy (%/cap)', '<span style="color:#2E7D32;font-weight:600">' + money(d.meterSubsidy) + '</span>')}
+${frow('Line 2 — Hoist (100% council, separate)', '<span style="color:#1565C0;font-weight:600">' + money(d.hoistCouncil) + '</span>')}
 ${d.hoistLines ? frow('&nbsp;&nbsp;' + esc(d.hoistLines), '', '#555') : ''}
-<tr style="border-top:2px solid #ccc"><td style="padding:6px 0"><strong>Total Council Pays</strong></td>
+<tr style="border-top:2px solid #ccc"><td style="padding:6px 0"><strong>Council total (meter + hoist)</strong></td>
 <td style="text-align:right"><strong style="color:#2E7D32;font-size:15px">${money(d.totalCouncil)}</strong></td></tr>
 ${frow('Passenger Share (meter − subsidy)', money(d.passengerShare))}
 ${d.waitingCharge > 0 ? frow('+ Waiting Charge', money(d.waitingCharge)) : ''}
@@ -2864,20 +2861,20 @@ ${(() => {
 })()}
 <div class="cp-stats" style="margin-bottom:18px">
   <div class="cp-stat"><div class="cp-stat-v">${submitted.length}</div><div class="cp-stat-l">Awaiting Approval</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totalPending.toFixed(2)}</div><div class="cp-stat-l">Pending Claim Value</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totalPending.toFixed(2)}</div><div class="cp-stat-l">Pending claim (%/cap)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${approved.length}</div><div class="cp-stat-l">Approved (unpaid)</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totalApproved.toFixed(2)}</div><div class="cp-stat-l">Approved Claim Value</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totalApproved.toFixed(2)}</div><div class="cp-stat-l">Approved claim (%/cap)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totalHoistFiltered.toFixed(2)}</div><div class="cp-stat-l">Hoist $ (date filter)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${totalHoistUsesFiltered}</div><div class="cp-stat-l">Hoist Uses (date filter)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${paid.length}</div><div class="cp-stat-l">Paid</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totalPaid.toFixed(2)}</div><div class="cp-stat-l">Paid Claim Value${paidMissingProof ? ` · <span style="color:#E65100;font-size:11px">${paidMissingProof} missing proof</span>` : ''}</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totalPaid.toFixed(2)}</div><div class="cp-stat-l">Paid claim (%/cap)${paidMissingProof ? ` · <span style="color:#E65100;font-size:11px">${paidMissingProof} missing proof</span>` : ''}</div></div>
 </div>
 ${filterBar}
 ${tabsHtml}
 <div class="cp-card" style="overflow-x:auto">
 <p style="font-size:13px;color:#666;padding:12px 16px 0">Flow: <strong>Submitted → Approved → Paid</strong>. Marking Paid cascades all trips in the batch to Paid. Proof of payment / invoice is optional but flagged if missing.</p>
 ${filtered.length ? `<table class="cp-tbl" style="margin-top:8px">
-<thead><tr><th>Operator</th><th>Month</th><th style="text-align:right">Trips</th><th style="text-align:right">Council Claim</th><th style="text-align:right">Hoist $</th><th style="text-align:right">Uses</th><th>Status</th><th>Submitted</th><th>Approved</th><th>Proof</th><th>Action</th></tr></thead>
+<thead><tr><th>Operator</th><th>Month</th><th style="text-align:right">Trips</th><th style="text-align:right">Council claim (%/cap)</th><th style="text-align:right">Hoist $</th><th style="text-align:right">Uses</th><th>Status</th><th>Submitted</th><th>Approved</th><th>Proof</th><th>Action</th></tr></thead>
 <tbody>${rows}</tbody></table>` : '<div class="cp-empty">No batches match these filters.</div>'}
 </div>
 <div class="cp-ov" id="cp-paid-ov" onclick="if(event.target===this)cpCloseMarkPaid()">
@@ -3658,7 +3655,7 @@ router.get('/council-portal/entity', requirePortalAuth, (req, res) => {
 <td style="font-size:12px;color:#555">${esc(d.companyName)}</td>
 <td>${esc(d.driverName || '—')}</td>
 <td>${esc(d.voucherNo || t.tmCardNumber || '—')}</td>
-<td style="font-weight:700;color:#1B5E20">$${d.totalCouncil.toFixed(2)}</td>
+<td style="font-weight:700;color:#1B5E20">$${d.meterSubsidy.toFixed(2)}</td>
 <td>${statusBadge(d.status)}</td>
 <td><button type="button" class="cp-btn-sm" onclick="openCpDetail(${idx})">Details</button>
 <a class="cp-btn-sm" style="margin-left:4px;background:#eee;color:#333" href="/council-portal/trips?t=${te}&q=${encodeURIComponent(entityKey)}">Trips</a></td>
@@ -3698,7 +3695,7 @@ router.get('/council-portal/entity', requirePortalAuth, (req, res) => {
 <div class="cp-stats">
   <div class="cp-stat"><div class="cp-stat-v">${totals.trips}</div><div class="cp-stat-l">Trips</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totals.meterFare.toFixed(2)}</div><div class="cp-stat-l">Meter Fare</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totals.councilPays.toFixed(2)}</div><div class="cp-stat-l">Council $</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totals.councilPays.toFixed(2)}</div><div class="cp-stat-l">Council claim (%/cap)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${hoistPaysLabel.toFixed(2)}</div><div class="cp-stat-l">Hoist $ (${hoistUsesLabel} uses)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totals.passengerPays.toFixed(2)}</div><div class="cp-stat-l">Passenger Pays</div></div>
 </div>
@@ -3713,7 +3710,7 @@ router.get('/council-portal/entity', requirePortalAuth, (req, res) => {
   <div class="cp-card-hd"><h3>Trips</h3>
     <span style="font-size:12px;color:#888">${details.length} trip(s)</span></div>
   ${details.length ? `<table class="cp-tbl">
-<thead><tr><th>Job</th><th>Date</th><th>Company</th><th>Driver</th><th>Card</th><th>Council $</th><th>Status</th><th>Actions</th></tr></thead>
+<thead><tr><th>Job</th><th>Date</th><th>Company</th><th>Driver</th><th>Card</th><th>Council claim</th><th>Status</th><th>Actions</th></tr></thead>
 <tbody>${tripRows}</tbody></table>` : '<div class="cp-empty">No trips for this entity and filters.</div>'}
 </div>
 ${cpTripDetailOverlayHtml()}

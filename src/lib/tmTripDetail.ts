@@ -226,9 +226,17 @@ export function buildTmTripDetail(
 
   const waiting = num(t.waitingCost ?? t.WaitingCost ?? t.waitingCharge ?? t.waitingFee);
   const meterFare = num(t.fare ?? t.tmMeterFare ?? t.meterFare);
-  const meterSubsidy = num(t.tmSubsidyFare);
   const hoist = num(t.tmSubsidyHoist ?? t.hoistTotal);
-  const totalCouncil = num(t.tmSubsidy ?? t.tmCouncilPays ?? meterSubsidy + hoist);
+  // Meter %/cap claim only — never fold hoist into the claim figure.
+  let meterSubsidy = 0;
+  if (t.tmSubsidyFare != null && t.tmSubsidyFare !== '') {
+    meterSubsidy = num(t.tmSubsidyFare);
+  } else {
+    const combined = num(t.tmSubsidy ?? t.tmCouncilPays);
+    meterSubsidy = Math.max(0, +(combined - hoist).toFixed(2));
+  }
+  // Display-only grand total (meter claim + hoist); not used as the claim column.
+  const totalCouncil = +(meterSubsidy + hoist).toFixed(2);
   const passengerShare = Math.max(0, meterFare - meterSubsidy);
   const passengerPays = num(t.tmPassengerPays ?? passengerShare + waiting);
   const paxCount = cardNums.length || num(t.tmPassengerCount, 1) || 1;

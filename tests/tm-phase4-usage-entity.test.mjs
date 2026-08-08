@@ -19,7 +19,13 @@ function tripActivityMs(t) {
 }
 
 function subsidyOf(t) {
-  return parseFloat(String(t.tmSubsidy != null ? t.tmSubsidy : t.tmCouncilPays || 0)) || 0;
+  const hoist = parseFloat(String(t.tmSubsidyHoist ?? t.hoistTotal ?? t.hoistCost ?? 0)) || 0;
+  if (t?.tmSubsidyFare != null && t.tmSubsidyFare !== '') {
+    return parseFloat(String(t.tmSubsidyFare)) || 0;
+  }
+  const combined =
+    parseFloat(String(t.tmSubsidy != null ? t.tmSubsidy : t.tmCouncilPays || 0)) || 0;
+  return Math.max(0, +(combined - hoist).toFixed(2));
 }
 function hoistPaysOf(t) {
   return parseFloat(String(t.tmSubsidyHoist ?? t.hoistTotal ?? t.hoistCost ?? 0)) || 0;
@@ -218,6 +224,7 @@ const sampleTrips = [
     driverName: 'Driver A',
     taxiNumber: 'T1',
     tmSubsidy: 10,
+    tmSubsidyFare: 10,
     tmSubsidyHoist: 5,
     tmHoists: [{ amount: 5 }],
     completedAt: dayA,
@@ -229,6 +236,7 @@ const sampleTrips = [
     driverName: 'Driver A',
     taxiNumber: 'T1',
     tmSubsidy: 12,
+    tmSubsidyFare: 12,
     tmSubsidyHoist: 5,
     hoistCount: 1,
     completedAt: dayB,
@@ -240,6 +248,7 @@ const sampleTrips = [
     driverName: 'Driver B',
     taxiNumber: 'T2',
     tmSubsidy: 8,
+    tmSubsidyFare: 8,
     tmSubsidyHoist: 0,
     completedAt: dayA,
   },
@@ -271,6 +280,7 @@ test('aggregateTripUsage returns all cards (not capped at 8) with hoist', () => 
       driverName: 'D' + i,
       taxiNumber: 'V' + i,
       tmSubsidy: 1,
+      tmSubsidyFare: 1,
       tmSubsidyHoist: 2,
       completedAt: dayA,
     });

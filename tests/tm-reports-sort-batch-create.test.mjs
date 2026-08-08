@@ -137,25 +137,24 @@ function shouldWriteBatchCreate(existing) {
 
 
 function subsidyOfTrip(t) {
-
-  const raw =
-
-    t.tmSubsidy != null
-
-      ? t.tmSubsidy
-
-      : t.totalSubsidy != null
-
-        ? t.totalSubsidy
-
-        : t.tmCouncilPays != null
-
-          ? t.tmCouncilPays
-
-          : 0;
-
-  return parseFloat(String(raw)) || 0;
-
+  const hoist =
+    parseFloat(String(t.tmSubsidyHoist ?? t.hoistTotal ?? t.hoistCost ?? 0)) || 0;
+  if (t.tmSubsidyFare != null && t.tmSubsidyFare !== '') {
+    return parseFloat(String(t.tmSubsidyFare)) || 0;
+  }
+  const combined =
+    parseFloat(
+      String(
+        t.tmSubsidy != null
+          ? t.tmSubsidy
+          : t.tmCouncilPays != null
+            ? t.tmCouncilPays
+            : t.totalSubsidy != null
+              ? t.totalSubsidy
+              : 0,
+      ),
+    ) || 0;
+  return Math.max(0, +(combined - hoist).toFixed(2));
 }
 
 

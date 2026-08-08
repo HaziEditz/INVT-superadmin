@@ -90,7 +90,14 @@ function filterTripsUnified(trips, opts = {}) {
   return rows;
 }
 function subsidyOf(t) {
-  return parseFloat(String(t.tmSubsidy != null ? t.tmSubsidy : t.tmCouncilPays || 0)) || 0;
+  const hoist =
+    parseFloat(String(t.tmSubsidyHoist ?? t.hoistTotal ?? t.hoistCost ?? 0)) || 0;
+  if (t?.tmSubsidyFare != null && t.tmSubsidyFare !== '') {
+    return parseFloat(String(t.tmSubsidyFare)) || 0;
+  }
+  const combined =
+    parseFloat(String(t.tmSubsidy != null ? t.tmSubsidy : t.tmCouncilPays || 0)) || 0;
+  return Math.max(0, +(combined - hoist).toFixed(2));
 }
 function aggregateTripUsage(trips, limitOrOpts = Number.POSITIVE_INFINITY) {
   const limit =
@@ -391,9 +398,23 @@ test('hoistUsesOf prefers tmHoists length then tmHoistCount', () => {
   assert.equal(hoistUsesOf({ fare: 12 }), 0);
 });
 
+test('subsidyOf is meter claim only — strips hoist from legacy combined', () => {
+  assert.match(unifiedSrc, /Meter %\/cap council claim only/);
+  assert.equal(subsidyOf({ tmSubsidyFare: 9.87, tmSubsidyHoist: 11, tmSubsidy: 20.87 }), 9.87);
+  assert.equal(subsidyOf({ tmSubsidy: 20.87, tmSubsidyHoist: 11 }), 9.87);
+  assert.equal(subsidyOf({ tmCouncilPays: 20.87, hoistTotal: 11 }), 9.87);
+  assert.equal(subsidyOf({ tmSubsidy: 10 }), 10);
+});
+
 test('council Trips/Dashboard/Batches expose hoist uses', () => {
   assert.match(councilSrc, /hoistUsesOf/);
-  assert.match(councilSrc, /Hoist Uses This Month|Hoist \$ This Month/);
+  assert.match(councilSrc, /Hoist Uses This Month/);
+  assert.match(councilSrc, /Council claim \(%\/cap\)/);
+  assert.match(
+    councilSrc,
+    /Hoist \$ This Month \(\$\{totalHoistUses\} use\$\{totalHoistUses === 1 \? '' : 's'\}\)/,
+  );
   assert.match(councilSrc, /<th>Hoist \$<\/th><th>Uses<\/th>/);
   assert.match(councilSrc, /_displayHoistUses/);
+  assert.match(councilSrc, /totCouncil \+= d\.meterSubsidy/);
 });

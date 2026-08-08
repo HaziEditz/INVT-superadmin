@@ -37,16 +37,29 @@ export function shouldWriteBatchCreate(existing: { status?: string } | null | un
   return 'skip';
 }
 
+/**
+ * Meter %/cap council claim only — hoist stays out of batch claim totals.
+ * Prefer tmSubsidyFare; legacy combined fields fall back to combined − hoist.
+ */
 export function subsidyOfTrip(t: CouncilTripLike): number {
-  const raw =
-    t.tmSubsidy != null
-      ? t.tmSubsidy
-      : t.totalSubsidy != null
-        ? t.totalSubsidy
-        : t.tmCouncilPays != null
-          ? t.tmCouncilPays
-          : 0;
-  return parseFloat(String(raw)) || 0;
+  const hoist =
+    parseFloat(String(t.tmSubsidyHoist ?? t.hoistTotal ?? t.hoistCost ?? 0)) || 0;
+  if (t.tmSubsidyFare != null && t.tmSubsidyFare !== '') {
+    return parseFloat(String(t.tmSubsidyFare)) || 0;
+  }
+  const combined =
+    parseFloat(
+      String(
+        t.tmSubsidy != null
+          ? t.tmSubsidy
+          : t.tmCouncilPays != null
+            ? t.tmCouncilPays
+            : t.totalSubsidy != null
+              ? t.totalSubsidy
+              : 0,
+      ),
+    ) || 0;
+  return Math.max(0, +(combined - hoist).toFixed(2));
 }
 
 /** Normalize batch trip list entries to { cid, rawKey }. */

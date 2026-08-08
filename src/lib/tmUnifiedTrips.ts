@@ -154,8 +154,18 @@ export type EntityTotals = {
   hoistUses: number;
 };
 
+/**
+ * Meter %/cap council claim only — never includes flat hoist.
+ * Prefer tmSubsidyFare; legacy combined tmSubsidy/tmCouncilPays falls back to combined − hoist.
+ */
 export function subsidyOf(t: any): number {
-  return parseFloat(String(t.tmSubsidy != null ? t.tmSubsidy : t.tmCouncilPays || 0)) || 0;
+  const hoist = hoistPaysOf(t);
+  if (t?.tmSubsidyFare != null && t.tmSubsidyFare !== '') {
+    return parseFloat(String(t.tmSubsidyFare)) || 0;
+  }
+  const combined =
+    parseFloat(String(t?.tmSubsidy != null ? t.tmSubsidy : t?.tmCouncilPays || 0)) || 0;
+  return Math.max(0, +(combined - hoist).toFixed(2));
 }
 
 export function hoistPaysOf(t: any): number {
@@ -428,7 +438,7 @@ export function sumEntityTotals(trips: any[]): EntityTotals {
     councilPays += council;
     const pax =
       parseFloat(String(t.tmPassengerPays ?? t.passengerPays ?? 0)) ||
-      Math.max(0, (parseFloat(String(t.tmMeterFare ?? t.fare ?? 0)) || 0) - (council - hoist));
+      Math.max(0, (parseFloat(String(t.tmMeterFare ?? t.fare ?? 0)) || 0) - council);
     passengerPays += pax;
   }
   return {

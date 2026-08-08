@@ -432,10 +432,11 @@ input:focus,select:focus,textarea:focus{
 /* ── Council portal ────────────────────────────────────────── */
 .cp-stat{
   background:#fff!important;
-  border-radius:12px!important;
+  border-radius:8px!important;
   border:1px solid #E2E8F0!important;
   box-shadow:0 1px 3px rgba(0,0,0,.06)!important;
+  padding:8px 12px!important;
 }
 .cp-stat.flag{border-top:3px solid #D97706!important}
-.cp-stat-v{font-family:'Inter',system-ui,sans-serif!important;font-size:28px!important;font-weight:800!important;color:#0F172A!important}
-.cp-stat-l{font-size:12px!important;color:#64748B!important;font-weight:500!important}
+.cp-stat-v{font-family:'Inter',system-ui,sans-serif!important;font-size:18px!important;font-weight:800!important;color:#0F172A!important;line-height:1.15!important}
+.cp-stat-l{font-size:11px!important;color:#64748B!important;font-weight:500!important;margin-top:2px!important}
