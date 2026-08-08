@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import https from 'https';
 import { fbRead, fbWrite, fbAuthCreate, fbAuthSignIn, fbAuthSendReset } from '../firebase';
 import { esc } from '../utils';
 import { cpGetSession, cpSetSession, cpDeleteSession, councilSessions } from '../sessions';
@@ -586,6 +587,64 @@ function requirePortalAuth(req: Request, res: Response, next: NextFunction): voi
   next();
 }
 
+/** In-memory Nominatim cache (server-side; browser UAs are blocked by OSM policy). */
+const _cpGeocodeServerCache = new Map<string, { lat: number; lon: number } | null>();
+let _cpGeocodeLastAt = 0;
+
+function nominatimGeocode(
+  q: string,
+  cb: (err: string | null, ll: { lat: number; lon: number } | null) => void,
+): void {
+  const key = String(q || '').trim().toLowerCase();
+  if (!key) return cb(null, null);
+  if (_cpGeocodeServerCache.has(key)) return cb(null, _cpGeocodeServerCache.get(key) || null);
+  const wait = Math.max(0, 1100 - (Date.now() - _cpGeocodeLastAt));
+  const run = () => {
+    _cpGeocodeLastAt = Date.now();
+    const path =
+      '/search?format=json&limit=1&countrycodes=nz&q=' + encodeURIComponent(String(q).trim());
+    const req = https.request(
+      {
+        hostname: 'nominatim.openstreetmap.org',
+        path,
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          'Accept-Language': 'en',
+          'User-Agent': 'BookaWaka-CouncilPortal/1.0 (tm-map; contact: support@bookawaka.nz)',
+        },
+      },
+      (res) => {
+        let raw = '';
+        res.on('data', (c) => (raw += c));
+        res.on('end', () => {
+          if (res.statusCode && res.statusCode >= 400) {
+            return cb('HTTP ' + res.statusCode, null);
+          }
+          try {
+            const arr = JSON.parse(raw);
+            if (arr && arr[0] && arr[0].lat != null && arr[0].lon != null) {
+              const ll = { lat: Number(arr[0].lat), lon: Number(arr[0].lon) };
+              if (Number.isFinite(ll.lat) && Number.isFinite(ll.lon)) {
+                _cpGeocodeServerCache.set(key, ll);
+                return cb(null, ll);
+              }
+            }
+            _cpGeocodeServerCache.set(key, null);
+            return cb(null, null);
+          } catch (e: any) {
+            return cb(String(e && e.message ? e.message : e), null);
+          }
+        });
+      },
+    );
+    req.on('error', (e) => cb(String(e.message || e), null));
+    req.end();
+  };
+  if (wait > 0) setTimeout(run, wait);
+  else run();
+}
+
 // ── Login / logout ─────────────────────────────────────────────────────────────
 router.get('/council-portal', (req, res) => {
   const err = (req.query.err as string) || '';
@@ -659,6 +718,21 @@ router.get('/api/council-logout', (req, res) => {
   const tok = (req.query.t as string) || '';
   if (tok) cpDeleteSession(tok as string);
   res.redirect('/council-portal');
+});
+
+/** Server-side Nominatim proxy — browsers get 403 with default UA. */
+router.get('/api/council-geocode', (req, res) => {
+  const token = String(req.query.t || '');
+  const sess = cpGetSession(token);
+  if (!sess) return res.status(401).json({ error: 'session' });
+  const q = String(req.query.q || '').trim();
+  if (!q || q === '—') return res.json({ lat: null, lon: null });
+  if (q.length > 300) return res.status(400).json({ error: 'query too long' });
+  nominatimGeocode(q, (err, ll) => {
+    if (err && !ll) return res.status(502).json({ error: 'geocode_failed', detail: err });
+    if (!ll) return res.json({ lat: null, lon: null });
+    res.json({ lat: ll.lat, lon: ll.lon });
+  });
 });
 
 // ── Set council password (called from SA admin) ────────────────────────────────
@@ -1574,7 +1648,7 @@ function cpBulkRestoreAll(n){
 }
 </script>`;
 
-/** Shared Leaflet map + geocode (coords or address fallback, same idea as Closed Jobs). */
+/** Shared Leaflet map + address fallback via server geocode proxy (Nominatim blocks browser UAs). */
 const CP_TRIP_MAP_SCRIPT = `
 <script>
 var _cpMap = null;
@@ -1610,13 +1684,17 @@ function cpProcessGeocodeQueue(){
     cpProcessGeocodeQueue();
     return;
   }
-  fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=nz&q='+encodeURIComponent(item.addr),{
-    headers:{'Accept-Language':'en','User-Agent':'BookaWaka-CouncilPortal/1.0'}
-  }).then(function(r){ return r.json(); }).then(function(arr){
+  var tok = typeof _cpToken === 'string' ? _cpToken : '';
+  var url = '/api/council-geocode?t='+encodeURIComponent(tok)+'&q='+encodeURIComponent(item.addr);
+  fetch(url,{headers:{'Accept':'application/json'}}).then(function(r){
+    if(!r.ok) throw new Error('geocode HTTP '+r.status);
+    return r.json();
+  }).then(function(j){
     var ll = null;
-    if(arr && arr[0] && arr[0].lat && arr[0].lon){
-      ll = [Number(arr[0].lat), Number(arr[0].lon)];
-      _cpGeocache[item.addr] = ll;
+    if(j && j.lat != null && j.lon != null){
+      ll = [Number(j.lat), Number(j.lon)];
+      if(Number.isFinite(ll[0]) && Number.isFinite(ll[1])) _cpGeocache[item.addr] = ll;
+      else ll = null;
     }
     item.resolve(ll);
   }).catch(function(){ item.resolve(null); }).then(function(){

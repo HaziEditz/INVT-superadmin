@@ -131,11 +131,14 @@ test('owner fix comment required on resubmit and stored on events', () => {
 
 test('council detail map geocodes and is on pending + flagged + reports', () => {
   assert.match(councilSrc, /initCpTripMap/);
+  assert.match(councilSrc, /\/api\/council-geocode/);
   assert.match(councilSrc, /nominatim\.openstreetmap\.org/);
+  assert.match(councilSrc, /BookaWaka-CouncilPortal/);
   assert.match(councilSrc, /cp-trip-map-wrap/);
   assert.match(councilSrc, /openCpDetail/);
   assert.match(councilSrc, /_cpReturnTo = \$\{JSON\.stringify\(returnTo\)\}|_cpReturnTo = '/);
   assert.match(councilSrc, /filterTripsUnified/);
   assert.match(councilSrc, /\/council-portal\/trips/);
   assert.doesNotMatch(councilSrc, /function initRptMap|openRptDetail/);
+  assert.doesNotMatch(councilSrc, /cp-trip-map-debug/);
 });

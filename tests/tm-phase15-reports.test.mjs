@@ -91,6 +91,7 @@ test('council Reports has three-action approve + edit + map', () => {
   assert.match(councilSrc, /buildEditPanel/);
   assert.match(councilSrc, /startedAtRaw/);
   assert.match(councilSrc, /initCpTripMap/);
+  assert.match(councilSrc, /\/api\/council-geocode/);
   assert.match(councilSrc, /nominatim/i);
 });
 
