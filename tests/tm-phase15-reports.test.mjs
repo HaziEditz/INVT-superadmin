@@ -92,8 +92,8 @@ test('council Reports has three-action approve + edit + map', () => {
   assert.match(councilSrc, /startedAtRaw/);
   assert.match(councilSrc, /initCpTripMap/);
   assert.match(councilSrc, /\/api\/council-geocode/);
-  assert.match(councilSrc, /cpMapDbg/);
   assert.match(councilSrc, /nominatim/i);
+  assert.doesNotMatch(councilSrc, /cpMapDbg|council-map-debug|mapdbg-20260808/);
 });
 
 test('Reports detail script does not nest single-quoted alert inside single-quoted h+=', () => {
