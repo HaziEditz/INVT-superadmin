@@ -205,6 +205,7 @@ a{color:inherit;text-decoration:none}
 #cp-trip-map-wrap{margin-top:12px;overflow:hidden;border-radius:6px;position:relative}
 #cp-trip-map{height:220px;border-radius:6px;z-index:1;background:#E8F5E9;overflow:hidden}
 #cp-trip-map-status{font-size:12px;color:#666;margin:0 0 6px;min-height:16px}
+#cp-trip-map-debug{display:none;margin-top:8px;font-size:11px;font-family:ui-monospace,Consolas,monospace;background:#0f172a;color:#e2e8f0;padding:8px;border-radius:4px;max-height:220px;overflow:auto;white-space:pre-wrap}
 .cp-bdg-mismatch{background:#FFEBEE;color:#C62828;display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700}
 .cp-edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;margin-top:10px}
 .cp-edit-grid label{display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:2px}
@@ -720,19 +721,112 @@ router.get('/api/council-logout', (req, res) => {
   res.redirect('/council-portal');
 });
 
+/** TEMP map-debug ring (remove after live map investigation). */
+const _cpGeocodeDebugLog: any[] = [];
+function cpGeocodeDebugPush(entry: Record<string, unknown>): void {
+  _cpGeocodeDebugLog.push({ at: Date.now(), ...entry });
+  if (_cpGeocodeDebugLog.length > 40) _cpGeocodeDebugLog.shift();
+}
+
 /** Server-side Nominatim proxy — browsers get 403 with default UA. */
 router.get('/api/council-geocode', (req, res) => {
   const token = String(req.query.t || '');
   const sess = cpGetSession(token);
-  if (!sess) return res.status(401).json({ error: 'session' });
+  if (!sess) {
+    cpGeocodeDebugPush({ kind: 'proxy', ok: false, status: 401, q: String(req.query.q || '').slice(0, 80) });
+    return res.status(401).json({ error: 'session' });
+  }
   const q = String(req.query.q || '').trim();
-  if (!q || q === '—') return res.json({ lat: null, lon: null });
-  if (q.length > 300) return res.status(400).json({ error: 'query too long' });
+  if (!q || q === '—') {
+    cpGeocodeDebugPush({ kind: 'proxy', ok: true, status: 200, q, lat: null, lon: null, reason: 'empty' });
+    return res.json({ lat: null, lon: null });
+  }
+  if (q.length > 300) {
+    cpGeocodeDebugPush({ kind: 'proxy', ok: false, status: 400, q: q.slice(0, 80) });
+    return res.status(400).json({ error: 'query too long' });
+  }
   nominatimGeocode(q, (err, ll) => {
-    if (err && !ll) return res.status(502).json({ error: 'geocode_failed', detail: err });
-    if (!ll) return res.json({ lat: null, lon: null });
+    if (err && !ll) {
+      cpGeocodeDebugPush({ kind: 'proxy', ok: false, status: 502, q: q.slice(0, 120), detail: err });
+      return res.status(502).json({ error: 'geocode_failed', detail: err });
+    }
+    if (!ll) {
+      cpGeocodeDebugPush({ kind: 'proxy', ok: true, status: 200, q: q.slice(0, 120), lat: null, lon: null });
+      return res.json({ lat: null, lon: null });
+    }
+    cpGeocodeDebugPush({
+      kind: 'proxy',
+      ok: true,
+      status: 200,
+      q: q.slice(0, 120),
+      lat: ll.lat,
+      lon: ll.lon,
+    });
     res.json({ lat: ll.lat, lon: ll.lon });
   });
+});
+
+/**
+ * TEMP live map investigation endpoint (no session).
+ * GET /api/council-map-debug?k=mapdbg-20260808&action=selftest|log
+ * POST /api/council-map-debug?k=mapdbg-20260808&action=beacon  JSON body
+ */
+router.all('/api/council-map-debug', (req, res) => {
+  if (String(req.query.k || '') !== 'mapdbg-20260808') {
+    return res.status(404).json({ error: 'not_found' });
+  }
+  const action = String(req.query.action || req.body?.action || 'log');
+  if (action === 'log') {
+    return res.json({
+      marker: 'map-debug-v1',
+      commitHint: '00d6dc5-proxy',
+      proxyPath: '/api/council-geocode',
+      log: _cpGeocodeDebugLog.slice(-30),
+    });
+  }
+  if (action === 'beacon') {
+    const body = req.method === 'POST' ? req.body || {} : req.query;
+    cpGeocodeDebugPush({ kind: 'beacon', ...(typeof body === 'object' ? body : { raw: String(body) }) });
+    return res.json({ ok: true });
+  }
+  if (action === 'selftest') {
+    const addrs = [
+      '305, Kelvin Street, Gladstone, Invercargill',
+      '311, Kelvin Street, Gladstone, Invercargill',
+    ];
+    const results: any[] = [];
+    const runNext = (i: number) => {
+      if (i >= addrs.length) {
+        return res.json({
+          marker: 'map-debug-v1',
+          from: 'railway-nominatimGeocode',
+          results,
+          logTail: _cpGeocodeDebugLog.slice(-10),
+        });
+      }
+      const q = addrs[i];
+      const t0 = Date.now();
+      nominatimGeocode(q, (err, ll) => {
+        results.push({
+          q,
+          ms: Date.now() - t0,
+          err: err || null,
+          lat: ll ? ll.lat : null,
+          lon: ll ? ll.lon : null,
+        });
+        cpGeocodeDebugPush({
+          kind: 'selftest',
+          q,
+          err: err || null,
+          lat: ll ? ll.lat : null,
+          lon: ll ? ll.lon : null,
+        });
+        runNext(i + 1);
+      });
+    };
+    return runNext(0);
+  }
+  return res.status(400).json({ error: 'bad_action' });
 });
 
 // ── Set council password (called from SA admin) ────────────────────────────────
@@ -1656,11 +1750,26 @@ var _cpMapGen = 0;
 var _cpGeocache = {};
 var _cpGeocodeQueue = [];
 var _cpGeocoding = false;
+function cpMapDbg(msg, obj){
+  var el = document.getElementById('cp-trip-map-debug');
+  if(!el) return;
+  el.style.display = 'block';
+  var line = msg + (obj !== undefined ? ' ' + JSON.stringify(obj) : '');
+  el.textContent = (el.textContent ? el.textContent + '\\n' : '') + line;
+  try{
+    fetch('/api/council-map-debug?k=mapdbg-20260808&action=beacon', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Accept':'application/json'},
+      body: JSON.stringify({msg:msg, obj:obj || null, href: location.pathname})
+    }).catch(function(){});
+  }catch(e){}
+}
 function cpMapStatus(msg){
   var el = document.getElementById('cp-trip-map-status');
   if(!el) return;
   el.textContent = msg || '';
   el.style.display = msg ? 'block' : 'none';
+  if(msg) cpMapDbg('status', msg);
 }
 function cpDestroyTripMap(){
   if(_cpMap){ try{_cpMap.remove();}catch(e){} _cpMap=null; }
@@ -1686,10 +1795,13 @@ function cpProcessGeocodeQueue(){
   }
   var tok = typeof _cpToken === 'string' ? _cpToken : '';
   var url = '/api/council-geocode?t='+encodeURIComponent(tok)+'&q='+encodeURIComponent(item.addr);
+  cpMapDbg('geocode fetch start', {addr:item.addr, tokLen: tok.length, url: url.replace(/t=[^&]+/,'t=…')});
   fetch(url,{headers:{'Accept':'application/json'}}).then(function(r){
+    cpMapDbg('geocode HTTP', {addr:item.addr, status:r.status, ok:r.ok});
     if(!r.ok) throw new Error('geocode HTTP '+r.status);
     return r.json();
   }).then(function(j){
+    cpMapDbg('geocode JSON', {addr:item.addr, body:j});
     var ll = null;
     if(j && j.lat != null && j.lon != null){
       ll = [Number(j.lat), Number(j.lon)];
@@ -1697,9 +1809,33 @@ function cpProcessGeocodeQueue(){
       else ll = null;
     }
     item.resolve(ll);
-  }).catch(function(){ item.resolve(null); }).then(function(){
+  }).catch(function(err){
+    cpMapDbg('geocode ERROR', {addr:item.addr, err: String(err && err.message ? err.message : err)});
+    item.resolve(null);
+  }).then(function(){
     _cpGeocoding = false;
     setTimeout(cpProcessGeocodeQueue, 1100);
+  });
+}
+function cpReportMapLayout(tag){
+  var el = document.getElementById('cp-trip-map');
+  var wrap = document.getElementById('cp-trip-map-wrap');
+  var ov = document.getElementById('cp-detail-ov');
+  var modal = ov ? ov.querySelector('.cp-modal') : null;
+  var size = _cpMap ? _cpMap.getSize() : null;
+  var layers = 0;
+  try{ if(_cpMap) _cpMap.eachLayer(function(){ layers++; }); }catch(e){}
+  cpMapDbg('map layout '+tag, {
+    elW: el ? el.clientWidth : null,
+    elH: el ? el.clientHeight : null,
+    wrapW: wrap ? wrap.clientWidth : null,
+    wrapH: wrap ? wrap.clientHeight : null,
+    modalScroll: modal ? modal.scrollTop : null,
+    modalClientH: modal ? modal.clientHeight : null,
+    modalScrollH: modal ? modal.scrollHeight : null,
+    leafletSize: size ? {x:size.x,y:size.y} : null,
+    layerCount: layers,
+    paneCount: el ? el.querySelectorAll('.leaflet-tile-pane img').length : 0
   });
 }
 function cpDrawTripMap(puLL, duLL, gen){
@@ -1712,6 +1848,7 @@ function cpDrawTripMap(puLL, duLL, gen){
     cpMapStatus('Map unavailable — no coordinates or geocodable addresses.');
     return;
   }
+  cpMapDbg('cpDrawTripMap', {puLL:puLL, duLL:duLL, gen:gen});
   var center = puLL || duLL;
   _cpMap = L.map(el).setView(center, 13);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -1731,12 +1868,22 @@ function cpDrawTripMap(puLL, duLL, gen){
   }
   if(bounds.length > 1) _cpMap.fitBounds(bounds, {padding:[24,24]});
   else if(bounds.length === 1) _cpMap.setView(bounds[0], 15);
-  setTimeout(function(){ if(_cpMap && (gen == null || gen === _cpMapGen)) _cpMap.invalidateSize(); }, 120);
+  cpReportMapLayout('after-draw');
+  setTimeout(function(){
+    if(_cpMap && (gen == null || gen === _cpMapGen)) _cpMap.invalidateSize();
+    cpReportMapLayout('after-invalidate-120');
+  }, 120);
+  setTimeout(function(){
+    if(_cpMap && (gen == null || gen === _cpMapGen)) _cpMap.invalidateSize();
+    cpReportMapLayout('after-invalidate-600');
+  }, 600);
 }
 function initCpTripMap(d, gen){
   if(gen == null) gen = _cpMapGen;
   cpDestroyTripMap();
   if(gen !== _cpMapGen) return;
+  var dbg = document.getElementById('cp-trip-map-debug');
+  if(dbg){ dbg.style.display='block'; dbg.textContent=''; }
   cpMapStatus('');
   var el = document.getElementById('cp-trip-map');
   if(!el || typeof L==='undefined') return;
@@ -1748,6 +1895,7 @@ function initCpTripMap(d, gen){
   var dropoff = String(d.dropoff || '').trim();
   var needPuGeo = !hasPu && pickup && pickup !== '—';
   var needDuGeo = !hasDu && dropoff && dropoff !== '—';
+  cpMapDbg('initCpTripMap', {gen:gen, mapGen:_cpMapGen, id:d.id||d.jobId||null, hasPu:hasPu, hasDu:hasDu, needPuGeo:needPuGeo, needDuGeo:needDuGeo, pickup:pickup, dropoff:dropoff, tokLen:(typeof _cpToken==='string'?_cpToken.length:0)});
   if(hasPu && hasDu){
     cpDrawTripMap([plat, plng], [dlat, dlng], gen);
     return;
@@ -1766,6 +1914,7 @@ function initCpTripMap(d, gen){
     needDuGeo ? cpGeocodeAddr(dropoff) : Promise.resolve(hasDu ? [dlat, dlng] : null)
   ]).then(function(r){
     if(gen !== _cpMapGen) return;
+    cpMapDbg('geocode Promise.all done', {pu:r[0], du:r[1], gen:gen, mapGen:_cpMapGen});
     if(!r[0] && !r[1]){
       cpMapStatus('Address not found on map.');
       return;
@@ -2450,6 +2599,7 @@ ${revisionBlock}
 <div id="cp-trip-map-wrap">
   <div id="cp-trip-map-status" style="display:none"></div>
   <div id="cp-trip-map"></div>
+  <pre id="cp-trip-map-debug"></pre>
 </div>
 ${expectedBlock}
 <div style="background:#F1F8E9;border-radius:6px;padding:14px;font-size:13px;margin-top:12px">
