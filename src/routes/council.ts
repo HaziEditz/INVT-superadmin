@@ -42,6 +42,11 @@ import {
   resolveBatchTripKeys,
 } from '../lib/tmBatchPaid';
 import { storeBatchProof, MAX_PROOF_BYTES } from '../lib/tmBatchStorage';
+import { compareTripsNewestFirst, tripActivityMs, tripMonthKey } from '../lib/tmTripSort';
+import {
+  planCouncilBatchCreates,
+  shouldWriteBatchCreate,
+} from '../lib/tmBatchCreate';
 
 const router = Router();
 
@@ -104,8 +109,8 @@ a{color:inherit;text-decoration:none}
 .cp-modal-bd{padding:18px}
 .cp-modal-ft{padding:12px 18px;border-top:1px solid #eee;display:flex;justify-content:flex-end;gap:8px}
 .cp-input{padding:7px 10px;border:1px solid #ddd;border-radius:4px;font-size:13px}
-#cp-trip-map-wrap{margin-top:12px}
-#cp-trip-map{height:220px;border-radius:6px;z-index:1;background:#E8F5E9}
+#cp-trip-map-wrap{margin-top:12px;overflow:hidden;border-radius:6px;position:relative}
+#cp-trip-map{height:220px;border-radius:6px;z-index:1;background:#E8F5E9;overflow:hidden}
 #cp-trip-map-status{font-size:12px;color:#666;margin:0 0 6px;min-height:16px}
 .cp-bdg-mismatch{background:#FFEBEE;color:#C62828;display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700}
 .cp-edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;margin-top:10px}
@@ -873,7 +878,7 @@ router.get('/council-portal/dashboard', requirePortalAuth, (req, res) => {
           if (councils && councils[sess.councilId] && councils[sess.councilId].approved) approvedOps++;
         });
       }
-      const thisMonthTrips = myTrips.filter(t => (t.startedAt_ISO || '').slice(0, 7) === curMonth);
+      const thisMonthTrips = myTrips.filter((t) => tripMonthKey(t) === curMonth);
       let totalCouncilPays = 0, pendingCount = 0, flaggedCount = 0;
       thisMonthTrips.forEach(t => {
         totalCouncilPays += parseFloat(t.tmSubsidy || 0);
@@ -881,7 +886,7 @@ router.get('/council-portal/dashboard', requirePortalAuth, (req, res) => {
         if (t.status === 'flagged') flaggedCount++;
       });
       const avg = thisMonthTrips.length ? (totalCouncilPays / thisMonthTrips.length).toFixed(2) : '0.00';
-      const recent = [...myTrips].sort((a, b) => (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || '')).slice(0, 10);
+      const recent = [...myTrips].sort(compareTripsNewestFirst).slice(0, 10);
       const configHtml = cfg ? `
 <div class="cp-card"><div class="cp-card-hd"><h3>Council Configuration ${provenanceBadgeHtml({ kind: 'synced', label: 'Live', detail: 'Council source of truth for subsidy / cap / hoist' })}</h3></div><div class="cp-card-bd">
 <table style="font-size:13px;width:100%">
@@ -939,7 +944,7 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
     activeTrips.forEach(t => { if (t.startedAt_ISO) months[t.startedAt_ISO.slice(0, 7)] = true; });
     const sortedMonths = Object.keys(months).sort().reverse();
     let displayTrips = filterMonth ? activeTrips.filter(t => (t.startedAt_ISO || '').slice(0, 7) === filterMonth) : activeTrips;
-    displayTrips.sort((a, b) => (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || ''));
+    displayTrips.sort(compareTripsNewestFirst);
     let totalFare = 0, totalCouncil = 0, totalPax = 0;
     displayTrips.forEach(t => {
       totalFare += parseFloat(t.fare || 0);
@@ -1083,6 +1088,7 @@ function cpBulkRestoreAll(n){
 const CP_TRIP_MAP_SCRIPT = `
 <script>
 var _cpMap = null;
+var _cpMapGen = 0;
 var _cpGeocache = {};
 var _cpGeocodeQueue = [];
 var _cpGeocoding = false;
@@ -1128,10 +1134,12 @@ function cpProcessGeocodeQueue(){
     setTimeout(cpProcessGeocodeQueue, 1100);
   });
 }
-function cpDrawTripMap(puLL, duLL){
+function cpDrawTripMap(puLL, duLL, gen){
+  if(gen != null && gen !== _cpMapGen) return;
   var el = document.getElementById('cp-trip-map');
   if(!el || typeof L==='undefined') return;
   cpDestroyTripMap();
+  if(gen != null && gen !== _cpMapGen) return;
   if(!puLL && !duLL){
     cpMapStatus('Map unavailable — no coordinates or geocodable addresses.');
     return;
@@ -1155,10 +1163,12 @@ function cpDrawTripMap(puLL, duLL){
   }
   if(bounds.length > 1) _cpMap.fitBounds(bounds, {padding:[24,24]});
   else if(bounds.length === 1) _cpMap.setView(bounds[0], 15);
-  setTimeout(function(){ if(_cpMap) _cpMap.invalidateSize(); }, 120);
+  setTimeout(function(){ if(_cpMap && (gen == null || gen === _cpMapGen)) _cpMap.invalidateSize(); }, 120);
 }
-function initCpTripMap(d){
+function initCpTripMap(d, gen){
+  if(gen == null) gen = _cpMapGen;
   cpDestroyTripMap();
+  if(gen !== _cpMapGen) return;
   cpMapStatus('');
   var el = document.getElementById('cp-trip-map');
   if(!el || typeof L==='undefined') return;
@@ -1167,7 +1177,7 @@ function initCpTripMap(d){
   var hasPu = Number.isFinite(plat) && Number.isFinite(plng) && plat !== 0 && plng !== 0;
   var hasDu = Number.isFinite(dlat) && Number.isFinite(dlng) && dlat !== 0 && dlng !== 0;
   if(hasPu || hasDu){
-    cpDrawTripMap(hasPu ? [plat, plng] : null, hasDu ? [dlat, dlng] : null);
+    cpDrawTripMap(hasPu ? [plat, plng] : null, hasDu ? [dlat, dlng] : null, gen);
     return;
   }
   var pickup = String(d.pickup || '').trim();
@@ -1178,12 +1188,13 @@ function initCpTripMap(d){
   }
   cpMapStatus('Locating addresses on map…');
   Promise.all([cpGeocodeAddr(pickup), cpGeocodeAddr(dropoff)]).then(function(r){
+    if(gen !== _cpMapGen) return;
     if(!r[0] && !r[1]){
       cpMapStatus('Address not found on map.');
       return;
     }
     cpMapStatus('');
-    cpDrawTripMap(r[0], r[1]);
+    cpDrawTripMap(r[0], r[1], gen);
   });
 }
 </script>`;
@@ -1304,15 +1315,24 @@ function buildActionForms(d){
 function openCpDetail(i){
   var d = _cpTrips[i], html = _cpBodies[i];
   if(!d || !html) return;
+  // Destroy previous Leaflet instance BEFORE replacing the map container DOM.
+  cpDestroyTripMap();
+  _cpMapGen++;
+  var gen = _cpMapGen;
   document.getElementById('cp-detail-body').innerHTML = html + buildEditPanel(d);
   document.getElementById('cp-detail-title').textContent = 'Trip detail — ' + (d.id || '');
   document.getElementById('cp-detail-actions').innerHTML = buildActionForms(d);
   document.getElementById('cp-detail-ov').classList.add('open');
-  initCpTripMap(d);
+  initCpTripMap(d, gen);
 }
 function closeCpDetail(){
-  document.getElementById('cp-detail-ov').classList.remove('open');
+  _cpMapGen++;
   cpDestroyTripMap();
+  document.getElementById('cp-detail-ov').classList.remove('open');
+  var body = document.getElementById('cp-detail-body');
+  if(body) body.innerHTML = '';
+  var actions = document.getElementById('cp-detail-actions');
+  if(actions) actions.innerHTML = '';
 }
 </script>`;
 }
@@ -1352,7 +1372,7 @@ router.get('/council-portal/search', requirePortalAuth, (req, res) => {
         results = results.filter((t) => String(t.status || '').toLowerCase() === filterStatus);
       }
       results = results.filter((t) => tripMatchesSearch(t, q));
-      results.sort((a, b) => (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || ''));
+      results.sort(compareTripsNewestFirst);
     }
     const rows = results
       .map((t) => {
@@ -1415,9 +1435,7 @@ router.get('/council-portal/pending', requirePortalAuth, (req, res) => {
     scanAndRefreshTrips(myTrips, (scanned) => {
       const { cleanSubmitted } = partitionCleanAndFlagged(scanned);
       const pending = filterTripsBySearchAndCompany(
-        cleanSubmitted.slice().sort((a, b) =>
-          (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || ''),
-        ),
+        cleanSubmitted.slice().sort(compareTripsNewestFirst),
         q,
         filterCompany,
       );
@@ -1557,9 +1575,7 @@ router.get('/council-portal/anomalies', requirePortalAuth, (req, res) => {
     scanAndRefreshTrips(myTrips, (scanned) => {
       const { flagged } = partitionCleanAndFlagged(scanned);
       const rowsList = filterTripsBySearchAndCompany(
-        flagged.slice().sort((a, b) =>
-          (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || ''),
-        ),
+        flagged.slice().sort(compareTripsNewestFirst),
         q,
         filterCompany,
       );
@@ -2077,7 +2093,7 @@ router.get('/council-portal/archived', requirePortalAuth, (req, res) => {
           const aAt = Number(a.archivedAt) || 0;
           const bAt = Number(b.archivedAt) || 0;
           if (bAt !== aAt) return bAt - aAt;
-          return (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || '');
+          return compareTripsNewestFirst(a, b);
         }),
       q,
       filterCompany,
@@ -2173,9 +2189,7 @@ router.post('/api/tm-scan-submitted', (req, res) => {
 
 // ── Reports ────────────────────────────────────────────────────────────────────
 function tripStartedMs(t: any): number {
-  const iso = t.startedAt_ISO || t.startedAt || t.completedAt_ISO || '';
-  const ms = Date.parse(iso);
-  return Number.isFinite(ms) ? ms : 0;
+  return tripActivityMs(t);
 }
 
 function filterTripsForReports(
@@ -2195,7 +2209,7 @@ function filterTripsForReports(
     const toMs = Date.parse(opts.to + 'T23:59:59');
     if (Number.isFinite(toMs)) rows = rows.filter((t) => tripStartedMs(t) <= toMs);
   }
-  rows.sort((a, b) => (b.startedAt_ISO || '').localeCompare(a.startedAt_ISO || ''));
+  rows.sort(compareTripsNewestFirst);
   return rows;
 }
 
@@ -2525,19 +2539,30 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
         : '') +
       `</p>`;
     fbRead('tmBatches/' + sess.councilId, (err: any, batchData: any) => {
-      const emptyBody = `<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Claim Batches</h2>
-${noticeHtml}${claimNotice}<div class="cp-card"><div class="cp-empty">No batches found.</div></div>`;
-      if (err || !batchData) return res.send(portalPage('Claim Batches', renderNav(sess, token, 'batches'), emptyBody));
-      const cidKeys = Object.keys(batchData);
-      if (cidKeys.length === 0) return res.send(portalPage('Claim Batches', renderNav(sess, token, 'batches'), emptyBody));
-      let pending2 = cidKeys.length;
+      const data = !err && batchData && typeof batchData === 'object' ? batchData : {};
+      const cidKeys = Object.keys(data);
+      const nameCids = Array.from(
+        new Set([
+          ...cidKeys,
+          ...(councilTrips || []).map((t: any) => String(t._cid || '')).filter(Boolean),
+        ]),
+      );
+      let pending2 = Math.max(nameCids.length, 1);
       const namesMap: Record<string, string> = {};
-      cidKeys.forEach((cid) => {
-        fbRead('superClients/' + cid, (e2: any, sc: any) => {
-          namesMap[cid] = sc && sc.name ? sc.name : 'Operator ' + cid;
-          if (--pending2 === 0) buildBatchPage();
+      const kickBuild = () => {
+        if (--pending2 === 0) buildBatchPage();
+      };
+      if (nameCids.length === 0) {
+        pending2 = 1;
+        kickBuild();
+      } else {
+        nameCids.forEach((cid) => {
+          fbRead('superClients/' + cid, (_e2: any, sc: any) => {
+            namesMap[cid] = sc && sc.name ? sc.name : 'Operator ' + cid;
+            kickBuild();
+          });
         });
-      });
+      }
       function resolveBatchTripIds(b: any, cid: string): any[] {
         const rawList = Array.isArray(b.trips) ? b.trips : Array.isArray(b.tripIds) ? b.tripIds : [];
         if (!rawList.length) return [];
@@ -2573,13 +2598,13 @@ ${noticeHtml}${claimNotice}<div class="cp-card"><div class="cp-empty">No batches
       function buildBatchPage() {
         const allBatches: any[] = [];
         cidKeys.forEach((cid) => {
-          const months = batchData[cid] || {};
+          const months = data[cid] || {};
           Object.entries(months).forEach(([ym, b]: [string, any]) => {
             if (!b) return;
             const totals = displayBatchTotals(b, cid);
             allBatches.push({
               _cid: cid,
-              _cname: namesMap[cid],
+              _cname: namesMap[cid] || 'Operator ' + cid,
               _ym: ym,
               ...b,
               _displayTrips: totals.totalTrips,
@@ -2679,6 +2704,33 @@ ${noticeHtml}${claimNotice}<div class="cp-card"><div class="cp-empty">No batches
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Claim Batches</h2>
 ${noticeHtml}
 ${claimNotice}
+${(() => {
+  const defaultYm = new Date().toISOString().slice(0, 7);
+  const companyOpts = companyFilterOptionsHtml(councilTrips || [], '');
+  const approvedCount = (councilTrips || []).filter((t: any) => isClaimEligibleStatus(t.status)).length;
+  return `<div class="cp-card" style="margin-bottom:16px;border:1px dashed #A5D6A7">
+  <div class="cp-card-bd">
+    <div style="font-size:13px;font-weight:700;color:#1B5E20;margin-bottom:6px">Create / submit batch now <span style="font-weight:500;color:#888;font-size:11.5px">(testing)</span></div>
+    <p style="font-size:12.5px;color:#666;margin:0 0 10px">Approving a trip does not create a claim batch. Use this to assemble <strong>approved</strong> trips into a Submitted batch for the selected company/month (${approvedCount} claim-eligible trip${approvedCount === 1 ? '' : 's'} loaded).</p>
+    <form method="POST" action="/api/council-batch-create" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
+      <input type="hidden" name="_token" value="${esc(token)}"/>
+      <input type="hidden" name="tab" value="${esc(tab)}"/>
+      <div>
+        <label style="display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:3px">Operator</label>
+        <select name="cid" class="cp-input" style="min-width:180px">
+          <option value="">All operators with approved trips</option>
+          ${companyOpts}
+        </select>
+      </div>
+      <div>
+        <label style="display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:3px">Month (YYYY-MM)</label>
+        <input name="ym" class="cp-input" value="${esc(defaultYm)}" placeholder="${esc(defaultYm)}" pattern="\\d{4}-\\d{2}" style="width:120px"/>
+      </div>
+      <button type="submit" class="cp-btn cp-btn-g">Create / submit batch now</button>
+    </form>
+  </div>
+</div>`;
+})()}
 <div class="cp-stats" style="margin-bottom:18px">
   <div class="cp-stat"><div class="cp-stat-v">${submitted.length}</div><div class="cp-stat-l">Awaiting Approval</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totalPending.toFixed(2)}</div><div class="cp-stat-l">Pending Claim Value</div></div>
@@ -2796,6 +2848,82 @@ function cpSubmitMarkPaid(){
         res.send(portalPage('Claim Batches', renderNav(sess, token, 'batches'), body));
       }
     });
+  });
+});
+
+router.post('/api/council-batch-create', (req, res) => {
+  const token = (req.body._token as string) || '';
+  const cidFilter = String(req.body.cid || '').trim();
+  const ymFilter = String(req.body.ym || '').trim();
+  const tab = String(req.body.tab || 'submitted');
+  const sess = cpGetSession(token);
+  const te = encodeURIComponent(token);
+  const redirect = (msg: string, mt: string, t = tab) =>
+    res.redirect(
+      '/council-portal/batches?t=' +
+        te +
+        '&tab=' +
+        encodeURIComponent(t) +
+        '&msg=' +
+        encodeURIComponent(msg) +
+        '&mt=' +
+        mt,
+    );
+  if (!sess) return redirect('Invalid session', 'err');
+  if (ymFilter && !/^\d{4}-\d{2}$/.test(ymFilter)) {
+    return redirect('Month must be YYYY-MM', 'err');
+  }
+  const who = sess.name || sess.councilId;
+  loadCouncilTrips(sess.councilId, (_err: any, trips: any[]) => {
+    const plans = planCouncilBatchCreates(trips || [], {
+      councilId: sess.councilId,
+      companyId: cidFilter || undefined,
+      month: ymFilter || undefined,
+      who,
+      now: Date.now(),
+    });
+    if (!plans.length) {
+      return redirect(
+        'No approved trips found for that company/month. Approve trips first, then create the batch.',
+        'err',
+      );
+    }
+    let i = 0;
+    let created = 0;
+    let refreshed = 0;
+    let skipped = 0;
+    const runNext = () => {
+      if (i >= plans.length) {
+        const parts = [];
+        if (created) parts.push(created + ' created');
+        if (refreshed) parts.push(refreshed + ' refreshed');
+        if (skipped) parts.push(skipped + ' skipped (already approved/paid)');
+        return redirect(
+          'Batch submit: ' + (parts.join(', ') || 'nothing written') + '.',
+          created || refreshed ? 'ok' : 'err',
+          'submitted',
+        );
+      }
+      const plan = plans[i++];
+      const path = 'tmBatches/' + sess.councilId + '/' + plan.pathSuffix;
+      fbRead(path, (_eRead: any, existing: any) => {
+        const decision = shouldWriteBatchCreate(existing);
+        if (decision === 'skip') {
+          skipped++;
+          return runNext();
+        }
+        fbWrite('PATCH', path, plan.payload, (errW: any) => {
+          if (!errW) {
+            if (decision === 'refresh') refreshed++;
+            else created++;
+          } else {
+            skipped++;
+          }
+          runNext();
+        });
+      });
+    };
+    runNext();
   });
 });
 
@@ -3240,12 +3368,12 @@ router.get('/council-portal/export', requirePortalAuth, (req, res) => {
     });
     if (filterMonth && !filterFrom && !filterTo) {
       filtered = trips
-        .filter((t) => (t.startedAt_ISO || '').slice(0, 7) === filterMonth)
+        .filter((t) => tripMonthKey(t) === filterMonth)
         .filter((t) => !filterCompany || String(t._cid) === filterCompany)
         .filter((t) => includeArchived || !isArchivedStatus(t.status))
-        .sort((a, b) => (a.startedAt_ISO || '').localeCompare(b.startedAt_ISO || ''));
+        .sort((a, b) => tripActivityMs(a) - tripActivityMs(b));
     } else {
-      filtered.sort((a, b) => (a.startedAt_ISO || '').localeCompare(b.startedAt_ISO || ''));
+      filtered.sort((a, b) => tripActivityMs(a) - tripActivityMs(b));
     }
     const tariffCids = Array.from(new Set(filtered.map((t) => String(t._cid || '')).filter(Boolean)));
     const tariffByCid: Record<string, any> = {};
