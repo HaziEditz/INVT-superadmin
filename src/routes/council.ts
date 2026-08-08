@@ -789,6 +789,19 @@ router.all('/api/council-map-debug', (req, res) => {
     cpGeocodeDebugPush({ kind: 'beacon', ...(typeof body === 'object' ? body : { raw: String(body) }) });
     return res.json({ ok: true });
   }
+  if (action === 'mint') {
+    // TEMP: mint portal session for live map investigation only.
+    const councilId = 'cncl_invercargill_city_council_test';
+    const token = cpSetSession(councilId, 'Invercargill City Council (test)', 'map-debug@local');
+    return res.json({
+      marker: 'map-debug-v1',
+      token,
+      tripsUrl:
+        '/council-portal/trips?t=' +
+        encodeURIComponent(token) +
+        '&status=all&q=8692608073',
+    });
+  }
   if (action === 'selftest') {
     const addrs = [
       '305, Kelvin Street, Gladstone, Invercargill',
