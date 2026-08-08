@@ -82,6 +82,8 @@ test('anomaly scan skips archived', () => {
 
 test('council portal archived tab + bulk archive/restore APIs', () => {
   assert.match(councilSrc, /\/council-portal\/archived/);
+  assert.match(councilSrc, /redirectLegacyTripPage\(req, res, 'archived'\)/);
+  assert.match(councilSrc, /status=archived|status === 'archived'/);
   assert.match(councilSrc, /\/api\/council-archive/);
   assert.match(councilSrc, /\/api\/council-bulk-archive/);
   assert.match(councilSrc, /\/api\/council-restore/);

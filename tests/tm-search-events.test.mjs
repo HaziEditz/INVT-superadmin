@@ -100,7 +100,8 @@ test('search + events source exports', () => {
 
 test('council search page + timeline + in-tab q', () => {
   assert.match(councilSrc, /\/council-portal\/search/);
-  assert.match(councilSrc, /tripMatchesSearch/);
+  assert.match(councilSrc, /redirectLegacyTripPage\(req, res, 'all'\)/);
+  assert.match(councilSrc, /tripMatchesSearch|filterTripsUnified/);
   assert.match(councilSrc, /appendTripEvent/);
   assert.match(councilSrc, /tripHistoryHtml/);
   assert.match(councilSrc, /name="q"|filterQ|req\.query\.q/);
@@ -133,8 +134,8 @@ test('council detail map geocodes and is on pending + flagged + reports', () => 
   assert.match(councilSrc, /nominatim\.openstreetmap\.org/);
   assert.match(councilSrc, /cp-trip-map-wrap/);
   assert.match(councilSrc, /openCpDetail/);
-  assert.match(councilSrc, /_cpReturnTo = 'pending'/);
-  assert.match(councilSrc, /_cpReturnTo = 'anomalies'/);
-  assert.match(councilSrc, /_cpReturnTo = 'reports'/);
+  assert.match(councilSrc, /_cpReturnTo = \$\{JSON\.stringify\(returnTo\)\}|_cpReturnTo = '/);
+  assert.match(councilSrc, /filterTripsUnified/);
+  assert.match(councilSrc, /\/council-portal\/trips/);
   assert.doesNotMatch(councilSrc, /function initRptMap|openRptDetail/);
 });

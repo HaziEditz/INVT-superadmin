@@ -210,6 +210,8 @@ test('tmAnomaly source exports claim helper and rules', () => {
 test('council portal pending + anomalies + bulk endpoints', () => {
   assert.match(councilSrc, /\/council-portal\/pending/);
   assert.match(councilSrc, /\/council-portal\/anomalies/);
+  assert.match(councilSrc, /redirectLegacyTripPage\(req, res, 'pending'\)/);
+  assert.match(councilSrc, /redirectLegacyTripPage\(req, res, 'flagged'\)/);
   assert.match(councilSrc, /\/api\/council-bulk-approve/);
   assert.match(councilSrc, /\/api\/council-bulk-return/);
   assert.match(councilSrc, /\/api\/tm-scan-submitted/);
@@ -220,7 +222,7 @@ test('council portal pending + anomalies + bulk endpoints', () => {
   assert.match(councilSrc, /flagReasons/);
   assert.match(councilSrc, /excluded this period/);
   assert.match(councilSrc, /View Flagged Trips/);
-  assert.match(councilSrc, /\/council-portal\/anomalies\?t=/);
+  assert.match(councilSrc, /\/council-portal\/trips\?t=.*status=flagged/);
   assert.match(councilSrc, /Return unlocks company editing/);
   assert.match(councilSrc, /view-only for the company until you click Return/);
 });

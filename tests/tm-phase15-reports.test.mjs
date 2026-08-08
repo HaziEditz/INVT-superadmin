@@ -78,6 +78,9 @@ test('tmTripDetail source uses tmCardName and format helpers', () => {
 });
 
 test('council Reports has three-action approve + edit + map', () => {
+  assert.match(councilSrc, /redirectLegacyTripPage\(req, res, 'all'\)/);
+  assert.match(councilSrc, /\/council-portal\/reports/);
+  assert.match(councilSrc, /filterTripsUnified|aggregateTripUsage/);
   assert.match(councilSrc, /action === 'return'/);
   assert.match(councilSrc, /revision_needed/);
   assert.match(councilSrc, /\/api\/council-trip-edit/);
