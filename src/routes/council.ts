@@ -34,6 +34,16 @@ import {
   aggregateTripUsage,
   countTripsByUnifiedStatus,
   UNIFIED_TRIP_STATUS_OPTIONS,
+  aggregateHoistByDay,
+  aggregateUsageByDay,
+  aggregateUsageByMonth,
+  filterTripsByEntity,
+  normalizeEntityType,
+  sumEntityTotals,
+  partitionOperatorRosters,
+  ENTITY_TYPES,
+  hoistPaysOf,
+  hoistUsesOf,
 } from '../lib/tmUnifiedTrips';
 import {
   buildTripEvent,
@@ -1109,6 +1119,8 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
           totPax += d.passengerPays;
         });
         const usage = aggregateTripUsage(displayTrips);
+        const usageByDay = aggregateUsageByDay(displayTrips);
+        const usageByMonth = aggregateUsageByMonth(displayTrips);
         const returnTo = status;
         const showCheckbox = status === 'pending' || status === 'flagged' || status === 'archived';
 
@@ -1125,28 +1137,52 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
           }).join('') +
           `</div>`;
 
-        const usageTable = (title: string, rows: typeof usage.byCard) =>
+        const entityFilterQs =
+          (filterFrom ? `&from=${encodeURIComponent(filterFrom)}` : '') +
+          (filterTo ? `&to=${encodeURIComponent(filterTo)}` : '') +
+          (filterCompany ? `&company=${encodeURIComponent(filterCompany)}` : '');
+        const entityHref = (type: string, key: string) =>
+          `/council-portal/entity?t=${te}&type=${encodeURIComponent(type)}&key=${encodeURIComponent(key)}${entityFilterQs}`;
+
+        const usageTable = (title: string, rows: typeof usage.byCard, entityType: string) =>
           `<div style="flex:1;min-width:200px"><h4 style="font-size:12.5px;color:#33691E;margin:0 0 8px">${esc(title)}</h4>` +
           (rows.length
-            ? `<table class="cp-tbl"><thead><tr><th>Name</th><th>Trips</th><th>Council</th></tr></thead><tbody>` +
+            ? `<table class="cp-tbl"><thead><tr><th>Name</th><th>Trips</th><th>Council $</th><th>Hoist $</th></tr></thead><tbody>` +
               rows
                 .map(
                   (r) =>
-                    `<tr><td>${esc(r.label)}</td><td>${r.trips}</td><td>$${r.councilPays.toFixed(2)}</td></tr>`,
+                    `<tr><td><a href="${entityHref(entityType, r.key)}" style="color:#2E7D32;font-weight:600">${esc(r.label)}</a></td><td>${r.trips}</td><td>$${r.councilPays.toFixed(2)}</td><td>$${(r.hoistPays || 0).toFixed(2)}</td></tr>`,
                 )
                 .join('') +
               `</tbody></table>`
             : '<div class="cp-empty" style="padding:12px">No data</div>') +
           '</div>';
 
+        const periodTable = (title: string, rows: typeof usageByDay) =>
+          `<details style="margin-top:12px"><summary style="cursor:pointer;font-weight:600;color:#33691E">${esc(title)}</summary>` +
+          (rows.length
+            ? `<table class="cp-tbl" style="margin-top:8px"><thead><tr><th>Period</th><th>Trips</th><th>Council $</th><th>Hoist $</th><th>Hoist uses</th></tr></thead><tbody>` +
+              rows
+                .map(
+                  (r) =>
+                    `<tr><td>${esc(r.key)}</td><td>${r.trips}</td><td>$${r.councilPays.toFixed(2)}</td><td>$${r.hoistPays.toFixed(2)}</td><td>${r.hoistUses}</td></tr>`,
+                )
+                .join('') +
+              `</tbody></table>`
+            : '<div class="cp-empty" style="padding:12px">No data</div>') +
+          '</details>';
+
         const insightsOpen = filterFrom || filterTo ? ' open' : '';
         const insightsHtml = `<details class="cp-card" style="padding:14px 18px;margin-bottom:18px"${insightsOpen}>
-  <summary style="cursor:pointer;font-weight:700;color:#1B5E20">Insights — top cards, drivers &amp; vehicles</summary>
+  <summary style="cursor:pointer;font-weight:700;color:#1B5E20">Insights — usage by card, driver, vehicle &amp; passenger</summary>
   <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:12px">
-    ${usageTable('By card / passenger', usage.byCard)}
-    ${usageTable('By driver', usage.byDriver)}
-    ${usageTable('By vehicle', usage.byVehicle)}
+    ${usageTable('By card', usage.byCard, 'card')}
+    ${usageTable('By driver', usage.byDriver, 'driver')}
+    ${usageTable('By vehicle', usage.byVehicle, 'vehicle')}
+    ${usageTable('By passenger', usage.byPassenger, 'passenger')}
   </div>
+  ${periodTable('Usage by day', usageByDay)}
+  ${periodTable('Usage by month', usageByMonth)}
 </details>`;
 
         const filterHiddens =
@@ -2457,6 +2493,10 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
           Object.entries(months).forEach(([ym, b]: [string, any]) => {
             if (!b) return;
             const totals = displayBatchTotals(b, cid);
+            const batchTrips = resolveBatchTripIds(b, cid);
+            const hoistDays = aggregateHoistByDay(batchTrips);
+            const displayHoist = +hoistDays.reduce((s, r) => s + r.hoistPays, 0).toFixed(2);
+            const displayHoistUses = hoistDays.reduce((s, r) => s + r.uses, 0);
             allBatches.push({
               _cid: cid,
               _cname: namesMap[cid] || 'Operator ' + cid,
@@ -2464,6 +2504,9 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
               ...b,
               _displayTrips: totals.totalTrips,
               _displaySubsidy: totals.totalSubsidy,
+              _displayHoist: displayHoist,
+              _displayHoistUses: displayHoistUses,
+              _hoistDays: hoistDays,
             });
           });
         });
@@ -2585,16 +2628,40 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
                   : b.status === 'paid'
                     ? `<span style="font-size:12px;color:#555">${esc(b.payRef || b.paidRef || '')}${b.payRef || b.paidRef ? '<br>' : ''}<span style="color:#888;font-size:11px">Paid ${paidDt}</span></span>`
                     : '—';
+            const hoistDays: Array<{ day: string; tripsWithHoist: number; uses: number; hoistPays: number }> =
+              Array.isArray(b._hoistDays) ? b._hoistDays : [];
+            const hoistTotal = Number(b._displayHoist || 0);
+            const hoistUses = Number(b._displayHoistUses || 0);
+            const hoistDayRows = hoistDays.length
+              ? hoistDays
+                  .map(
+                    (r) =>
+                      `<tr><td>${esc(r.day)}</td><td style="text-align:right">${r.tripsWithHoist}</td><td style="text-align:right">${r.uses}</td><td style="text-align:right">$${Number(r.hoistPays || 0).toFixed(2)}</td></tr>`,
+                  )
+                  .join('')
+              : `<tr><td colspan="4" style="color:#aaa;font-style:italic">No hoist usage in this batch</td></tr>`;
             return `<tr>
 <td style="font-weight:600">${esc(b._cname)}</td>
 <td style="font-family:monospace">${esc(b._ym)}</td>
 <td style="text-align:right">${b._displayTrips}</td>
 <td style="text-align:right;font-weight:700;color:#2E7D32">$${Number(b._displaySubsidy || 0).toFixed(2)}</td>
+<td style="text-align:right;font-size:12.5px">$${hoistTotal.toFixed(2)}</td>
 <td>${batchStatusBadge(b.status)}</td>
 <td style="font-size:12px;color:#666">${subDt}</td>
 <td style="font-size:12px;color:#666">${appDt}</td>
 <td style="font-size:12px">${proofCell}</td>
 <td style="white-space:nowrap">${actionBtns}</td>
+</tr>
+<tr>
+<td colspan="10" style="padding:6px 12px 12px;background:#FAFAFA">
+<details>
+<summary style="cursor:pointer;font-size:12.5px;font-weight:600;color:#33691E">Hoist by day — $${hoistTotal.toFixed(2)} · ${hoistUses} uses</summary>
+<table class="cp-tbl" style="margin-top:8px;max-width:520px">
+<thead><tr><th>Date</th><th style="text-align:right">Trips w/ hoist</th><th style="text-align:right">Uses</th><th style="text-align:right">Hoist $</th></tr></thead>
+<tbody>${hoistDayRows}</tbody>
+</table>
+</details>
+</td>
 </tr>`;
           })
           .join('');
@@ -2644,7 +2711,7 @@ ${tabsHtml}
 <div class="cp-card" style="overflow-x:auto">
 <p style="font-size:13px;color:#666;padding:12px 16px 0">Flow: <strong>Submitted → Approved → Paid</strong>. Marking Paid cascades all trips in the batch to Paid. Proof of payment / invoice is optional but flagged if missing.</p>
 ${filtered.length ? `<table class="cp-tbl" style="margin-top:8px">
-<thead><tr><th>Operator</th><th>Month</th><th style="text-align:right">Trips</th><th style="text-align:right">Council Claim</th><th>Status</th><th>Submitted</th><th>Approved</th><th>Proof</th><th>Action</th></tr></thead>
+<thead><tr><th>Operator</th><th>Month</th><th style="text-align:right">Trips</th><th style="text-align:right">Council Claim</th><th style="text-align:right">Hoist</th><th>Status</th><th>Submitted</th><th>Approved</th><th>Proof</th><th>Action</th></tr></thead>
 <tbody>${rows}</tbody></table>` : '<div class="cp-empty">No batches match these filters.</div>'}
 </div>
 <div class="cp-ov" id="cp-paid-ov" onclick="if(event.target===this)cpCloseMarkPaid()">
@@ -3045,12 +3112,20 @@ router.get('/council-portal/operators', requirePortalAuth, (req, res) => {
     });
     function buildOperatorsPage() {
       const legacyProv = legacyTariffProvenance();
+      const te = encodeURIComponent(token);
+      const rosterByCid = Object.fromEntries(
+        partitionOperatorRosters(approvedCids, driversRoot, listDriversForCompany).map((r) => [
+          r.cid,
+          r.drivers,
+        ]),
+      );
       const sections = approvedCids.map(cid => {
         const sc = clientMap[cid] || {};
         const tar = tariffMap[cid] || {};
         const tmCfg = tmConfigMap[cid] || {};
         const syncProv = classifyTmConfig(tmCfg);
-        const drivers = listDriversForCompany(driversRoot, cid, { activeOnly: true });
+        const drivers =
+          rosterByCid[cid] || listDriversForCompany(driversRoot, cid, { activeOnly: true });
         const tarCar = tar.car || {};
         const tarVan = tar.van || {};
         const inp = (name: string, val: any) =>
@@ -3085,15 +3160,19 @@ router.get('/council-portal/operators', requirePortalAuth, (req, res) => {
 </div>
 </form>`;
         const driverRows = drivers.length ? drivers.map(d => {
-          const name = [d.firstName, d.lastName].filter(Boolean).join(' ') || String(d.name || '—');
+          const name = [d.firstName, (d as any).lastName].filter(Boolean).join(' ') || String(d.name || '—');
           const veh = resolveDriverVehicle(vehiclesRoot, cid, d as Record<string, unknown>);
           const plate = veh.registration || '—';
           const cab = veh.taxiNumber || '—';
           const vehLabel = veh.label || '—';
-          const vtype = veh.vehicleType || String(d.vehicleType || '—');
+          const vtype = veh.vehicleType || String((d as any).vehicleType || '—');
           const accessible = isDriverWav(d) ? '<span style="background:#E8F5E9;color:#2E7D32;padding:1px 6px;border-radius:8px;font-size:11px;font-weight:600">♿ WAV</span>' : '';
+          const driverHist =
+            name && name !== '—'
+              ? `<a href="/council-portal/entity?t=${te}&type=driver&key=${encodeURIComponent(name)}" style="color:#2E7D32;font-weight:600">${esc(name)}</a>`
+              : esc(name);
           return `<tr>
-<td style="font-weight:500">${esc(name)}</td>
+<td style="font-weight:500">${driverHist}</td>
 <td style="font-family:monospace;font-size:11px">${esc(plate)}</td>
 <td style="font-family:monospace;font-size:11px">${esc(cab)}</td>
 <td>${esc(vehLabel)}</td>
@@ -3109,6 +3188,7 @@ router.get('/council-portal/operators', requirePortalAuth, (req, res) => {
   <div class="cp-card-hd">
     <h3 style="font-size:15px">&#127970; ${esc(sc.name || cid)}</h3>
     <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <a href="/council-portal/entity?t=${te}&type=company&key=${encodeURIComponent(cid)}" class="cp-btn-sm" style="background:#E8F5E9;color:#1B5E20">Trip history</a>
       ${provenanceBadgeHtml(syncProv)}
       <span style="background:#E8F5E9;color:#2E7D32;padding:2px 8px;border-radius:10px;font-weight:600;font-size:11px">&#10003; Approved</span>
     </span>
@@ -3279,6 +3359,8 @@ router.get('/council-portal/export', requirePortalAuth, (req, res) => {
   const includeArchived = String(req.query.includeArchived || '') === '1';
   // Legacy month=YYYY-MM still supported
   const filterMonth = String(req.query.month || '').trim();
+  const entityType = normalizeEntityType(String(req.query.entityType || ''));
+  const entityKey = String(req.query.entityKey || '').trim();
   loadCouncilTrips(sess.councilId, (err: any, trips: any[]) => {
     let filtered: any[];
     if (filterStatusRaw) {
@@ -3307,6 +3389,9 @@ router.get('/council-portal/export', requirePortalAuth, (req, res) => {
         .sort((a, b) => tripActivityMs(a) - tripActivityMs(b));
     } else {
       filtered.sort((a, b) => tripActivityMs(a) - tripActivityMs(b));
+    }
+    if (entityType && entityKey) {
+      filtered = filterTripsByEntity(filtered, entityType, entityKey);
     }
     const tariffCids = Array.from(new Set(filtered.map((t) => String(t._cid || '')).filter(Boolean)));
     const tariffByCid: Record<string, any> = {};
@@ -3345,6 +3430,140 @@ router.get('/council-portal/export', requirePortalAuth, (req, res) => {
   });
 });
 
+// ── Entity trip history ────────────────────────────────────────────────────────
+router.get('/council-portal/entity', requirePortalAuth, (req, res) => {
+  const sess = (req as any).cpSession;
+  const token = (req as any).cpToken;
+  const te = encodeURIComponent(token);
+  const typeRaw = String(req.query.type || '');
+  const entityType = normalizeEntityType(typeRaw);
+  const entityKey = String(req.query.key || '').trim();
+  const filterFrom = String(req.query.from || '').trim();
+  const filterTo = String(req.query.to || '').trim();
+  const filterCompany = String(req.query.company || '').trim();
+  if (!entityType || !entityKey || !ENTITY_TYPES.includes(entityType)) {
+    return res.redirect(
+      `/council-portal/trips?t=${te}&msg=${encodeURIComponent('Invalid entity type or key')}&mt=err`,
+    );
+  }
+
+  loadCouncilTrips(sess.councilId, (_err: any, myTrips: any[]) => {
+    let filtered = filterTripsForReports(myTrips || [], {
+      companyId: filterCompany || undefined,
+      from: filterFrom || undefined,
+      to: filterTo || undefined,
+      includeArchived: false,
+    });
+    filtered = filterTripsByEntity(filtered, entityType, entityKey);
+    const totals = sumEntityTotals(filtered);
+    const hoistDays = aggregateHoistByDay(filtered);
+    const hoistUsesLabel = filtered.reduce((s, t) => s + hoistUsesOf(t), 0);
+    const hoistPaysLabel = +filtered.reduce((s, t) => s + hoistPaysOf(t), 0).toFixed(2);
+    const companyOpts = companyFilterOptionsHtml(myTrips || [], filterCompany);
+    const typeLabel = entityType.charAt(0).toUpperCase() + entityType.slice(1);
+    const exportQs =
+      `&entityType=${encodeURIComponent(entityType)}` +
+      `&entityKey=${encodeURIComponent(entityKey)}` +
+      `&from=${encodeURIComponent(filterFrom)}` +
+      `&to=${encodeURIComponent(filterTo)}` +
+      `&company=${encodeURIComponent(filterCompany)}` +
+      `&status=all`;
+
+    const tariffCids = Array.from(new Set(filtered.map((t) => String(t._cid || '')).filter(Boolean)));
+    loadTariffsForCids(tariffCids, (tariffByCid) => {
+      const details = filtered.map((t) =>
+        buildTmTripDetail(t, { refTariff: (tariffByCid[t._cid] || {}).car || null }),
+      );
+      const hoistRows = hoistDays.length
+        ? hoistDays
+            .map(
+              (r) =>
+                `<tr><td>${esc(r.day)}</td><td style="text-align:right">${r.tripsWithHoist}</td><td style="text-align:right">${r.uses}</td><td style="text-align:right">$${r.hoistPays.toFixed(2)}</td></tr>`,
+            )
+            .join('')
+        : `<tr><td colspan="4" class="cp-empty">No hoist usage</td></tr>`;
+      const tripRows = details.length
+        ? details
+            .map((d, idx) => {
+              const t = filtered[idx];
+              return `<tr>
+<td style="font-family:monospace;font-size:12px">${esc(d.id || t._rawKey || '—')}</td>
+<td>${esc(d.dateTime || '—')}</td>
+<td style="font-size:12px;color:#555">${esc(d.companyName)}</td>
+<td>${esc(d.driverName || '—')}</td>
+<td>${esc(d.voucherNo || t.tmCardNumber || '—')}</td>
+<td style="font-weight:700;color:#1B5E20">$${d.totalCouncil.toFixed(2)}</td>
+<td>${statusBadge(d.status)}</td>
+<td><button type="button" class="cp-btn-sm" onclick="openCpDetail(${idx})">Details</button>
+<a class="cp-btn-sm" style="margin-left:4px;background:#eee;color:#333" href="/council-portal/trips?t=${te}&q=${encodeURIComponent(entityKey)}">Trips</a></td>
+</tr>`;
+            })
+            .join('')
+        : '';
+      const bodyHtmlByIdx = details.map((d, idx) => {
+        const src = filtered[idx] || {};
+        return tripDetailModalHtml(d) + tripHistoryHtml(src);
+      });
+      const tripsJson = JSON.stringify(details).replace(/</g, '\\u003c');
+      const bodiesJson = JSON.stringify(bodyHtmlByIdx).replace(/</g, '\\u003c');
+      const body = `
+<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:4px">${esc(typeLabel)} — ${esc(entityKey)}</h2>
+<p style="font-size:13px;color:#666;margin-bottom:14px">Trip history for this ${esc(entityType)}.
+  <a href="/council-portal/trips?t=${te}" style="color:#2E7D32;font-weight:600">Back to Trips</a></p>
+<form method="GET" action="/council-portal/entity" class="cp-card" style="margin-bottom:14px;padding:12px 14px;display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
+  <input type="hidden" name="t" value="${esc(token)}"/>
+  <input type="hidden" name="type" value="${esc(entityType)}"/>
+  <input type="hidden" name="key" value="${esc(entityKey)}"/>
+  <div>
+    <label style="display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:3px">From</label>
+    <input type="date" name="from" class="cp-input" value="${esc(filterFrom)}"/>
+  </div>
+  <div>
+    <label style="display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:3px">To</label>
+    <input type="date" name="to" class="cp-input" value="${esc(filterTo)}"/>
+  </div>
+  <div>
+    <label style="display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:3px">Company</label>
+    <select name="company" class="cp-input"><option value="">All Companies</option>${companyOpts}</select>
+  </div>
+  <button type="submit" class="cp-btn cp-btn-g">Apply</button>
+  <a href="/council-portal/export?t=${te}${exportQs}" class="cp-btn cp-btn-g" style="margin-left:auto">&#11015; Download CSV</a>
+</form>
+<div class="cp-stats">
+  <div class="cp-stat"><div class="cp-stat-v">${totals.trips}</div><div class="cp-stat-l">Trips</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totals.meterFare.toFixed(2)}</div><div class="cp-stat-l">Meter Fare</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totals.councilPays.toFixed(2)}</div><div class="cp-stat-l">Council $</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${hoistPaysLabel.toFixed(2)}</div><div class="cp-stat-l">Hoist $ (${hoistUsesLabel} uses)</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totals.passengerPays.toFixed(2)}</div><div class="cp-stat-l">Passenger Pays</div></div>
+</div>
+<div class="cp-card" style="margin-bottom:18px;padding:14px 18px">
+  <h3 style="font-size:14px;color:#1B5E20;margin:0 0 10px">Hoist by day</h3>
+  <table class="cp-tbl" style="max-width:560px">
+    <thead><tr><th>Date</th><th style="text-align:right">Trips w/ hoist</th><th style="text-align:right">Uses</th><th style="text-align:right">Hoist $</th></tr></thead>
+    <tbody>${hoistRows}</tbody>
+  </table>
+</div>
+<div class="cp-card" style="overflow-x:auto">
+  <div class="cp-card-hd"><h3>Trips</h3>
+    <span style="font-size:12px;color:#888">${details.length} trip(s)</span></div>
+  ${details.length ? `<table class="cp-tbl">
+<thead><tr><th>Job</th><th>Date</th><th>Company</th><th>Driver</th><th>Card</th><th>Council $</th><th>Status</th><th>Actions</th></tr></thead>
+<tbody>${tripRows}</tbody></table>` : '<div class="cp-empty">No trips for this entity and filters.</div>'}
+</div>
+${cpTripDetailOverlayHtml()}
+${CP_TRIP_MAP_SCRIPT}
+<script>
+var _cpTrips = ${tripsJson};
+var _cpBodies = ${bodiesJson};
+var _cpToken = ${JSON.stringify(token)};
+var _cpReturnTo = 'all';
+</script>
+${cpTripDetailBehaviorScript(false)}`;
+      res.send(portalPage(typeLabel + ' history', renderNav(sess, token, 'trips'), body));
+    });
+  });
+});
+
 // ── Cards ──────────────────────────────────────────────────────────────────────
 router.get('/council-portal/cards', requirePortalAuth, (req, res) => {
   const sess = (req as any).cpSession;
@@ -3360,8 +3579,6 @@ router.get('/council-portal/cards', requirePortalAuth, (req, res) => {
     const rows = cards.map(([id, c]: [string, any]) => {
       const active = c.active !== false;
       const balance = parseFloat(c.balance || 0).toFixed(2);
-      // Canonical SA fields: usageLimitMonthly / usageLimitDaily (trip counts).
-      // Fall back to legacy portal keys if present on older writes.
       const monthlyTrips = c.usageLimitMonthly ?? c.monthlyLimit;
       const dailyTrips = c.usageLimitDaily ?? c.maxFarePerTrip;
       const limit = monthlyTrips != null && monthlyTrips !== ''
@@ -3370,15 +3587,19 @@ router.get('/council-portal/cards', requirePortalAuth, (req, res) => {
       const daily = dailyTrips != null && dailyTrips !== ''
         ? `${parseInt(String(dailyTrips), 10) || 0}/day`
         : '—';
+      const expiry = c.expiryDate ? esc(String(c.expiryDate).slice(0, 10)) : '—';
       return `<tr>
-<td>${esc(id)}</td>
+<td style="font-family:monospace;font-weight:600">${esc(id)}</td>
 <td>${esc(c.passengerName || '—')}</td>
 <td>${esc(c.passengerPhone || '—')}</td>
+<td>${expiry}</td>
 <td style="font-weight:600;color:#1B5E20">$${balance}</td>
 <td>${limit}</td>
 <td>${daily}</td>
 <td><span class="${active ? 'cp-bdg-g' : 'cp-bdg-r'}">${active ? 'Active' : 'Inactive'}</span></td>
-<td>
+<td style="white-space:nowrap">
+<a class="cp-btn-sm" href="/council-portal/cards/edit?t=${te}&id=${encodeURIComponent(id)}" style="margin-right:4px">Edit</a>
+<a class="cp-btn-sm" href="/council-portal/entity?t=${te}&type=card&key=${encodeURIComponent(id)}" style="margin-right:4px;background:#E8F5E9;color:#1B5E20">History</a>
 <form method="POST" action="/api/council-card-toggle" style="display:inline">
 <input type="hidden" name="_token" value="${esc(token)}"/>
 <input type="hidden" name="cardId" value="${esc(id)}"/>
@@ -3387,15 +3608,201 @@ router.get('/council-portal/cards', requirePortalAuth, (req, res) => {
 </form>
 </td></tr>`;
     }).join('');
-    const body = `<div class="cp-main">
+    const body = `
 ${noticeHtml}
 <div class="cp-card">
 <div class="cp-card-hd"><h3>&#127938; TM Cards (${esc(sess.name || sess.councilId)})</h3>
-<span style="font-size:12px;color:#888">${cards.length} card(s)</span></div>
-${cards.length ? `<table class="cp-tbl"><thead><tr><th>Card No</th><th>Passenger</th><th>Phone</th><th>Balance</th><th>Monthly Trips</th><th>Daily Trips</th><th>Status</th><th>Action</th></tr></thead>
-<tbody>${rows}</tbody></table>` : '<div class="cp-empty">No cards found for this council.</div>'}
-</div></div>`;
+<span style="display:flex;gap:10px;align-items:center">
+  <span style="font-size:12px;color:#888">${cards.length} card(s)</span>
+  <a href="/council-portal/cards/edit?t=${te}" class="cp-btn cp-btn-g">+ Add Card</a>
+</span></div>
+${cards.length ? `<table class="cp-tbl"><thead><tr><th>Card No</th><th>Passenger</th><th>Phone</th><th>Expiry</th><th>Balance</th><th>Monthly</th><th>Daily</th><th>Status</th><th>Actions</th></tr></thead>
+<tbody>${rows}</tbody></table>` : '<div class="cp-empty">No cards found for this council. <a href="/council-portal/cards/edit?t=' + te + '">Add a card</a></div>'}
+</div>`;
     res.send(portalPage('Cards', renderNav(sess, token, 'cards'), body));
+  });
+});
+
+router.get('/council-portal/cards/edit', requirePortalAuth, (req, res) => {
+  const sess = (req as any).cpSession;
+  const token = (req as any).cpToken;
+  const te = encodeURIComponent(token);
+  const cardId = String(req.query.id || '').trim();
+  const isAdd = !cardId;
+  const msg = (req.query.msg as string) || '';
+  const mt = (req.query.mt as string) || '';
+  const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(decodeURIComponent(msg))}</div>` : '';
+
+  const renderForm = (c: any) => {
+    const active = c.active !== false;
+    const monthlyRaw = c.usageLimitMonthly ?? c.monthlyLimit;
+    const dailyRaw = c.usageLimitDaily ?? c.maxFarePerTrip;
+    const monthly = monthlyRaw != null && monthlyRaw !== '' ? String(parseInt(String(monthlyRaw), 10) || '') : '';
+    const daily = dailyRaw != null && dailyRaw !== '' ? String(parseInt(String(dailyRaw), 10) || '') : '';
+    const expiry = c.expiryDate ? String(c.expiryDate).slice(0, 10) : '';
+    const body = `
+${noticeHtml}
+<h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:6px">${isAdd ? 'Add TM Card' : 'Edit TM Card'}</h2>
+<p style="font-size:13px;color:#666;margin-bottom:14px"><a href="/council-portal/cards?t=${te}" style="color:#2E7D32;font-weight:600">&#8592; Back to Cards</a></p>
+<div class="cp-card">
+<div class="cp-card-bd">
+<form method="POST" action="/api/council-card-save" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:720px">
+<input type="hidden" name="_token" value="${esc(token)}"/>
+<input type="hidden" name="mode" value="${isAdd ? 'create' : 'edit'}"/>
+${!isAdd ? `<input type="hidden" name="originalId" value="${esc(cardId)}"/>` : ''}
+<div>
+  <label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Card number${!isAdd ? ' (locked)' : ' *'}</label>
+  <input class="cp-input" name="cardNumber" value="${esc(cardId)}" ${isAdd ? 'required' : 'readonly'} style="width:100%"/>
+</div>
+<div>
+  <label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Passenger name *</label>
+  <input class="cp-input" name="passengerName" value="${esc(c.passengerName || '')}" required style="width:100%"/>
+</div>
+<div>
+  <label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Passenger phone</label>
+  <input class="cp-input" name="passengerPhone" value="${esc(c.passengerPhone || '')}" style="width:100%"/>
+</div>
+<div>
+  <label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Expiry date</label>
+  <input class="cp-input" type="date" name="expiryDate" value="${esc(expiry)}" style="width:100%"/>
+</div>
+<div>
+  <label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Card region</label>
+  <input class="cp-input" name="cardRegion" value="${esc(c.cardRegion || '')}" style="width:100%"/>
+</div>
+<div>
+  <label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Status</label>
+  <select class="cp-input" name="active" style="width:100%">
+    <option value="true"${active ? ' selected' : ''}>Active</option>
+    <option value="false"${!active ? ' selected' : ''}>Inactive</option>
+  </select>
+</div>
+<div>
+  <label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Monthly trip limit</label>
+  <input class="cp-input" type="number" min="0" step="1" name="usageLimitMonthly" value="${esc(monthly)}" placeholder="Unlimited" style="width:100%"/>
+</div>
+<div>
+  <label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Daily trip limit</label>
+  <input class="cp-input" type="number" min="0" step="1" name="usageLimitDaily" value="${esc(daily)}" placeholder="Unlimited" style="width:100%"/>
+</div>
+<div style="grid-column:1/-1">
+  <label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px">Notes</label>
+  <input class="cp-input" name="notes" value="${esc(c.notes || '')}" style="width:100%"/>
+</div>
+<div style="grid-column:1/-1;display:flex;gap:10px">
+  <button type="submit" class="cp-btn cp-btn-g">${isAdd ? 'Create card' : 'Save changes'}</button>
+  <a href="/council-portal/cards?t=${te}" class="cp-btn" style="background:#eee;color:#333">Cancel</a>
+</div>
+</form>
+</div>
+</div>`;
+    res.send(portalPage(isAdd ? 'Add Card' : 'Edit Card', renderNav(sess, token, 'cards'), body));
+  };
+
+  if (isAdd) return renderForm({});
+  fbRead('tmCards/' + cardId, (err: any, card: any) => {
+    if (err || !card) {
+      return res.redirect(`/council-portal/cards?t=${te}&msg=${encodeURIComponent('Card not found')}&mt=err`);
+    }
+    if (card.councilId !== sess.councilId) {
+      return res.redirect(`/council-portal/cards?t=${te}&msg=${encodeURIComponent('Access denied')}&mt=err`);
+    }
+    renderForm(card);
+  });
+});
+
+router.post('/api/council-card-save', (req, res) => {
+  const {
+    _token,
+    mode,
+    originalId,
+    cardNumber,
+    passengerName,
+    passengerPhone,
+    expiryDate,
+    cardRegion,
+    notes,
+    usageLimitMonthly,
+    usageLimitDaily,
+    active,
+  } = req.body || {};
+  const sess = cpGetSession(_token);
+  if (!sess) return res.redirect('/council-portal?err=session');
+  const te = encodeURIComponent(_token);
+  const isCreate = String(mode || '') === 'create';
+  const num = String(isCreate ? cardNumber : originalId || cardNumber || '')
+    .trim()
+    .replace(/\s+/g, '');
+  const name = String(passengerName || '').trim();
+  if (!num) {
+    return res.redirect(
+      `/council-portal/cards/edit?t=${te}${isCreate ? '' : '&id=' + encodeURIComponent(String(originalId || ''))}&msg=${encodeURIComponent('Card number required')}&mt=err`,
+    );
+  }
+  if (!name) {
+    return res.redirect(
+      `/council-portal/cards/edit?t=${te}${isCreate ? '' : '&id=' + encodeURIComponent(num)}&msg=${encodeURIComponent('Passenger name required')}&mt=err`,
+    );
+  }
+  const payload: any = {
+    passengerName: name,
+    passengerPhone: String(passengerPhone || '').trim() || null,
+    expiryDate: String(expiryDate || '').trim() || null,
+    cardRegion: String(cardRegion || '').trim() || null,
+    notes: String(notes || '').trim() || null,
+    active: String(active) !== 'false',
+    councilId: sess.councilId,
+    updatedAt: Date.now(),
+    updatedBy: sess.name || sess.councilId,
+  };
+  if (usageLimitMonthly !== '' && usageLimitMonthly !== undefined) {
+    payload.usageLimitMonthly = parseInt(String(usageLimitMonthly), 10) || null;
+  } else {
+    payload.usageLimitMonthly = null;
+  }
+  if (usageLimitDaily !== '' && usageLimitDaily !== undefined) {
+    payload.usageLimitDaily = parseInt(String(usageLimitDaily), 10) || null;
+  } else {
+    payload.usageLimitDaily = null;
+  }
+
+  if (isCreate) {
+    fbRead('tmCards/' + num, (err: any, existing: any) => {
+      if (!err && existing) {
+        return res.redirect(
+          `/council-portal/cards/edit?t=${te}&msg=${encodeURIComponent('Card already exists')}&mt=err`,
+        );
+      }
+      payload.createdAt = Date.now();
+      payload.balance = 0;
+      fbWrite('PUT', 'tmCards/' + num, payload, (e: any) => {
+        if (e) {
+          return res.redirect(
+            `/council-portal/cards/edit?t=${te}&msg=${encodeURIComponent('Error: ' + e)}&mt=err`,
+          );
+        }
+        res.redirect(`/council-portal/cards?t=${te}&msg=${encodeURIComponent('Card created')}&mt=ok`);
+      });
+    });
+    return;
+  }
+
+  fbRead('tmCards/' + num, (err: any, card: any) => {
+    if (err || !card) {
+      return res.redirect(`/council-portal/cards?t=${te}&msg=${encodeURIComponent('Card not found')}&mt=err`);
+    }
+    if (card.councilId !== sess.councilId) {
+      return res.redirect(`/council-portal/cards?t=${te}&msg=${encodeURIComponent('Access denied')}&mt=err`);
+    }
+    // Card number locked on edit — never rewrite under a different key
+    fbWrite('PATCH', 'tmCards/' + num, payload, (e: any) => {
+      if (e) {
+        return res.redirect(
+          `/council-portal/cards/edit?t=${te}&id=${encodeURIComponent(num)}&msg=${encodeURIComponent('Error: ' + e)}&mt=err`,
+        );
+      }
+      res.redirect(`/council-portal/cards?t=${te}&msg=${encodeURIComponent('Card updated')}&mt=ok`);
+    });
   });
 });
 

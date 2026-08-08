@@ -92,36 +92,57 @@ function filterTripsUnified(trips, opts = {}) {
 function subsidyOf(t) {
   return parseFloat(String(t.tmSubsidy != null ? t.tmSubsidy : t.tmCouncilPays || 0)) || 0;
 }
-function aggregateTripUsage(trips, limit = 8) {
-  const bump = (map, key, label, pay) => {
+function aggregateTripUsage(trips, limitOrOpts = Number.POSITIVE_INFINITY) {
+  const limit =
+    typeof limitOrOpts === 'number'
+      ? limitOrOpts
+      : limitOrOpts?.limit != null
+        ? limitOrOpts.limit
+        : Number.POSITIVE_INFINITY;
+  const bump = (map, key, label, pay, hoist) => {
     const k = String(key || '').trim() || '—';
     let row = map.get(k);
     if (!row) {
-      row = { key: k, label: label || k, trips: 0, councilPays: 0 };
+      row = { key: k, label: label || k, trips: 0, councilPays: 0, hoistPays: 0 };
       map.set(k, row);
     }
     row.trips++;
     row.councilPays += pay;
+    row.hoistPays += hoist || 0;
   };
   const cards = new Map();
   const drivers = new Map();
   const vehicles = new Map();
+  const passengers = new Map();
   for (const t of trips || []) {
     const pay = subsidyOf(t);
+    const hoist = parseFloat(String(t.tmSubsidyHoist || 0)) || 0;
     const card = String(t.tmCardNumber || t.tmVoucherNo || '—').trim() || '—';
     const cardLabel = String(t.tmCardName || t.tmPassengerName || card).trim() || card;
-    bump(cards, card, cardLabel, pay);
+    bump(cards, card, cardLabel, pay, hoist);
     const driver = String(t.driverFullName || t.driverName || '—').trim() || '—';
-    bump(drivers, driver, driver, pay);
+    bump(drivers, driver, driver, pay, hoist);
     const vehicle = String(t.vehicleId || t.taxiNumber || '—').trim() || '—';
-    bump(vehicles, vehicle, vehicle, pay);
+    bump(vehicles, vehicle, vehicle, pay, hoist);
+    bump(passengers, cardLabel, cardLabel, pay, hoist);
   }
-  const sortTop = (m) =>
-    Array.from(m.values())
-      .map((r) => ({ ...r, councilPays: +r.councilPays.toFixed(2) }))
-      .sort((a, b) => b.trips - a.trips || b.councilPays - a.councilPays)
-      .slice(0, limit);
-  return { byCard: sortTop(cards), byDriver: sortTop(drivers), byVehicle: sortTop(vehicles) };
+  const sortTop = (m) => {
+    let rows = Array.from(m.values())
+      .map((r) => ({
+        ...r,
+        councilPays: +r.councilPays.toFixed(2),
+        hoistPays: +r.hoistPays.toFixed(2),
+      }))
+      .sort((a, b) => b.trips - a.trips || b.councilPays - a.councilPays);
+    if (Number.isFinite(limit) && limit >= 0) rows = rows.slice(0, limit);
+    return rows;
+  };
+  return {
+    byCard: sortTop(cards),
+    byDriver: sortTop(drivers),
+    byVehicle: sortTop(vehicles),
+    byPassenger: sortTop(passengers),
+  };
 }
 function countTripsByUnifiedStatus(trips) {
   const out = {

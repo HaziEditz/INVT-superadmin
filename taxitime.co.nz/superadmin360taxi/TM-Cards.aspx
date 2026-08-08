@@ -166,9 +166,9 @@ firebase.initializeApp(config);
     <table class="tm-tbl">
       <thead><tr>
         <th>Card Number</th><th>Passenger Name</th><th>Council</th><th>Region</th>
-        <th>Monthly Limit</th><th>Daily Limit</th><th>Notes</th><th>Status</th><th>Actions</th>
+        <th>Expiry</th><th>Monthly Limit</th><th>Daily Limit</th><th>Notes</th><th>Status</th><th>Actions</th>
       </tr></thead>
-      <tbody id="card-tb"><tr><td colspan="9" style="text-align:center;padding:40px;color:#9e9e9e">Loading&#8230;</td></tr></tbody>
+      <tbody id="card-tb"><tr><td colspan="10" style="text-align:center;padding:40px;color:#9e9e9e">Loading&#8230;</td></tr></tbody>
     </table>
   </div>
 </div></div>
@@ -183,6 +183,7 @@ firebase.initializeApp(config);
     <div class="tm-ff"><label>Council</label>
       <select id="cd-council"><option value="">&#8212; Select Council &#8212;</option></select></div>
     <div class="tm-ff"><label>Card Region</label><input id="cd-region" placeholder="Auto-filled from council"/></div>
+    <div class="tm-ff"><label>Expiry Date</label><input id="cd-expiry" type="date"/></div>
     <div class="tm-ff"><label>Monthly Trip Limit</label><input id="cd-ml" type="number" min="0" placeholder="Leave blank = use council default"/></div>
     <div class="tm-ff"><label>Daily Trip Limit</label><input id="cd-dl" type="number" min="0" placeholder="Leave blank = use council default"/></div>
     <div class="tm-ff"><label>Status</label>
@@ -220,7 +221,7 @@ function populateCouncilDropdowns() {
   document.getElementById('card-f-council').innerHTML = fopts;
 }
 function refreshCards() {
-  document.getElementById('card-tb').innerHTML = '<tr><td colspan="9" style="text-align:center;padding:30px;color:#9e9e9e">Refreshing\u2026</td></tr>';
+  document.getElementById('card-tb').innerHTML = '<tr><td colspan="10" style="text-align:center;padding:30px;color:#9e9e9e">Refreshing\u2026</td></tr>';
   adminRead('tmCards').then(function(d) { cardData = d || {}; renderCards(); });
 }
 function renderCards() {
@@ -235,16 +236,18 @@ function renderCards() {
     return true;
   });
   document.getElementById('card-count').textContent = Object.keys(cardData).length + ' card(s)';
-  if (!entries.length) { document.getElementById('card-tb').innerHTML = '<tr><td colspan="9" style="text-align:center;padding:40px;color:#9e9e9e">No cards found.</td></tr>'; return; }
+  if (!entries.length) { document.getElementById('card-tb').innerHTML = '<tr><td colspan="10" style="text-align:center;padding:40px;color:#9e9e9e">No cards found.</td></tr>'; return; }
   var cnames = {};
   Object.entries(councilData).forEach(function(kv) { cnames[kv[0]] = (kv[1].name) || kv[0]; });
   document.getElementById('card-tb').innerHTML = entries.map(function(kv) {
     var id = kv[0], c = kv[1], sid = JSON.stringify(id);
+    var exp = c.expiryDate ? String(c.expiryDate).slice(0, 10) : '\u2014';
     return '<tr>' +
       '<td style="font-family:monospace;font-weight:600">' + id + '</td>' +
       '<td>' + (c.passengerName || '\u2014') + '</td>' +
       '<td>' + (cnames[c.councilId] || c.councilId || '\u2014') + '</td>' +
       '<td>' + (c.cardRegion || '\u2014') + '</td>' +
+      '<td>' + exp + '</td>' +
       '<td>' + (c.usageLimitMonthly || '\u2014') + '</td>' +
       '<td>' + (c.usageLimitDaily || '\u2014') + '</td>' +
       '<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (c.notes || '\u2014') + '</td>' +
@@ -257,7 +260,7 @@ function renderCards() {
 }
 function openCard() {
   cardEid = null; document.getElementById('card-mtitle').textContent = 'Add TM Card';
-  ['cd-num','cd-name','cd-region','cd-ml','cd-dl','cd-notes'].forEach(function(x) { document.getElementById(x).value = ''; });
+  ['cd-num','cd-name','cd-region','cd-ml','cd-dl','cd-notes','cd-expiry'].forEach(function(x) { document.getElementById(x).value = ''; });
   document.getElementById('cd-council').value = ''; document.getElementById('cd-act').value = 'true';
   document.getElementById('cd-num').removeAttribute('readonly');
   document.getElementById('card-msg').textContent = ''; document.getElementById('card-ov').classList.add('open');
@@ -270,6 +273,7 @@ function editCard(id) {
   document.getElementById('cd-name').value = c.passengerName || '';
   document.getElementById('cd-council').value = c.councilId || '';
   document.getElementById('cd-region').value = c.cardRegion || '';
+  document.getElementById('cd-expiry').value = c.expiryDate ? String(c.expiryDate).slice(0, 10) : '';
   document.getElementById('cd-ml').value = c.usageLimitMonthly || '';
   document.getElementById('cd-dl').value = c.usageLimitDaily || '';
   document.getElementById('cd-act').value = c.active === false ? 'false' : 'true';
@@ -292,6 +296,7 @@ function saveCard() {
   var data = {
     passengerName: nm, councilId: cid,
     cardRegion: document.getElementById('cd-region').value.trim() || (cn.region || ''),
+    expiryDate: (document.getElementById('cd-expiry').value || '').trim() || null,
     usageLimitMonthly: parseInt(document.getElementById('cd-ml').value) || null,
     usageLimitDaily: parseInt(document.getElementById('cd-dl').value) || null,
     active: document.getElementById('cd-act').value === 'true',
