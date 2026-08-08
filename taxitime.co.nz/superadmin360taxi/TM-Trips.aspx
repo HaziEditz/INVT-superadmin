@@ -480,7 +480,7 @@ function renderTT() {
     var id = kv[0], t = kv[1], sid = "'" + String(id).replace(/\\/g,'\\\\').replace(/'/g,"\\'") + "'";
     var flags = (t.flagReasons || []);
     var statusBadge = ttStatusBadge(t.status);
-    var flagHtml = flags.length ? flags.map(function(f) { return '<span class="fc">' + f + '</span>'; }).join('') : '';
+    var flagHtml = flags.length ? flags.map(function(f) { return '<span class="fc">' + tmFlagReasonLabel(f) + '</span>'; }).join('') : '';
     var dt = t.startTime ? _tzFmtDT(t.startTime) : '\u2014';
     var hoistAmt = parseFloat(t.hoistTotal || t.tmSubsidyHoist || 0);
     var uses = hoistUsesOf(t);
@@ -537,7 +537,7 @@ function viewTT(id) {
   var t = ttData[id] || {};
   var cnames = {}; Object.entries(ttCouncils).forEach(function(kv) { cnames[kv[0]] = (kv[1].name) || kv[0]; });
   var flags = (t.flagReasons || []);
-  var flagHtml = flags.length ? '<div style="margin:10px 0;padding:10px;background:#FFEBEE;border-radius:4px;border-left:4px solid #C62828"><strong style="color:#C62828">\u26a0 Flag Reasons:</strong><br>' + flags.map(function(f) { return '<span class="fc">' + f + '</span>'; }).join('') + '</div>' : '';
+  var flagHtml = flags.length ? '<div style="margin:10px 0;padding:10px;background:#FFEBEE;border-radius:4px;border-left:4px solid #C62828"><strong style="color:#C62828">\u26a0 Flag Reasons:</strong><br>' + flags.map(function(f) { return '<span class="fc">' + tmFlagReasonLabel(f) + '</span>'; }).join('') + (t.anomalyDetail ? '<div style="margin-top:6px;font-size:12px;color:#666">' + String(t.anomalyDetail) + '</div>' : '') + '</div>' : '';
 
   var council = ttCouncils[t.councilId] || {};
   var subPct  = parseFloat(council.subsidyPercent || 75);
@@ -747,7 +747,7 @@ function submitToCouncil(id) {
             ttData[id].status = 'flagged';
             ttData[id].flagReasons = j.flagReasons || [];
             renderTT();
-            toastr.warning('Trip auto-flagged for council review (' + (j.flagReasons || []).join(', ') + ').');
+            toastr.warning('Trip auto-flagged for council review (' + tmFlagReasonLabels(j.flagReasons || []).join(', ') + ').');
           }
         }).catch(function() {});
       } catch (e) {}

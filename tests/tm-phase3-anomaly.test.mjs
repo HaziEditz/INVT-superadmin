@@ -144,12 +144,40 @@ function detectTripAnomalies(trip, opts = {}) {
   const details = [];
   const peers = (opts.peers || []).filter((p) => p && p !== trip);
   const fare = num(trip.tmMeterFare ?? trip.meterFare ?? trip.fare ?? trip.totalFare);
-  const dist = num(trip.distanceKm ?? trip.distance);
-  const dur = num(trip.durationMin);
-  const expected = expectedMeterFromTariff(opts.refTariff, dist, dur, 0);
+  const dist = trip.distanceKm != null && trip.distanceKm !== '' ? num(trip.distanceKm ?? trip.distance) : (trip.distance != null && trip.distance !== '' ? num(trip.distance) : null);
+  const durRaw = trip.durationMin != null && trip.durationMin !== '' ? num(trip.durationMin) : null;
+  const dur = durRaw != null ? durRaw : 0;
+  const expected = expectedMeterFromTariff(opts.refTariff, dist || 0, dur, 0);
   if (expected != null && fare > 0 && Math.abs(fare - expected) > Math.max(1, expected * 0.15)) {
     reasons.push('fare_mismatch');
     details.push('fare');
+  }
+  // implausible_short_trip: <0.1km + <3min, or 0,0 sentinel + <3min
+  const SHORT_KM = 0.1;
+  const SHORT_MIN = 3;
+  function isSentinel(lat, lng) {
+    if (lat == null || lat === '' || lng == null || lng === '') return false;
+    const la = Number(lat); const ln = Number(lng);
+    return Number.isFinite(la) && Number.isFinite(ln) && Math.abs(la) < 1e-5 && Math.abs(ln) < 1e-5;
+  }
+  function parseLL(raw) {
+    const s = String(raw || '').trim();
+    const m = s.match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
+    if (!m) return null;
+    return { lat: Number(m[1]), lng: Number(m[2]) };
+  }
+  const dropS = parseLL(trip.dropLatLng || trip.DropLatLng);
+  const pickS = parseLL(trip.pickupLatLng || trip.PickupLatLng);
+  const invalidCoords =
+    isSentinel(trip.dropLat, trip.dropLng) ||
+    isSentinel(trip.pickupLat, trip.pickupLng) ||
+    (dropS && isSentinel(dropS.lat, dropS.lng)) ||
+    (pickS && isSentinel(pickS.lat, pickS.lng));
+  if (durRaw != null && dur < SHORT_MIN) {
+    if (invalidCoords || (dist != null && dist < SHORT_KM)) {
+      reasons.push('implausible_short_trip');
+      details.push('short');
+    }
   }
   const cards = tripCardNumbers(trip);
   const selfWin = tripWindow(trip);
@@ -238,6 +266,46 @@ test('fare_mismatch vs reference tariff', () => {
   );
   // expected = 3.5 + 20 + 10 = 33.5; |40-33.5|=6.5 > max(1, 5.025)
   assert.ok(hit.reasons.includes('fare_mismatch'));
+});
+
+test('implausible_short_trip flags near-zero distance + short duration (8088 pattern)', () => {
+  const hit = detectTripAnomalies({
+    _cid: '860869',
+    _rawKey: '8692608088',
+    distanceKm: 0.00909626923623701,
+    durationMin: 2,
+    fare: 15.06,
+  });
+  assert.ok(hit.reasons.includes('implausible_short_trip'));
+});
+
+test('implausible_short_trip treats 0,0 sentinel as invalid, not real zero distance', () => {
+  const hit = detectTripAnomalies({
+    _cid: 'c1',
+    _rawKey: 'z',
+    durationMin: 1,
+    dropLatLng: '0,0',
+    pickupLat: -46.4,
+    pickupLng: 168.3,
+  });
+  assert.ok(hit.reasons.includes('implausible_short_trip'));
+  // Missing distance + no sentinel + short time → do not invent a zero-distance flag
+  const clean = detectTripAnomalies({
+    _cid: 'c1',
+    _rawKey: 'ok',
+    durationMin: 1,
+    fare: 12,
+  });
+  assert.equal(clean.reasons.includes('implausible_short_trip'), false);
+});
+
+test('implausible_short_trip does not flag normal distance trips', () => {
+  const hit = detectTripAnomalies({
+    distanceKm: 3.2,
+    durationMin: 8,
+    fare: 18,
+  });
+  assert.equal(hit.reasons.includes('implausible_short_trip'), false);
 });
 
 test('same_card_reuse_3min', () => {
@@ -445,6 +513,10 @@ test('tmAnomaly source exports claim helper and rules', () => {
   assert.match(anomalySrc, /limit_exceeded_daily/);
   assert.match(anomalySrc, /limit_exceeded_monthly/);
   assert.match(anomalySrc, /card_expired/);
+  assert.match(anomalySrc, /implausible_short_trip/);
+  assert.match(anomalySrc, /isImplausibleShortTrip/);
+  assert.match(anomalySrc, /hasInvalidTripCoords/);
+  assert.match(anomalySrc, /IMPLAUSIBLE_SHORT_MAX_KM/);
   assert.match(anomalySrc, /cardsByNumber/);
   assert.match(anomalySrc, /cardUsageOrdinal/);
 });
@@ -455,6 +527,8 @@ test('council portal loads tmCards into anomaly scan', () => {
   assert.match(councilSrc, /applyAnomalyScan\(list, tariffByCid \|\| \{\}, cardsByNumber/);
   assert.match(councilSrc, /limit_exceeded_daily/);
   assert.match(councilSrc, /card_expired/);
+  assert.match(councilSrc, /implausible_short_trip/);
+  assert.match(councilSrc, /Implausible short trip/);
   assert.match(councilSrc, /Daily limit exceeded/);
 });
 
@@ -478,12 +552,16 @@ test('council portal pending + anomalies + bulk endpoints', () => {
   assert.match(councilSrc, /view-only for the company until you click Return/);
 });
 
-test('SA Flagged filter includes card_expired', () => {
+test('SA Flagged filter includes card_expired and implausible_short_trip', () => {
   assert.match(flaggedAspx, /limit_exceeded_daily/);
   assert.match(flaggedAspx, /card_expired/);
+  assert.match(flaggedAspx, /implausible_short_trip/);
 });
 
-test('owner panel shows flagged edit-warning on revision_needed', () => {
+test('owner panel shows flagged edit-warning on revision_needed and flagged', () => {
   assert.match(adminSrc, /Council flagged|flagReasons|anomalyDetail/);
   assert.match(adminSrc, /revision_needed/);
+  assert.match(adminSrc, /implausible_short_trip/);
+  assert.match(adminSrc, /st === 'flagged'/);
+  assert.match(adminSrc, /tmFlagReasonLabels/);
 });

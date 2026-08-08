@@ -711,3 +711,26 @@ function hoistUsesOf(t) {
   if (isFinite(counted) && counted > 0) return counted;
   return hoistPaysOf(t) > 0 ? 1 : 0;
 }
+
+/** Human labels for anomaly / flag reason codes (council + SA + owner). */
+var TM_FLAG_REASON_LABELS = {
+  fare_mismatch: 'Fare mismatch',
+  same_card_reuse_3min: 'Card reused <3min',
+  same_card_same_time_diff_taxi: 'Same card, different taxi',
+  limit_exceeded_daily: 'Daily limit exceeded',
+  limit_exceeded_monthly: 'Monthly limit exceeded',
+  card_expired: 'Card expired',
+  implausible_short_trip: 'Implausible short trip',
+  waiting_charged: 'Waiting charged',
+  hoist_rate_mismatch: 'Hoist rate mismatch',
+  hoist_vehicle_mismatch: 'Hoist vehicle mismatch',
+  hoist_count_exceeded: 'Hoist count exceeded'
+};
+function tmFlagReasonLabel(code) {
+  var c = String(code || '').trim();
+  return TM_FLAG_REASON_LABELS[c] || c || 'flagged';
+}
+function tmFlagReasonLabels(reasons) {
+  if (!Array.isArray(reasons) || !reasons.length) return [];
+  return reasons.map(tmFlagReasonLabel).filter(Boolean);
+}

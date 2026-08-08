@@ -558,6 +558,7 @@ const FLAG_REASON_LABELS: Record<string, string> = {
   limit_exceeded_daily: 'Daily limit exceeded',
   limit_exceeded_monthly: 'Monthly limit exceeded',
   card_expired: 'Card expired',
+  implausible_short_trip: 'Implausible short trip',
   waiting_charged: 'Waiting charged',
   hoist_rate_mismatch: 'Hoist rate mismatch',
 };
@@ -1642,7 +1643,7 @@ function cpRejectTrip(form){
   var reason = prompt('Flag reason:\\nfare_mismatch, waiting_charged, hoist_rate_mismatch, or other','other');
   if(reason===null) return false;
   reason = String(reason||'').trim() || 'other';
-  var allowed = {fare_mismatch:1,waiting_charged:1,hoist_rate_mismatch:1,other:1};
+  var allowed = {fare_mismatch:1,waiting_charged:1,hoist_rate_mismatch:1,limit_exceeded_daily:1,limit_exceeded_monthly:1,card_expired:1,implausible_short_trip:1,other:1};
   if(!allowed[reason]) reason = 'other';
   var note = prompt('Reject note (required):','');
   if(note===null) return false;
@@ -1928,6 +1929,7 @@ function buildActionForms(d){
     h += '<option value="limit_exceeded_daily">limit_exceeded_daily</option>';
     h += '<option value="limit_exceeded_monthly">limit_exceeded_monthly</option>';
     h += '<option value="card_expired">card_expired</option>';
+    h += '<option value="implausible_short_trip">implausible_short_trip</option>';
     h += '<option value="other">other</option></select>';
     h += '<input name="note" class="cp-input" placeholder="Reject note (required)" style="min-width:160px" required/>';
     h += '<button type="submit" class="cp-btn cp-btn-r">&#10007; Reject / Red-flag</button></form>';

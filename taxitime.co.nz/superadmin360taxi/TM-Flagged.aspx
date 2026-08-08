@@ -168,6 +168,7 @@ firebase.initializeApp(config);
       <option value="limit_exceeded_daily">Daily Limit Exceeded</option>
       <option value="limit_exceeded_monthly">Monthly Limit Exceeded</option>
       <option value="card_expired">Card Expired</option>
+      <option value="implausible_short_trip">Implausible Short Trip</option>
       <option value="card_inactive">Card Inactive</option>
       <option value="unapproved_tariff">Unapproved Tariff</option>
     </select>
@@ -309,7 +310,7 @@ function renderFL() {
   var cnames = {}; Object.entries(flCouncils).forEach(function(kv) { cnames[kv[0]] = (kv[1].name) || kv[0]; });
   document.getElementById('fl-tb').innerHTML = entries.map(function(kv) {
     var id = kv[0], t = kv[1], sid = "'" + String(id).replace(/\\/g,'\\\\').replace(/'/g,"\\'") + "'";
-    var flags = (t.flagReasons || []).map(function(f) { return '<span class="fc">' + f + '</span>'; }).join('');
+    var flags = (t.flagReasons || []).map(function(f) { return '<span class="fc">' + tmFlagReasonLabel(f) + '</span>'; }).join('');
     var stageMap = { flagged: '<span class="bx bx-r">Needs Fix</span>', company_approved: '<span class="bx bx-b">Sent to Council</span>', rejected: '<span class="bx bx-r">Rejected</span>' };
     var dt = t.startTime ? (t.startTime.slice(0,10) + ' ' + t.startTime.slice(11,16)) : '\u2014';
     return '<tr style="background:#FFF8F8">' +
@@ -331,8 +332,8 @@ function renderFL() {
 function editFL(id) {
   flEid = id; var t = flData[id] || {};
   document.getElementById('fl-etitle').textContent = 'Fix Trip ' + id;
-  var flags = (t.flagReasons || []).map(function(f) { return '<span class="fc">' + f + '</span>'; }).join('');
-  document.getElementById('fl-flag-box').innerHTML = '<strong style="color:#C62828">Flags:</strong> ' + flags;
+  var flags = (t.flagReasons || []).map(function(f) { return '<span class="fc">' + tmFlagReasonLabel(f) + '</span>'; }).join('');
+  document.getElementById('fl-flag-box').innerHTML = '<strong style="color:#C62828">Flags:</strong> ' + flags + (t.anomalyDetail ? '<div style="margin-top:6px;font-size:12px;color:#666">' + String(t.anomalyDetail) + '</div>' : '');
   document.getElementById('fl-fare').value = t.meterFare || '';
   document.getElementById('fl-wait').value = t.waitingCharge || 0;
   document.getElementById('fl-hoist').value = t.hoistUsed ? 'true' : 'false';

@@ -14,6 +14,13 @@ export const ANOMALY_CARD_DIFF_TAXI = 'same_card_same_time_diff_taxi';
 export const ANOMALY_LIMIT_DAILY = 'limit_exceeded_daily';
 export const ANOMALY_LIMIT_MONTHLY = 'limit_exceeded_monthly';
 export const ANOMALY_CARD_EXPIRED = 'card_expired';
+/** Near-zero movement + short duration (or sentinel 0,0 coords + short duration). */
+export const ANOMALY_IMPLAUSIBLE_SHORT = 'implausible_short_trip';
+
+/** Distance below this (km) counts as near-zero for the short-trip rule. */
+export const IMPLAUSIBLE_SHORT_MAX_KM = 0.1;
+/** Duration below this (minutes) counts as short for the short-trip rule. */
+export const IMPLAUSIBLE_SHORT_MAX_MIN = 3;
 
 export type AnomalyReason =
   | typeof ANOMALY_FARE_MISMATCH
@@ -22,6 +29,7 @@ export type AnomalyReason =
   | typeof ANOMALY_LIMIT_DAILY
   | typeof ANOMALY_LIMIT_MONTHLY
   | typeof ANOMALY_CARD_EXPIRED
+  | typeof ANOMALY_IMPLAUSIBLE_SHORT
   | string;
 
 export type AnomalyTripLike = {
@@ -54,6 +62,21 @@ export type AnomalyTripLike = {
   completedAt?: string | number;
   flagReasons?: string[];
   anomalyDetail?: string;
+  pickupLat?: number | string;
+  pickupLng?: number | string;
+  pickupLon?: number | string;
+  dropLat?: number | string;
+  dropLng?: number | string;
+  dropLon?: number | string;
+  pickupLatLng?: string;
+  dropLatLng?: string;
+  DropLatLng?: string;
+  PickupLatLng?: string;
+  pickupLocation?: { lat?: number; latitude?: number; lng?: number; lon?: number; longitude?: number };
+  dropLocation?: { lat?: number; latitude?: number; lng?: number; lon?: number; longitude?: number };
+  dropoffLocation?: { lat?: number; latitude?: number; lng?: number; lon?: number; longitude?: number };
+  startLocation?: { lat?: number; latitude?: number; lng?: number; lon?: number; longitude?: number };
+  endLocation?: { lat?: number; latitude?: number; lng?: number; lon?: number; longitude?: number };
 };
 
 /** Registry row from tmCards/{cardNumber} (limits are trip counts). */
@@ -133,6 +156,9 @@ function durationMinOf(trip: AnomalyTripLike): number {
   const label = str(trip.durationLabel);
   const m = label.match(/([\d.]+)\s*min/i);
   if (m) return Number(m[1]);
+  if (trip.duration != null && trip.duration !== '' && Number.isFinite(Number(trip.duration))) {
+    return Number(trip.duration);
+  }
   const w = tripWindow(trip);
   if (w.start && w.end && w.end > w.start) return (w.end - w.start) / 60000;
   return 0;
@@ -141,6 +167,116 @@ function durationMinOf(trip: AnomalyTripLike): number {
 function distanceKmOf(trip: AnomalyTripLike): number {
   const d = trip.distanceKm ?? trip.distance;
   return d != null && d !== '' && Number.isFinite(Number(d)) ? Number(d) : 0;
+}
+
+/** True when a lat/lng pair is the classic 0,0 GPS sentinel (not a real NZ point). */
+export function isSentinelCoordPair(lat: unknown, lng: unknown): boolean {
+  if (lat == null || lat === '' || lng == null || lng === '') return false;
+  const la = Number(lat);
+  const ln = Number(lng);
+  if (!Number.isFinite(la) || !Number.isFinite(ln)) return false;
+  return Math.abs(la) < 1e-5 && Math.abs(ln) < 1e-5;
+}
+
+function parseLatLngString(raw: unknown): { lat: number; lng: number } | null {
+  const s = str(raw);
+  if (!s) return null;
+  const m = s.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (!m) return null;
+  const lat = Number(m[1]);
+  const lng = Number(m[2]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return { lat, lng };
+}
+
+function tripEndpointCoords(trip: AnomalyTripLike): {
+  pickup: { lat: number; lng: number } | null;
+  drop: { lat: number; lng: number } | null;
+} {
+  const pickupLoc = trip.pickupLocation || trip.startLocation || {};
+  const dropLoc = trip.dropLocation || trip.endLocation || trip.dropoffLocation || {};
+  const fromPickupStr = parseLatLngString(trip.pickupLatLng || trip.PickupLatLng);
+  const fromDropStr = parseLatLngString(trip.dropLatLng || trip.DropLatLng);
+
+  const pickupLat = num(
+    trip.pickupLat ?? (pickupLoc as any).latitude ?? (pickupLoc as any).lat ?? fromPickupStr?.lat,
+    NaN,
+  );
+  const pickupLng = num(
+    trip.pickupLng ??
+      trip.pickupLon ??
+      (pickupLoc as any).longitude ??
+      (pickupLoc as any).lng ??
+      (pickupLoc as any).lon ??
+      fromPickupStr?.lng,
+    NaN,
+  );
+  const dropLat = num(
+    trip.dropLat ?? (dropLoc as any).latitude ?? (dropLoc as any).lat ?? fromDropStr?.lat,
+    NaN,
+  );
+  const dropLng = num(
+    trip.dropLng ??
+      trip.dropLon ??
+      (dropLoc as any).longitude ??
+      (dropLoc as any).lng ??
+      (dropLoc as any).lon ??
+      fromDropStr?.lng,
+    NaN,
+  );
+
+  return {
+    pickup: Number.isFinite(pickupLat) && Number.isFinite(pickupLng) ? { lat: pickupLat, lng: pickupLng } : null,
+    drop: Number.isFinite(dropLat) && Number.isFinite(dropLng) ? { lat: dropLat, lng: dropLng } : null,
+  };
+}
+
+/**
+ * True when either endpoint is the 0,0 sentinel.
+ * Sentinel coords must not be treated as a real trip distance of zero in this check.
+ */
+export function hasInvalidTripCoords(trip: AnomalyTripLike): boolean {
+  const { pickup, drop } = tripEndpointCoords(trip);
+  if (pickup && isSentinelCoordPair(pickup.lat, pickup.lng)) return true;
+  if (drop && isSentinelCoordPair(drop.lat, drop.lng)) return true;
+  return false;
+}
+
+/**
+ * Recorded distance for the short-trip rule.
+ * Returns null when distance is unknown (do not invent zero from blank fields alone).
+ */
+export function recordedDistanceKm(trip: AnomalyTripLike): number | null {
+  const raw = trip.distanceKm ?? trip.distance;
+  if (raw == null || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Implausible short / static trip:
+ * - duration under IMPLAUSIBLE_SHORT_MAX_MIN, AND
+ * - (recorded distance under IMPLAUSIBLE_SHORT_MAX_KM, OR invalid 0,0 sentinel coords).
+ * Payment-agnostic: any trip the scanner sees can hit this rule.
+ * Requires an explicit duration signal (field or start/end window) — blank jobs are not treated as 0 min.
+ */
+export function isImplausibleShortTrip(trip: AnomalyTripLike): boolean {
+  const hasExplicitDur =
+    (trip.durationMin != null && trip.durationMin !== '') ||
+    (trip.duration != null && trip.duration !== '') ||
+    !!str(trip.durationLabel);
+  const win = tripWindow(trip);
+  const hasWindowDur = !!(win.start && win.end && win.end > win.start);
+  if (!hasExplicitDur && !hasWindowDur) return false;
+
+  const dur = durationMinOf(trip);
+  if (!Number.isFinite(dur) || dur >= IMPLAUSIBLE_SHORT_MAX_MIN) return false;
+
+  if (hasInvalidTripCoords(trip)) return true;
+
+  const dist = recordedDistanceKm(trip);
+  if (dist == null) return false;
+  return dist < IMPLAUSIBLE_SHORT_MAX_KM;
 }
 
 function meterFareOf(trip: AnomalyTripLike): number {
@@ -306,6 +442,21 @@ export function detectTripAnomalies(
     details.push(
       `Fare mismatch: meter $${fare.toFixed(2)} vs ref $${expected.toFixed(2)}`,
     );
+  }
+
+  if (isImplausibleShortTrip(trip)) {
+    reasons.push(ANOMALY_IMPLAUSIBLE_SHORT);
+    const dur = durationMinOf(trip);
+    const dist = recordedDistanceKm(trip);
+    if (hasInvalidTripCoords(trip)) {
+      details.push(
+        `Implausible short trip: ${dur.toFixed(1)} min with invalid 0,0 GPS sentinel (not a real distance)`,
+      );
+    } else {
+      details.push(
+        `Implausible short trip: ${dist != null ? dist.toFixed(3) : '?'} km in ${dur.toFixed(1)} min`,
+      );
+    }
   }
 
   const cards = tripCardNumbers(trip);
