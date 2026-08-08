@@ -195,6 +195,12 @@ a{color:inherit;text-decoration:none}
 .cp-modal-bd{padding:18px}
 .cp-modal-ft{padding:12px 18px;border-top:1px solid #eee;display:flex;justify-content:flex-end;gap:8px}
 .cp-input{padding:7px 10px;border:1px solid #ddd;border-radius:4px;font-size:13px}
+.cp-search-hero{background:#fff;border:2px solid #2E7D32;border-radius:8px;padding:14px 16px;margin-bottom:16px;box-shadow:0 2px 8px rgba(46,125,50,.12)}
+.cp-search-hero label{display:block;font-size:13px;font-weight:700;color:#1B5E20;margin-bottom:8px}
+.cp-search-hero-row{display:flex;gap:10px;align-items:stretch;flex-wrap:wrap}
+.cp-search-hero input[type="search"]{flex:1;min-width:220px;padding:12px 14px;border:1px solid #A5D6A7;border-radius:6px;font-size:15px;background:#FAFFF7}
+.cp-search-hero input[type="search"]:focus{outline:2px solid #69F0AE;border-color:#2E7D32}
+.cp-search-hero .cp-btn{padding:12px 18px;font-size:14px}
 #cp-trip-map-wrap{margin-top:12px;overflow:hidden;border-radius:6px;position:relative}
 #cp-trip-map{height:220px;border-radius:6px;z-index:1;background:#E8F5E9;overflow:hidden}
 #cp-trip-map-status{font-size:12px;color:#666;margin:0 0 6px;min-height:16px}
@@ -1412,22 +1418,35 @@ ${cb}
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:6px">Trips</h2>
 ${noticeHtml}
 <p style="font-size:13px;color:#666;margin-bottom:14px">Review, approve, flag, archive, and explore trip usage in one place. Manage operator access on <a href="/council-portal/operators?t=${te}" style="color:#2E7D32;font-weight:600">Operators</a>.</p>
+<form method="GET" action="/council-portal/trips" class="cp-search-hero">
+  <input type="hidden" name="t" value="${esc(token)}"/>
+  <input type="hidden" name="status" value="${esc(status)}"/>
+  <input type="hidden" name="company" value="${esc(filterCompany)}"/>
+  <input type="hidden" name="from" value="${esc(filterFrom)}"/>
+  <input type="hidden" name="to" value="${esc(filterTo)}"/>
+  <label for="cp-trips-search">&#128269; Search trips</label>
+  <div class="cp-search-hero-row">
+    <input id="cp-trips-search" type="search" name="q" value="${esc(q)}" placeholder="Job ID, voucher, passenger, driver, card number…" autocomplete="off" autofocus/>
+    <button type="submit" class="cp-btn cp-btn-g">Search</button>
+    ${q ? `<a href="/council-portal/trips?t=${te}&status=${encodeURIComponent(status)}${filterCompany ? '&company=' + encodeURIComponent(filterCompany) : ''}${filterFrom ? '&from=' + encodeURIComponent(filterFrom) : ''}${filterTo ? '&to=' + encodeURIComponent(filterTo) : ''}" class="cp-btn" style="background:#eee;color:#333">Clear search</a>` : ''}
+  </div>
+  <p style="font-size:12px;color:#666;margin:8px 0 0">Search runs across the current status tab and other filters below.</p>
+</form>
 ${tabsHtml}
 <div class="cp-month-row">
   <form method="GET" action="/council-portal/trips" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
     <input type="hidden" name="t" value="${esc(token)}"/>
+    <input type="hidden" name="q" value="${esc(q)}"/>
     <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">Status</label>
       <select name="status" class="cp-input">${statusOpts}</select></div>
-    <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">Search</label>
-      <input type="search" name="q" class="cp-input" value="${esc(q)}" placeholder="Voucher, passenger, driver…" style="min-width:200px"/></div>
     <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">Company</label>
       <select name="company" class="cp-input"><option value="">All Companies</option>${companyOpts}</select></div>
     <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">From</label>
       <input type="date" name="from" class="cp-input" value="${esc(filterFrom)}"/></div>
     <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">To</label>
       <input type="date" name="to" class="cp-input" value="${esc(filterTo)}"/></div>
-    <button type="submit" class="cp-btn cp-btn-g">Apply</button>
-    ${hasFilters ? `<a href="/council-portal/trips?t=${te}&status=all" class="cp-btn" style="background:#eee;color:#333">Clear</a>` : ''}
+    <button type="submit" class="cp-btn cp-btn-g">Apply filters</button>
+    ${hasFilters ? `<a href="/council-portal/trips?t=${te}&status=all" class="cp-btn" style="background:#eee;color:#333">Clear all</a>` : ''}
   </form>
   <a href="/council-portal/export?t=${te}${exportQs}" class="cp-btn cp-btn-g" style="margin-left:auto">&#11015; Download CSV</a>
 </div>

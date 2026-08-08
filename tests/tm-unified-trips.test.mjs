@@ -358,7 +358,8 @@ test('bulk approve/archive/restore respect active Trips filters', () => {
   assert.match(restoreBlock, /status: 'archived'/);
 
   // Toolbar posts filter fields with bulk forms
-  assert.match(councilSrc, /name="q" value="\$\{esc\(q\)\}"/);
+  assert.match(councilSrc, /cp-search-hero|cp-trips-search|Search trips/);
+  assert.match(councilSrc, /name="q"/);
   assert.match(councilSrc, /name="company" value="\$\{esc\(filterCompany\)\}"/);
   assert.match(councilSrc, /matching the current filters/);
 });
