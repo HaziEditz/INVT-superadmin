@@ -1,5 +1,6 @@
 /**
  * Build / refresh council claim batches from approved trips (testing + SA parity).
+ * Council trip approve also upserts into the month batch via mergeApprovedTripIntoBatch.
  */
 import { isClaimEligibleStatus } from './tmAnomaly';
 import { tripActivityMs, tripMonthKey } from './tmTripSort';
@@ -13,11 +14,13 @@ export type CouncilTripLike = {
   [key: string]: unknown;
 };
 
+export type BatchTripRef = { cid: string; rawKey: string };
+
 export type BatchCreatePlan = {
   cid: string;
   ym: string;
   pathSuffix: string; // cid/ym under tmBatches/{councilId}/
-  trips: Array<{ cid: string; rawKey: string }>;
+  trips: BatchTripRef[];
   tripCount: number;
   totalSubsidy: number;
   payload: Record<string, unknown>;
@@ -35,7 +38,167 @@ export function shouldWriteBatchCreate(existing: { status?: string } | null | un
 }
 
 export function subsidyOfTrip(t: CouncilTripLike): number {
-  return parseFloat(String(t.tmSubsidy != null ? t.tmSubsidy : t.totalSubsidy || 0)) || 0;
+  const raw =
+    t.tmSubsidy != null
+      ? t.tmSubsidy
+      : t.totalSubsidy != null
+        ? t.totalSubsidy
+        : t.tmCouncilPays != null
+          ? t.tmCouncilPays
+          : 0;
+  return parseFloat(String(raw)) || 0;
+}
+
+/** Normalize batch trip list entries to { cid, rawKey }. */
+export function normalizeBatchTripRefs(
+  rawList: unknown,
+  defaultCid: string,
+): BatchTripRef[] {
+  const out: BatchTripRef[] = [];
+  const seen = new Set<string>();
+  const list = Array.isArray(rawList) ? rawList : [];
+  for (const item of list) {
+    let cid = defaultCid;
+    let rawKey = '';
+    if (item && typeof item === 'object') {
+      const o = item as Record<string, unknown>;
+      rawKey = String(o.rawKey || o._rawKey || o.id || o.bookingId || '').trim();
+      cid = String(o.cid || o._cid || defaultCid).trim() || defaultCid;
+    } else {
+      const s = String(item || '').trim();
+      if (s.indexOf('/') > 0) {
+        const slash = s.indexOf('/');
+        cid = s.slice(0, slash);
+        rawKey = s.slice(slash + 1);
+      } else {
+        rawKey = s;
+      }
+    }
+    if (!cid || !rawKey) continue;
+    const k = cid + '/' + rawKey;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ cid, rawKey });
+  }
+  return out;
+}
+
+/**
+ * Display totals for a claim batch row.
+ * Prefer live recount of resolved trips; treat missing status on batch stubs as claimable
+ * (lookup often returns refs without status). Fall back to stored tripCount/totalTrips.
+ */
+export function computeDisplayBatchTotals(
+  batch: {
+    tripCount?: number | string;
+    totalTrips?: number | string;
+    totalSubsidy?: number | string;
+    claimAmount?: number | string;
+  } | null | undefined,
+  tripRows: CouncilTripLike[],
+): { totalTrips: number; totalSubsidy: number } {
+  const b = batch && typeof batch === 'object' ? batch : {};
+  if (Array.isArray(tripRows) && tripRows.length) {
+    let totalTrips = 0;
+    let totalSubsidy = 0;
+    for (const t of tripRows) {
+      const st = String(t?.status || '').trim().toLowerCase();
+      // Skip only when we know the trip is not claim-eligible
+      if (st && !isClaimEligibleStatus(st)) continue;
+      totalTrips++;
+      totalSubsidy += subsidyOfTrip(t);
+    }
+    if (totalTrips > 0) {
+      return { totalTrips, totalSubsidy: +totalSubsidy.toFixed(2) };
+    }
+  }
+  const storedTrips =
+    Number(b.tripCount != null && b.tripCount !== '' ? b.tripCount : b.totalTrips || 0) || 0;
+  const storedSub =
+    parseFloat(
+      String(b.totalSubsidy != null && b.totalSubsidy !== '' ? b.totalSubsidy : b.claimAmount || 0),
+    ) || 0;
+  return { totalTrips: storedTrips, totalSubsidy: storedSub };
+}
+
+/**
+ * Upsert one approved trip into an open month batch (create or refresh submitted/draft).
+ * Skips approved/paid batches so council claim lock is preserved.
+ */
+export function mergeApprovedTripIntoBatch(
+  existing: Record<string, unknown> | null | undefined,
+  trip: CouncilTripLike,
+  opts: {
+    who: string;
+    now?: number;
+    submittedRef?: string;
+    notes?: string;
+  },
+): {
+  decision: ExistingBatchDecision;
+  cid: string;
+  ym: string;
+  pathSuffix: string;
+  added: boolean;
+  payload: Record<string, unknown>;
+} | null {
+  const cid = String(trip._cid || '').trim();
+  const rawKey = String(trip._rawKey || '').trim();
+  if (!cid || !rawKey) return null;
+  const now = opts.now != null ? Number(opts.now) : Date.now();
+  const who = String(opts.who || 'council').trim() || 'council';
+  let ym = tripMonthKey(trip);
+  if (!ym) ym = new Date(now).toISOString().slice(0, 7);
+  const decision = shouldWriteBatchCreate(existing as { status?: string } | null);
+  if (decision === 'skip') return null;
+
+  const ex = existing && typeof existing === 'object' ? existing : {};
+  const trips = normalizeBatchTripRefs((ex as { trips?: unknown }).trips, cid);
+  const already = trips.some((x) => x.cid === cid && x.rawKey === rawKey);
+  let totalSubsidy =
+    parseFloat(
+      String(
+        (ex as { totalSubsidy?: unknown }).totalSubsidy != null
+          ? (ex as { totalSubsidy?: unknown }).totalSubsidy
+          : (ex as { claimAmount?: unknown }).claimAmount || 0,
+      ),
+    ) || 0;
+
+  if (!already) {
+    trips.push({ cid, rawKey });
+    totalSubsidy += subsidyOfTrip(trip);
+  } else if (!trips.length) {
+    trips.push({ cid, rawKey });
+    totalSubsidy = subsidyOfTrip(trip);
+  }
+
+  totalSubsidy = +totalSubsidy.toFixed(2);
+  const payload: Record<string, unknown> = {
+    status: 'submitted',
+    submittedAt: (ex as { submittedAt?: unknown }).submittedAt || now,
+    submittedBy: (ex as { submittedBy?: unknown }).submittedBy || who,
+    submittedRef:
+      (ex as { submittedRef?: unknown }).submittedRef ||
+      opts.submittedRef ||
+      'council-trip-approve',
+    notes:
+      (ex as { notes?: unknown }).notes ||
+      opts.notes ||
+      'Auto-added when council approved trip',
+    tripCount: trips.length,
+    totalTrips: trips.length,
+    claimAmount: totalSubsidy,
+    totalSubsidy,
+    trips,
+  };
+  return {
+    decision,
+    cid,
+    ym,
+    pathSuffix: cid + '/' + ym,
+    added: !already,
+    payload,
+  };
 }
 
 /**

@@ -46,9 +46,74 @@ import { compareTripsNewestFirst, tripActivityMs, tripMonthKey } from '../lib/tm
 import {
   planCouncilBatchCreates,
   shouldWriteBatchCreate,
+  mergeApprovedTripIntoBatch,
+  computeDisplayBatchTotals,
+  type CouncilTripLike,
 } from '../lib/tmBatchCreate';
 
 const router = Router();
+
+/**
+ * After council approves a trip, upsert it into that month's open claim batch
+ * so trips cannot sit approved with no batch.
+ */
+function upsertApprovedTripIntoMonthBatch(
+  councilId: string,
+  tripLike: CouncilTripLike,
+  who: string,
+  cb: () => void,
+): void {
+  const cid = String(tripLike._cid || '').trim();
+  const rawKey = String(tripLike._rawKey || '').trim();
+  if (!councilId || !cid || !rawKey) return cb();
+  const now = Date.now();
+  const ymGuess = tripMonthKey(tripLike) || new Date(now).toISOString().slice(0, 7);
+  const path = 'tmBatches/' + councilId + '/' + cid + '/' + ymGuess;
+  fbRead(path, (_e: any, existing: any) => {
+    const merged = mergeApprovedTripIntoBatch(existing, tripLike, {
+      who,
+      now,
+      submittedRef: 'council-trip-approve',
+    });
+    if (!merged) return cb();
+    const writePath = 'tmBatches/' + councilId + '/' + merged.pathSuffix;
+    fbWrite('PATCH', writePath, merged.payload, () => {
+      fbWrite(
+        'PATCH',
+        'tmTripStatus/' + cid + '/' + rawKey,
+        { batchId: merged.pathSuffix, batchYm: merged.ym },
+        () => cb(),
+      );
+    });
+  });
+}
+
+/** Load job economics then upsert into month batch (approve path). */
+function afterCouncilApproveAddToBatch(
+  councilId: string,
+  tripCid: string,
+  tripRawKey: string,
+  who: string,
+  statusExtras: Record<string, unknown> | null | undefined,
+  cb: () => void,
+): void {
+  fbRead('completedJobs/' + tripCid + '/' + tripRawKey, (_e: any, job: any) => {
+    const st = statusExtras && typeof statusExtras === 'object' ? statusExtras : {};
+    const tripLike: CouncilTripLike = {
+      ...(job && typeof job === 'object' ? job : {}),
+      ...st,
+      _cid: tripCid,
+      _rawKey: tripRawKey,
+      status: 'approved',
+      tmSubsidy:
+        (job && (job.tmSubsidy ?? job.tmCouncilPays)) ??
+        st.tmSubsidy ??
+        st.tmCouncilPays ??
+        0,
+    };
+    upsertApprovedTripIntoMonthBatch(councilId, tripLike, who, cb);
+  });
+}
 
 // ── CSS & helpers ──────────────────────────────────────────────────────────────
 const PORTAL_CSS = `
@@ -688,7 +753,10 @@ router.post('/api/council-approve', (req, res) => {
         toStatus: patch.status,
       });
       appendTripEvent(tripCid, tripRawKey, ev, () => {
-        res.redirect(base + '&msg=' + encodeURIComponent(msg) + '&mt=ok');
+        const finish = () =>
+          res.redirect(base + '&msg=' + encodeURIComponent(msg) + '&mt=ok');
+        if (action !== 'approve') return finish();
+        afterCouncilApproveAddToBatch(sess.councilId, tripCid, tripRawKey, who, st, finish);
       });
     });
   });
@@ -1159,7 +1227,7 @@ function cpDrawTripMap(puLL, duLL, gen){
     bounds.push(duLL);
   }
   if(puLL && duLL){
-    L.polyline([puLL, duLL], {color:'#1B5E20', weight:3}).addTo(_cpMap);
+    L.polyline([puLL, duLL], {color:'#1B5E20', weight:5, opacity:0.92}).addTo(_cpMap);
   }
   if(bounds.length > 1) _cpMap.fitBounds(bounds, {padding:[24,24]});
   else if(bounds.length === 1) _cpMap.setView(bounds[0], 15);
@@ -1176,18 +1244,27 @@ function initCpTripMap(d, gen){
   var dlat = Number(d.dropLat), dlng = Number(d.dropLng);
   var hasPu = Number.isFinite(plat) && Number.isFinite(plng) && plat !== 0 && plng !== 0;
   var hasDu = Number.isFinite(dlat) && Number.isFinite(dlng) && dlat !== 0 && dlng !== 0;
-  if(hasPu || hasDu){
-    cpDrawTripMap(hasPu ? [plat, plng] : null, hasDu ? [dlat, dlng] : null, gen);
-    return;
-  }
   var pickup = String(d.pickup || '').trim();
   var dropoff = String(d.dropoff || '').trim();
-  if((!pickup || pickup==='—') && (!dropoff || dropoff==='—')){
+  var needPuGeo = !hasPu && pickup && pickup !== '—';
+  var needDuGeo = !hasDu && dropoff && dropoff !== '—';
+  if(hasPu && hasDu){
+    cpDrawTripMap([plat, plng], [dlat, dlng], gen);
+    return;
+  }
+  if(!needPuGeo && !needDuGeo){
+    if(hasPu || hasDu){
+      cpDrawTripMap(hasPu ? [plat, plng] : null, hasDu ? [dlat, dlng] : null, gen);
+      return;
+    }
     cpMapStatus('Map unavailable — no pickup/dropoff addresses.');
     return;
   }
   cpMapStatus('Locating addresses on map…');
-  Promise.all([cpGeocodeAddr(pickup), cpGeocodeAddr(dropoff)]).then(function(r){
+  Promise.all([
+    needPuGeo ? cpGeocodeAddr(pickup) : Promise.resolve(hasPu ? [plat, plng] : null),
+    needDuGeo ? cpGeocodeAddr(dropoff) : Promise.resolve(hasDu ? [dlat, dlng] : null)
+  ]).then(function(r){
     if(gen !== _cpMapGen) return;
     if(!r[0] && !r[1]){
       cpMapStatus('Address not found on map.');
@@ -1777,7 +1854,16 @@ router.post('/api/council-bulk-approve', (req, res) => {
                 fromStatus: t.status || 'submitted',
                 toStatus: 'approved',
               }),
-              finishOne,
+              () => {
+                afterCouncilApproveAddToBatch(
+                  sess.councilId,
+                  String(t._cid),
+                  String(t._rawKey),
+                  who,
+                  t,
+                  finishOne,
+                );
+              },
             );
           },
         );
@@ -2532,6 +2618,7 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
     });
     const claimNotice =
       `<p style="font-size:12.5px;color:#666;margin:-4px 0 14px;padding:10px 12px;background:#FFF8E1;border-left:4px solid #E65100;border-radius:4px">` +
+      `Approving a trip automatically adds it to that month&rsquo;s claim batch. ` +
       `Trips with status flagged, revision_needed, rejected, or archived are excluded from claims. Only approved trips are claimable.` +
       (flaggedExcluded > 0
         ? `<div style="margin-top:6px">${flaggedExcluded} trip${flaggedExcluded === 1 ? '' : 's'} excluded this period — ` +
@@ -2578,22 +2665,7 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
         });
       }
       function displayBatchTotals(b: any, cid: string): { totalTrips: number; totalSubsidy: number } {
-        const tripRows = resolveBatchTripIds(b, cid);
-        if (tripRows.length) {
-          let totalTrips = 0;
-          let totalSubsidy = 0;
-          tripRows.forEach((t: any) => {
-            const st = String(t.status || '').toLowerCase();
-            if (!isClaimEligibleStatus(st)) return;
-            totalTrips++;
-            totalSubsidy += parseFloat(t.tmSubsidy != null ? t.tmSubsidy : t.totalSubsidy || 0) || 0;
-          });
-          return { totalTrips, totalSubsidy };
-        }
-        return {
-          totalTrips: Number(b.totalTrips || 0) || 0,
-          totalSubsidy: parseFloat(b.totalSubsidy || 0) || 0,
-        };
+        return computeDisplayBatchTotals(b, resolveBatchTripIds(b, cid));
       }
       function buildBatchPage() {
         const allBatches: any[] = [];
@@ -2710,8 +2782,8 @@ ${(() => {
   const approvedCount = (councilTrips || []).filter((t: any) => isClaimEligibleStatus(t.status)).length;
   return `<div class="cp-card" style="margin-bottom:16px;border:1px dashed #A5D6A7">
   <div class="cp-card-bd">
-    <div style="font-size:13px;font-weight:700;color:#1B5E20;margin-bottom:6px">Create / submit batch now <span style="font-weight:500;color:#888;font-size:11.5px">(testing)</span></div>
-    <p style="font-size:12.5px;color:#666;margin:0 0 10px">Approving a trip does not create a claim batch. Use this to assemble <strong>approved</strong> trips into a Submitted batch for the selected company/month (${approvedCount} claim-eligible trip${approvedCount === 1 ? '' : 's'} loaded).</p>
+    <div style="font-size:13px;font-weight:700;color:#1B5E20;margin-bottom:6px">Rebuild / submit batch <span style="font-weight:500;color:#888;font-size:11.5px">(repair)</span></div>
+    <p style="font-size:12.5px;color:#666;margin:0 0 10px">Approving a trip automatically adds it to that month&rsquo;s Submitted batch. Use this only to rebuild or refresh open batches from all <strong>approved</strong> trips (${approvedCount} claim-eligible trip${approvedCount === 1 ? '' : 's'} loaded).</p>
     <form method="POST" action="/api/council-batch-create" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
       <input type="hidden" name="_token" value="${esc(token)}"/>
       <input type="hidden" name="tab" value="${esc(tab)}"/>
@@ -2726,7 +2798,7 @@ ${(() => {
         <label style="display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:3px">Month (YYYY-MM)</label>
         <input name="ym" class="cp-input" value="${esc(defaultYm)}" placeholder="${esc(defaultYm)}" pattern="\\d{4}-\\d{2}" style="width:120px"/>
       </div>
-      <button type="submit" class="cp-btn cp-btn-g">Create / submit batch now</button>
+      <button type="submit" class="cp-btn cp-btn-g">Rebuild / submit batch</button>
     </form>
   </div>
 </div>`;
