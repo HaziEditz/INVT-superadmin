@@ -732,23 +732,6 @@ button:hover{background:#1B5E20}
 </body></html>`);
 });
 
-// TEMP: mint council session for live Flagged-tab evidence only. Remove after screenshots.
-router.get('/api/debug-mint-council', (req, res) => {
-  if (String(req.query.action || '') !== 'mint') {
-    return res.status(400).json({ error: 'action=mint required' });
-  }
-  const councilId = 'cncl_invercargill_city_council_test';
-  const token = cpSetSession(councilId, 'Invercargill City Council (test)', 'flag-debug@local');
-  return res.json({
-    marker: 'flag-debug-v1',
-    token,
-    flaggedUrl:
-      '/council-portal/trips?t=' +
-      encodeURIComponent(token) +
-      '&status=flagged&q=ZZTEST',
-  });
-});
-
 router.post('/api/council-login', (req, res) => {
   const email = ((req.body.email as string) || '').trim().toLowerCase();
   const password = (req.body.password as string) || '';
