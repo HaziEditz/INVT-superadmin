@@ -16,6 +16,7 @@ import restaurantRouter from './routes/restaurant';
 import rentalRouter    from './routes/rental';
 import saAdminRouter   from './routes/sa-admin';
 import saWalletRouter  from './routes/sa-wallet';
+import platformPaymentsRouter from './routes/platformPayments';
 import { startNormalizer } from './normalizer';
 import { startNotificationRelay } from './notificationRelay';
 import { hydrateAllSessions } from './sessions';
@@ -120,6 +121,7 @@ app.use(restaurantRouter);
 app.use(rentalRouter);
 app.use(saAdminRouter);
 app.use(saWalletRouter);
+app.use(platformPaymentsRouter);
 
 // ── Static file serving ───────────────────────────────────────────────────────
 const mimeTypes: Record<string, string> = {
