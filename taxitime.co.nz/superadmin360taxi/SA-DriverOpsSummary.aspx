@@ -295,7 +295,8 @@ function dosLoad(){
       if(!data||typeof data!=='object') return;
       Object.keys(data).forEach(function(bid){
         var job=data[bid]; if(!job||typeof job!=='object') return;
-        var did=String(job.driverId||job.DriverId||job.driverid||bid);
+        var did=String(job.driverId||job.DriverId||job.driverid||'').trim();
+        if(!did) return;
         if(!merged[bid]) merged[bid]={};
         if(!merged[bid][did]) merged[bid][did]={};
         Object.assign(merged[bid][did], job);
@@ -309,12 +310,14 @@ function dosLoad(){
         var vals=Object.values(job);
         var isFlat=vals.length>0&&vals.every(function(v){return v===null||typeof v!=='object';});
         if(isFlat){
-          var did=String(job.driverId||job.DriverId||bid);
+          var did=String(job.driverId||job.DriverId||'').trim();
+          if(!did) return;
           if(!merged[bid][did]) merged[bid][did]={};
           Object.assign(merged[bid][did], job);
         } else {
           Object.keys(job).forEach(function(did){
             var j=job[did]; if(!j||typeof j!=='object') return;
+            if(!did || did===bid) return;
             if(!merged[bid][did]) merged[bid][did]={};
             Object.assign(merged[bid][did], j);
           });
@@ -328,7 +331,8 @@ function dosLoad(){
         var j=merged[bid][did]; if(!j||typeof j!=='object') return;
         var copy=Object.assign({},j);
         copy.bookingId=copy.bookingId||bid;
-        copy.driverId=String(copy.driverId||copy.DriverId||did);
+        copy.driverId=String(copy.driverId||copy.DriverId||did||'').trim();
+        if(!copy.driverId || copy.driverId===bid || copy.driverId===String(copy.bookingId||'')) return;
         var ts=jobTs(copy);
         if(ts>=_dosPeriod.fromMs && ts<=_dosPeriod.toMs) allJobs.push(copy);
       });
