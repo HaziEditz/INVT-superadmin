@@ -196,6 +196,7 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
       <li><a href="SA-AuditLog.aspx">Audit Log</a></li>
       <li><a href="SA-WatchList.aspx">&#9888; Passenger Watch-list</a></li>
       <li><a href="SA-ShiftLogs.aspx">Shift Logs</a></li>
+      <li><a href="SA-DriverOpsSummary.aspx">Driver Ops &amp; Payments</a></li>
       <li><a href="SA-Email.aspx">Send Email</a></li>
       <li><a href="SA-EmailLog.aspx">Email Sent Log</a></li>
       <li><a href="SA-Reports.aspx">Revenue Reports</a></li>
