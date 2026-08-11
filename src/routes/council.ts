@@ -79,6 +79,14 @@ import {
   subsidyOfTrip,
   type CouncilTripLike,
 } from '../lib/tmBatchCreate';
+import {
+  buildTripPlatformFeeStamp,
+  companyFeeOverrideFromTmConfig,
+  normalizePlatformTmFeeDefaults,
+  resolvePlatformTmFees,
+  aggregateWouldBeFees,
+  PLATFORM_FEE_UI_LABEL,
+} from '../lib/tmPlatformFees';
 
 const router = Router();
 
@@ -117,6 +125,33 @@ function upsertApprovedTripIntoMonthBatch(
   });
 }
 
+/**
+ * Stamp BookaWaka platform fees on claim-ready approve (amounts + rates + timestamp).
+ * chargeEnabled is always false on the stamp — no real charging here.
+ * Skips if already stamped.
+ */
+function stampPlatformFeesOnApprove(
+  tripCid: string,
+  tripRawKey: string,
+  statusExtras: Record<string, unknown> | null | undefined,
+  cb: (stamp: Record<string, unknown> | null) => void,
+): void {
+  const st = statusExtras && typeof statusExtras === 'object' ? statusExtras : {};
+  if (st.platformFeeStampAt != null && st.platformFeeStampAt !== '') {
+    return cb(null);
+  }
+  fbRead('platformTmFees/defaults', (_ed: any, defaults: any) => {
+    fbRead('companySettings/' + tripCid + '/tmConfig', (_ec: any, tmCfg: any) => {
+      const resolved = resolvePlatformTmFees(
+        normalizePlatformTmFeeDefaults(defaults),
+        companyFeeOverrideFromTmConfig(tmCfg),
+      );
+      const stamp = buildTripPlatformFeeStamp(resolved);
+      fbWrite('PATCH', 'tmTripStatus/' + tripCid + '/' + tripRawKey, stamp, () => cb(stamp));
+    });
+  });
+}
+
 /** Load job economics then upsert into month batch (approve path). */
 function afterCouncilApproveAddToBatch(
   councilId: string,
@@ -136,7 +171,10 @@ function afterCouncilApproveAddToBatch(
       status: 'approved',
       ...normalizeTmTripEconomics(job && typeof job === 'object' ? job : {}),
     };
-    upsertApprovedTripIntoMonthBatch(councilId, tripLike, who, cb);
+    stampPlatformFeesOnApprove(tripCid, tripRawKey, st, (stamp) => {
+      if (stamp) Object.assign(tripLike, stamp);
+      upsertApprovedTripIntoMonthBatch(councilId, tripLike, who, cb);
+    });
   });
 }
 
@@ -375,6 +413,13 @@ function loadCouncilTrips(councilId: string, cb: (err: any, trips: any[]) => voi
             resubmittedBy: st.resubmittedBy || null,
             restoredAt: st.restoredAt || null,
             events: st.events || null,
+            platformFeeCouncil: st.platformFeeCouncil ?? null,
+            platformFeeCompany: st.platformFeeCompany ?? null,
+            platformFeeStampAt: st.platformFeeStampAt ?? null,
+            platformFeeChargeEnabled: st.platformFeeChargeEnabled ?? null,
+            platformFeeSource: st.platformFeeSource ?? null,
+            platformFeeLabel: st.platformFeeLabel ?? null,
+            batchYm: st.batchYm || null,
           });
         });
       });
@@ -2762,9 +2807,11 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
   const tab = normalizeClaimBatchStatusFilter(String(req.query.tab || 'submitted'));
   const filterFrom = String(req.query.from || '').trim();
   const filterTo = String(req.query.to || '').trim();
+  const filterCompany = String(req.query.company || '').trim();
   const qKeep =
     (filterFrom ? '&from=' + encodeURIComponent(filterFrom) : '') +
-    (filterTo ? '&to=' + encodeURIComponent(filterTo) : '');
+    (filterTo ? '&to=' + encodeURIComponent(filterTo) : '') +
+    (filterCompany ? '&company=' + encodeURIComponent(filterCompany) : '');
   const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
   loadCouncilTrips(sess.councilId, (_eT: any, councilTrips: any[]) => {
     const tripByKey: Record<string, any> = {};
@@ -2865,6 +2912,7 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
           status: 'all',
           from: filterFrom,
           to: filterTo,
+          company: filterCompany,
         });
         const submitted = inDate.filter((b) => b.status === 'submitted');
         const approved = inDate.filter((b) => b.status === 'approved');
@@ -2874,6 +2922,7 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
           status: tab,
           from: filterFrom,
           to: filterTo,
+          company: filterCompany,
         });
         const totalPending = submitted.reduce((s, b) => s + Number(b._displaySubsidy || 0), 0);
         const totalApproved = approved.reduce((s, b) => s + Number(b._displaySubsidy || 0), 0);
@@ -2932,6 +2981,7 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
               `<option value="${v}"${tab === v ? ' selected' : ''}>${label}</option>`,
           )
           .join('');
+        const batchCompanyOpts = companyFilterOptionsHtml(councilTrips || [], filterCompany);
         const filterBar = `<form method="GET" action="/council-portal/batches" class="cp-card" style="margin-bottom:14px;padding:12px 14px;display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
   <input type="hidden" name="t" value="${esc(token)}"/>
   <div>
@@ -2946,18 +2996,23 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
     <label style="display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:3px">To</label>
     <input type="date" name="to" class="cp-input" value="${esc(filterTo)}"/>
   </div>
+  <div>
+    <label style="display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:3px">Company</label>
+    <select name="company" class="cp-input" style="min-width:180px"><option value="">All</option>${batchCompanyOpts}</select>
+  </div>
   <button type="submit" class="cp-btn cp-btn-g">Apply</button>
   ${
-    tab !== 'submitted' || filterFrom || filterTo
+    tab !== 'submitted' || filterFrom || filterTo || filterCompany
       ? `<a href="/council-portal/batches?t=${te}" class="cp-btn" style="background:#eee;color:#333">Clear</a>`
       : ''
   }
-  <p style="flex-basis:100%;font-size:11.5px;color:#888;margin:0">From/To filter by claim month (YYYY-MM). Flagged = rejected, needs revision, or paid without proof.</p>
+  <p style="flex-basis:100%;font-size:11.5px;color:#888;margin:0">From/To filter by claim month (YYYY-MM). Company matches Trips tab. Flagged = rejected, needs revision, or paid without proof.</p>
 </form>`;
         const batchFilterHiddens =
           `<input type="hidden" name="tab" value="${esc(tab)}"/>` +
           `<input type="hidden" name="from" value="${esc(filterFrom)}"/>` +
-          `<input type="hidden" name="to" value="${esc(filterTo)}"/>`;
+          `<input type="hidden" name="to" value="${esc(filterTo)}"/>` +
+          `<input type="hidden" name="company" value="${esc(filterCompany)}"/>`;
         let batchBulkToolbar = '';
         if (filtered.length) {
           const allMatchN = filtered.length;
@@ -3035,6 +3090,7 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
   <input type="hidden" name="tab" value="${esc(tab)}"/>
   <input type="hidden" name="from" value="${esc(filterFrom)}"/>
   <input type="hidden" name="to" value="${esc(filterTo)}"/>
+  <input type="hidden" name="company" value="${esc(filterCompany)}"/>
   <button type="submit" class="cp-btn cp-btn-g" style="margin-right:4px">&#10003; Approve All</button>
 </form>
 <form method="POST" action="/api/council-batch-action" style="display:inline" onsubmit="return confirm('Reject this batch?')">
@@ -3045,6 +3101,7 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
   <input type="hidden" name="tab" value="${esc(tab)}"/>
   <input type="hidden" name="from" value="${esc(filterFrom)}"/>
   <input type="hidden" name="to" value="${esc(filterTo)}"/>
+  <input type="hidden" name="company" value="${esc(filterCompany)}"/>
   <button type="submit" class="cp-btn cp-btn-r">&#10007; Reject</button>
 </form>`
                 : b.status === 'approved'
@@ -3102,8 +3159,35 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
 ${noticeHtml}
 ${claimNotice}
 ${(() => {
+  const nzMonth = new Intl.DateTimeFormat('en-NZ', {
+    timeZone: 'Pacific/Auckland',
+    year: 'numeric',
+    month: '2-digit',
+  }).formatToParts(new Date());
+  const y = nzMonth.find((p) => p.type === 'year')?.value;
+  const m = nzMonth.find((p) => p.type === 'month')?.value;
+  const thisMonth = y && m ? `${y}-${m}` : new Date().toISOString().slice(0, 7);
+  const feeAgg = aggregateWouldBeFees(councilTrips || [], {
+    councilId: sess.councilId,
+    month: thisMonth,
+    companyId: filterCompany || undefined,
+  });
+  return `<div class="cp-card" style="margin-bottom:14px;border-left:4px solid #5D4037">
+  <div class="cp-card-hd"><h3 style="color:#5D4037">${esc(PLATFORM_FEE_UI_LABEL)}</h3>
+    <span style="font-size:12px;color:#666">${esc(thisMonth)}</span></div>
+  <div class="cp-card-bd" style="padding-top:8px">
+    <p style="font-size:12.5px;color:#666;margin:0 0 10px">Stamped when trips become claim-ready. No money is charged yet.</p>
+    <div class="cp-stats" style="margin:0">
+      <div class="cp-stat"><div class="cp-stat-v">${feeAgg.tripCount}</div><div class="cp-stat-l">Stamped trips</div></div>
+      <div class="cp-stat"><div class="cp-stat-v">$${feeAgg.councilFees.toFixed(2)}</div><div class="cp-stat-l">Would-be council fees</div></div>
+      <div class="cp-stat"><div class="cp-stat-v">$${feeAgg.companyFees.toFixed(2)}</div><div class="cp-stat-l">Would-be company fees</div></div>
+    </div>
+  </div>
+</div>`;
+})()}
+${(() => {
   const defaultYm = new Date().toISOString().slice(0, 7);
-  const companyOpts = companyFilterOptionsHtml(councilTrips || [], '');
+  const companyOpts = companyFilterOptionsHtml(councilTrips || [], filterCompany);
   const approvedCount = (councilTrips || []).filter((t: any) => isClaimEligibleStatus(t.status)).length;
   return `<div class="cp-card" style="margin-bottom:16px;border:1px dashed #A5D6A7">
   <div class="cp-card-bd">
@@ -3114,6 +3198,7 @@ ${(() => {
       <input type="hidden" name="tab" value="${esc(tab)}"/>
       <input type="hidden" name="from" value="${esc(filterFrom)}"/>
       <input type="hidden" name="to" value="${esc(filterTo)}"/>
+      <input type="hidden" name="company" value="${esc(filterCompany)}"/>
       <div>
         <label style="display:block;font-size:11px;color:#666;font-weight:600;margin-bottom:3px">Operator</label>
         <select name="cid" class="cp-input" style="min-width:180px">
@@ -3175,6 +3260,7 @@ var _cpTok = ${JSON.stringify(token)};
 var _cpTab = ${JSON.stringify(tab)};
 var _cpFrom = ${JSON.stringify(filterFrom)};
 var _cpTo = ${JSON.stringify(filterTo)};
+var _cpCompany = ${JSON.stringify(filterCompany)};
 var _paidCtx = null;
 function cpBatchToggleAll(on){
   document.querySelectorAll('.cp-batch-cb').forEach(function(cb){ cb.checked = !!on; });
@@ -3301,6 +3387,7 @@ function cpSubmitMarkPaid(){
     var qs = 't='+encodeURIComponent(_cpTok)+'&tab='+encodeURIComponent(res.j.tab||_cpTab)+'&msg='+encodeURIComponent(res.j.msg||'Saved')+'&mt=ok';
     if(res.j.from || _cpFrom) qs += '&from='+encodeURIComponent(res.j.from||_cpFrom||'');
     if(res.j.to || _cpTo) qs += '&to='+encodeURIComponent(res.j.to||_cpTo||'');
+    if(res.j.company || _cpCompany) qs += '&company='+encodeURIComponent(res.j.company||_cpCompany||'');
     location.href = '/council-portal/batches?'+qs;
   }).catch(function(e){
     btn.disabled = false;
@@ -3322,6 +3409,7 @@ router.post('/api/council-batch-create', (req, res) => {
   const tab = normalizeClaimBatchStatusFilter(String(req.body.tab || 'submitted'));
   const filterFrom = String(req.body.from || '').trim();
   const filterTo = String(req.body.to || '').trim();
+  const filterCompany = String(req.body.company || '').trim();
   const sess = cpGetSession(token);
   const te = encodeURIComponent(token);
   const redirect = (msg: string, mt: string, t = tab) =>
@@ -3332,6 +3420,7 @@ router.post('/api/council-batch-create', (req, res) => {
         encodeURIComponent(t) +
         (filterFrom ? '&from=' + encodeURIComponent(filterFrom) : '') +
         (filterTo ? '&to=' + encodeURIComponent(filterTo) : '') +
+        (filterCompany ? '&company=' + encodeURIComponent(filterCompany) : '') +
         '&msg=' +
         encodeURIComponent(msg) +
         '&mt=' +
@@ -3407,6 +3496,7 @@ router.post('/api/council-batch-action', (req, res) => {
   const tab = normalizeClaimBatchStatusFilter(String(req.body.tab || 'submitted'));
   const filterFrom = String(req.body.from || '').trim();
   const filterTo = String(req.body.to || '').trim();
+  const filterCompany = String(req.body.company || '').trim();
   const sess = cpGetSession(token);
   const te = encodeURIComponent(token);
   const redirect = (msg: string, mt: string, t = tab) => {
@@ -3418,6 +3508,7 @@ router.post('/api/council-batch-action', (req, res) => {
         tab: t,
         from: filterFrom || undefined,
         to: filterTo || undefined,
+        company: filterCompany || undefined,
       });
     }
     return res.redirect(
@@ -3427,6 +3518,7 @@ router.post('/api/council-batch-action', (req, res) => {
         encodeURIComponent(t) +
         (filterFrom ? '&from=' + encodeURIComponent(filterFrom) : '') +
         (filterTo ? '&to=' + encodeURIComponent(filterTo) : '') +
+        (filterCompany ? '&company=' + encodeURIComponent(filterCompany) : '') +
         '&msg=' +
         encodeURIComponent(msg) +
         '&mt=' +
@@ -3536,6 +3628,7 @@ router.post('/api/council-batch-bulk-action', (req, res) => {
   const tab = normalizeClaimBatchStatusFilter(String(req.body.tab || 'submitted'));
   const filterFrom = String(req.body.from || '').trim();
   const filterTo = String(req.body.to || '').trim();
+  const filterCompany = String(req.body.company || '').trim();
   const payRef = String(req.body.payRef || '').trim();
   const sess = cpGetSession(token);
   const te = encodeURIComponent(token);
@@ -3547,6 +3640,7 @@ router.post('/api/council-batch-bulk-action', (req, res) => {
         encodeURIComponent(t) +
         (filterFrom ? '&from=' + encodeURIComponent(filterFrom) : '') +
         (filterTo ? '&to=' + encodeURIComponent(filterTo) : '') +
+        (filterCompany ? '&company=' + encodeURIComponent(filterCompany) : '') +
         '&msg=' +
         encodeURIComponent(msg) +
         '&mt=' +
@@ -3581,6 +3675,7 @@ router.post('/api/council-batch-bulk-action', (req, res) => {
       status: tab === 'all' ? 'all' : tab,
       from: filterFrom,
       to: filterTo,
+      company: filterCompany,
     });
     let targets: Array<{ cid: string; ym: string; status: string; row?: any }>;
     if (allMatching) {

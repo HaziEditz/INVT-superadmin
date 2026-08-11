@@ -334,6 +334,16 @@
         <input id="tm-hoist-cost" type="number" min="0" step="0.01" placeholder="11.50" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:6px;font-size:14px;box-sizing:border-box"/>
         <div style="font-size:11px;color:#9e9e9e;margin-top:4px">WAV / wheelchair van hoist charge (council pays)</div>
       </div>
+      <div>
+        <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:5px">BookaWaka council fee / trip ($)</label>
+        <input id="tm-fee-council" type="number" min="0" step="0.01" placeholder="(platform default)" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:6px;font-size:14px;box-sizing:border-box"/>
+        <div style="font-size:11px;color:#9e9e9e;margin-top:4px">Override — leave blank for platform default</div>
+      </div>
+      <div>
+        <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:5px">BookaWaka company fee / trip ($)</label>
+        <input id="tm-fee-company" type="number" min="0" step="0.01" placeholder="(platform default)" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:6px;font-size:14px;box-sizing:border-box"/>
+        <div style="font-size:11px;color:#9e9e9e;margin-top:4px">BookaWaka platform fees — not charged yet</div>
+      </div>
     </div>
     <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <button onclick="saveTmConfig()" class="sa-btn" style="background:#00695C;color:#fff;border:none">&#10003; Save TM Config</button>
@@ -1154,9 +1164,13 @@ function loadTmConfig(){
     var pct = document.getElementById('tm-subsidy-pct');
     var cap = document.getElementById('tm-cap-amount');
     var hoist = document.getElementById('tm-hoist-cost');
+    var feeC = document.getElementById('tm-fee-council');
+    var feeCo = document.getElementById('tm-fee-company');
     if(pct) pct.value = data.councilSubsidyPercent != null ? data.councilSubsidyPercent : (data.councilPercent != null ? data.councilPercent : 65);
     if(cap) cap.value = data.councilCapAmount != null ? data.councilCapAmount : (data.capAmount != null ? data.capAmount : 37.40);
     if(hoist) hoist.value = data.hoistCostPerUnit != null ? data.hoistCostPerUnit : (data.hoistUnitCost != null ? data.hoistUnitCost : 11.50);
+    if(feeC) feeC.value = data.councilFeePerTrip != null ? data.councilFeePerTrip : '';
+    if(feeCo) feeCo.value = data.companyFeePerTrip != null ? data.companyFeePerTrip : '';
     var src = document.getElementById('tm-config-source');
     var badge = document.getElementById('tm-config-badge');
     var P = window.BWTmProvenance;
@@ -1178,6 +1192,8 @@ function saveTmConfig(){
   var pctEl = document.getElementById('tm-subsidy-pct');
   var capEl = document.getElementById('tm-cap-amount');
   var hoistEl = document.getElementById('tm-hoist-cost');
+  var feeCEl = document.getElementById('tm-fee-council');
+  var feeCoEl = document.getElementById('tm-fee-company');
   var msg = document.getElementById('tm-config-msg');
   var pct = parseFloat(pctEl && pctEl.value) || 65;
   var cap = parseFloat(capEl && capEl.value) || 37.40;
@@ -1195,6 +1211,10 @@ function saveTmConfig(){
     manualOverrideAt: Date.now(),
     updatedAt: Date.now()
   };
+  var feeC = feeCEl && String(feeCEl.value).trim() !== '' ? parseFloat(feeCEl.value) : null;
+  var feeCo = feeCoEl && String(feeCoEl.value).trim() !== '' ? parseFloat(feeCoEl.value) : null;
+  if (feeC != null && Number.isFinite(feeC) && feeC >= 0) payload.councilFeePerTrip = Math.round(feeC * 100) / 100;
+  if (feeCo != null && Number.isFinite(feeCo) && feeCo >= 0) payload.companyFeePerTrip = Math.round(feeCo * 100) / 100;
   db.ref('companySettings/'+CID+'/tmConfig').set(payload).then(function(){
     var saEmail = (firebase.auth().currentUser||{}).email || 'sa-admin';
     var rand = Math.random().toString(36).slice(2,7);
@@ -1202,7 +1222,7 @@ function saveTmConfig(){
       action:'tm_config_updated',actor:saEmail,cid:CID,cidName:(companyData&&companyData.name)||CID,
       detail:'TM config (manual): '+payload.councilSubsidyPercent+'% cap $'+payload.councilCapAmount+' hoist $'+payload.hoistCostPerUnit,ts:Date.now()
     });
-    if(msg) msg.innerHTML='<span style="color:#2e7d32">&#10003; Saved manual fallback — Driver app will use '+payload.councilSubsidyPercent+'% / $'+payload.councilCapAmount.toFixed(2)+' cap / $'+payload.hoistCostPerUnit.toFixed(2)+' hoist. Prefer Council Config when possible.</span>';
+    if(msg) msg.innerHTML='<span style="color:#2e7d32">&#10003; Saved manual fallback — Driver app will use '+payload.councilSubsidyPercent+'% / $'+payload.councilCapAmount.toFixed(2)+' cap / $'+payload.hoistCostPerUnit.toFixed(2)+' hoist. Prefer Council Config when possible. Platform fees not charged yet.</span>';
     var src = document.getElementById('tm-config-source');
     if (src) src.textContent = 'Manual override saved at ' + new Date().toLocaleString() + '.';
     var badge = document.getElementById('tm-config-badge');

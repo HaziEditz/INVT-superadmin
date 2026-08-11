@@ -175,7 +175,14 @@ window.syncCouncilTmConfigToApprovedCompanies = function(councilId, council) {
     Object.keys(access).forEach(function(cid) {
       var row = access[cid] && access[cid][councilId];
       if (row && row.approved === true) {
-        writes.push(adminWrite('companySettings/' + cid + '/tmConfig', 'PUT', payload));
+        writes.push(
+          adminRead('companySettings/' + cid + '/tmConfig').then(function(prev) {
+            var merged = Object.assign({}, payload);
+            if (prev && prev.councilFeePerTrip != null) merged.councilFeePerTrip = prev.councilFeePerTrip;
+            if (prev && prev.companyFeePerTrip != null) merged.companyFeePerTrip = prev.companyFeePerTrip;
+            return adminWrite('companySettings/' + cid + '/tmConfig', 'PUT', merged);
+          }),
+        );
       }
     });
     return Promise.all(writes).then(function() { return writes.length; });
@@ -188,8 +195,13 @@ window.syncCouncilTmConfigToCompany = function(cid, councilId) {
   return adminRead('tmConfig/' + councilId).then(function(council) {
     if (!council || typeof council !== 'object') return 0;
     var payload = window.companyTmConfigFromCouncil(councilId, council);
-    return adminWrite('companySettings/' + cid + '/tmConfig', 'PUT', payload).then(function() {
-      return 1;
+    return adminRead('companySettings/' + cid + '/tmConfig').then(function(prev) {
+      var merged = Object.assign({}, payload);
+      if (prev && prev.councilFeePerTrip != null) merged.councilFeePerTrip = prev.councilFeePerTrip;
+      if (prev && prev.companyFeePerTrip != null) merged.companyFeePerTrip = prev.companyFeePerTrip;
+      return adminWrite('companySettings/' + cid + '/tmConfig', 'PUT', merged).then(function() {
+        return 1;
+      });
     });
   });
 };
