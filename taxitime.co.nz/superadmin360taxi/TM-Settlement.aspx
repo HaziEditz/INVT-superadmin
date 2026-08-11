@@ -11,7 +11,7 @@
 <script src="https://www.gstatic.com/firebasejs/7.24.0/firebase-auth.js"></script>
 <script src="https://www.gstatic.com/firebasejs/7.24.0/firebase-database.js"></script>
 <script>
-firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDomain:"taxilatest.firebaseapp.com",databaseURL:"https://taxilatest.firebaseio.com",projectId:"taxilatest",storageBucket:"taxilatest.appspot.com"});
+firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDomain:"bookawaka2026-564e1.firebaseapp.com",databaseURL:"https://bookawaka2026-564e1-default-rtdb.firebaseio.com",projectId:"bookawaka2026-564e1",storageBucket:"bookawaka2026-564e1.firebasestorage.app"});
 </script>
 <style>
 .tm-wrap{padding:20px;max-width:960px}

@@ -87,6 +87,7 @@ function _isAllowedOrigin(origin: string | undefined): boolean {
   if (origin.endsWith('.spock.replit.dev')) return true;
   if (origin.endsWith('.riker.replit.dev')) return true;
   if (origin.includes('taxilatest.firebaseapp.com')) return true;
+  if (origin.includes('bookawaka2026-564e1.firebaseapp.com')) return true;
   if (origin.includes('bookawaka.com') || origin.includes('bookawaka.co.nz')) return true;
   const extra = process.env.CORS_ALLOWED_ORIGINS || '';
   if (extra && extra.split(',').map(s => s.trim()).some(o => origin.includes(o))) return true;

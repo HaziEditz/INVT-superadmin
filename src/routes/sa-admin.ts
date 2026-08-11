@@ -20,7 +20,7 @@ import { saViewSessions, genToken, persistSessionDirect, unpersistSessionDirect 
 const router = Router();
 
 const SA_VIEW_TTL = 4 * 60 * 60 * 1000;
-const DB_BASE = 'https://taxilatest.firebaseio.com';
+const DB_BASE = 'https://bookawaka2026-564e1-default-rtdb.firebaseio.com';
 
 /** Grant owner panel + dispatcher access after company approval/onboarding. */
 async function grantOwnerFirebaseAccess(cid: string, uid: string, companyName: string): Promise<void> {
@@ -716,7 +716,7 @@ router.get('/join', (req, res) => {
 <script src="https://www.gstatic.com/firebasejs/7.24.0/firebase-app.js"></script>
 <script src="https://www.gstatic.com/firebasejs/7.24.0/firebase-database.js"></script>
 <script>
-firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDomain:"taxilatest.firebaseapp.com",databaseURL:"https://taxilatest.firebaseio.com",projectId:"taxilatest",storageBucket:"taxilatest.appspot.com"});
+firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDomain:"bookawaka2026-564e1.firebaseapp.com",databaseURL:"https://bookawaka2026-564e1-default-rtdb.firebaseio.com",projectId:"bookawaka2026-564e1",storageBucket:"bookawaka2026-564e1.firebasestorage.app"});
 var db=firebase.database();
 </script>
 <style>
@@ -1644,7 +1644,7 @@ router.post('/admin/deploy-firebase-rules', async (req, res) => {
     try { rulesJson = fs.readFileSync(rulesPath, 'utf8'); }
     catch { return res.status(404).json({ ok: false, error: 'database.rules.json not found' }); }
     JSON.parse(rulesJson);
-    const r = await fetch(`https://taxilatest.firebaseio.com/.settings/rules.json?auth=${dbSecret}`, {
+    const r = await fetch(`https://bookawaka2026-564e1-default-rtdb.firebaseio.com/.settings/rules.json?auth=${dbSecret}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: rulesJson
     });
     const data: any = await r.json();

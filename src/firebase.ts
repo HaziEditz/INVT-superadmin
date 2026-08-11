@@ -6,11 +6,10 @@ export const DB_SECRET   = process.env.FIREBASE_DB_SECRET || '';
 /** Web API key for Identity Toolkit (bookawaka2026). Env overrides when set. */
 export const FIREBASE_WEB_API_KEY = 'AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ';
 /**
- * SA portal browser Auth is still taxilatest (SA-Login.aspx / ASPX firebase.initializeApp).
- * Bearer ID tokens from those pages must be verified against this project key.
- * RTDB + council Auth create/sign-in use bookawaka2026 above.
+ * SA portal browser Auth uses bookawaka2026-564e1 (same as owner/council/app).
+ * Kept as an alias so Bearer verify stays aligned with SA-Login.aspx.
  */
-export const SA_PORTAL_WEB_API_KEY = 'AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA';
+export const SA_PORTAL_WEB_API_KEY = FIREBASE_WEB_API_KEY;
 export const DB_BASE_STRIPE = 'https://bookawaka2026-564e1-default-rtdb.firebaseio.com';
 
 function resolveWebApiKey(): string {
@@ -203,7 +202,7 @@ export async function firebaseSignIn(email, password): Promise<string | null> {
 }
 
 // ── Verify Firebase ID token via REST ─────────────────────────────────────────
-// Tries bookawaka2026 + SA portal (taxilatest) keys — SA ASPX pages issue taxilatest tokens.
+// SA portal + council/owner tokens are issued by bookawaka2026-564e1.
 export async function verifyFirebaseToken(idToken): Promise<string | null> {
   const token = String(idToken || '').trim();
   if (!token) return null;

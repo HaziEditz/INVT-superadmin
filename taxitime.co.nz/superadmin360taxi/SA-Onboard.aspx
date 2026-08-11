@@ -875,7 +875,7 @@ function buildSetupMsg(r){
     'To enable login for your owner panel, your app must check this Firebase path after sign-in:<br>'+
     '<code style="background:#fff;padding:2px 6px;border-radius:3px;font-family:monospace">adminAccess/'+escHtml(String(cid))+'/{userUID}</code><br>'+
     'If the value is <code style="background:#fff;padding:2px 6px;border-radius:3px;font-family:monospace">true</code>, the user is authorised. '+
-    'Firebase DB URL: <code style="background:#fff;padding:2px 6px;border-radius:3px;font-family:monospace">https://taxilatest.firebaseio.com</code>';
+    'Firebase DB URL: <code style="background:#fff;padding:2px 6px;border-radius:3px;font-family:monospace">https://bookawaka2026-564e1-default-rtdb.firebaseio.com</code>';
 }
 
 function buildSetupMsgPlain(r){
@@ -886,10 +886,10 @@ function buildSetupMsgPlain(r){
     'If the value is true, the user is authorised to access the panel.\n'+
     'If it is null/false, deny access.\n\n'+
     'Firebase config:\n'+
-    '  Project: taxilatest\n'+
-    '  DB URL: https://taxilatest.firebaseio.com\n'+
-    '  API key: AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA\n'+
-    '  Auth domain: taxilatest.firebaseapp.com\n\n'+
+    '  Project: bookawaka2026-564e1\n'+
+    '  DB URL: https://bookawaka2026-564e1-default-rtdb.firebaseio.com\n'+
+    '  API key: AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ\n'+
+    '  Auth domain: bookawaka2026-564e1.firebaseapp.com\n\n'+
     'Example check (Firebase JS SDK v7/v8):\n'+
     "  firebase.database().ref('adminAccess/"+cid+"/' + user.uid).once('value').then(function(snap){\n"+
     '    if(snap.val()===true){ /* allow in */ }\n'+
