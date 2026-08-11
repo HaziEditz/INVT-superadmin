@@ -178,18 +178,21 @@ export function batchMatchesStatusFilter(
   return String(batch.status || '').trim().toLowerCase() === status;
 }
 
-/** Filter claim batches by status dropdown/tab + optional From/To month range. */
-export function filterClaimBatches<T extends { status?: string; _ym?: string }>(
+/** Filter claim batches by status dropdown/tab + optional From/To month range + company. */
+export function filterClaimBatches<T extends { status?: string; _ym?: string; _cid?: string }>(
   batches: T[],
   opts: {
     status?: string | null;
     from?: string | null;
     to?: string | null;
+    company?: string | null;
   } = {},
 ): T[] {
   const status = normalizeClaimBatchStatusFilter(opts.status);
+  const company = String(opts.company || '').trim();
   return (batches || []).filter((b) => {
     if (!batchMatchesStatusFilter(b, status)) return false;
+    if (company && String((b as any)._cid || '').trim() !== company) return false;
     return batchYmInDateRange(b._ym, opts.from, opts.to);
   });
 }
