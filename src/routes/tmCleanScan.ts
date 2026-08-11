@@ -1,6 +1,8 @@
 /**
  * SA clean-trip scan job — walks all companies/trips, anomaly scan + never-flagged gate,
  * approve + claim-batch upsert. Council Trips UI unchanged.
+ *
+ * HTTP route + hourly scheduler both call runTmCleanScanJob (same gates).
  */
 import { Router, Request, Response } from 'express';
 import { fbRead, fbWrite, isSuperAdmin, verifyFirebaseToken } from '../firebase';
@@ -20,6 +22,10 @@ import {
 import { buildTripEvent, newEventKey } from '../lib/tmTripEvents';
 
 const router = Router();
+
+export const TM_CLEAN_SCAN_LAST_RUN_PATH = 'platformTmCleanScan/lastRun';
+export const TM_CLEAN_SCAN_INTERVAL_MS = 60 * 60 * 1000;
+export const TM_CLEAN_SCAN_START_DELAY_MS = 2 * 60 * 1000;
 
 async function requireSa(req: Request): Promise<{ ok: true; uid: string } | { ok: false; status: number; error: string }> {
   const auth = (req.headers['authorization'] as string) || '';
@@ -236,6 +242,149 @@ function approveOne(
   );
 }
 
+export type TmCleanScanJobOpts = {
+  dryRun?: boolean;
+  councilId?: string;
+  companyId?: string;
+  who: string;
+  source: 'manual' | 'scheduler';
+};
+
+export type TmCleanScanJobResult = {
+  ok: true;
+  dryRun: boolean;
+  scanned: number;
+  approved: number;
+  flagged: number;
+  skipped: number;
+  errors: number;
+  note: string;
+  candidates?: Array<{ cid: string; rawKey: string; councilId: string }>;
+  source: 'manual' | 'scheduler';
+  who: string;
+  at: number;
+};
+
+function saveLastRun(result: TmCleanScanJobResult): void {
+  if (result.dryRun) return;
+  const payload = {
+    at: result.at,
+    source: result.source,
+    who: result.who,
+    scanned: result.scanned,
+    approved: result.approved,
+    flagged: result.flagged,
+    skipped: result.skipped,
+    errors: result.errors,
+    intervalMs: TM_CLEAN_SCAN_INTERVAL_MS,
+  };
+  fbWrite('PUT', TM_CLEAN_SCAN_LAST_RUN_PATH, payload, () => {});
+}
+
+/** Shared clean-scan runner used by HTTP + hourly scheduler. Gates unchanged. */
+export function runTmCleanScanJob(opts: TmCleanScanJobOpts): Promise<TmCleanScanJobResult> {
+  const dryRun = !!opts.dryRun;
+  const councilFilter = String(opts.councilId || '').trim();
+  const companyFilter = String(opts.companyId || '').trim();
+  const who = String(opts.who || 'sa-tm-clean-scan');
+  const source = opts.source === 'scheduler' ? 'scheduler' : 'manual';
+  const at = Date.now();
+
+  return new Promise((resolve, reject) => {
+    loadFlatTrips((allTrips) => {
+      let trips = allTrips;
+      if (councilFilter) trips = trips.filter((t) => String(t.councilId || '') === councilFilter);
+      if (companyFilter) trips = trips.filter((t) => String(t._cid || '') === companyFilter);
+      const cids = trips.map((t) => String(t._cid || '')).filter(Boolean);
+      loadTariffs(cids, (tariffByCid) => {
+        loadCards((cardsByNumber) => {
+          try {
+            const patches = applyAnomalyScan(trips, tariffByCid, cardsByNumber);
+            const byKey: Record<string, Record<string, unknown>> = {};
+            patches.forEach((p) => {
+              byKey[p.cid + '/' + p.rawKey] = p.patch;
+            });
+            const updated = trips.map((t) => {
+              const patch = byKey[String(t._cid) + '/' + String(t._rawKey)];
+              if (!patch) return t;
+              return {
+                ...t,
+                status: patch.status != null ? patch.status : t.status,
+                flagReasons: patch.flagReasons !== undefined ? patch.flagReasons : t.flagReasons,
+                anomalyDetail: patch.anomalyDetail !== undefined ? patch.anomalyDetail : t.anomalyDetail,
+                anomalyScannedAt:
+                  patch.anomalyScannedAt != null ? patch.anomalyScannedAt : t.anomalyScannedAt,
+                flaggedAt: patch.flaggedAt != null ? patch.flaggedAt : t.flaggedAt,
+              };
+            });
+            const plan = planCleanAutoApprovals(updated);
+            const flagged = patches.filter((p) => String(p.patch.status || '') === 'flagged').length;
+
+            const finish = (partial: {
+              approved: number;
+              errors?: number;
+              includeCandidates?: boolean;
+            }) => {
+              const summary = summarizeCleanScanResult({
+                scanned: plan.scanned,
+                approved: partial.approved,
+                flagged,
+                skipped: plan.skipped,
+                errors: partial.errors || 0,
+              });
+              const result: TmCleanScanJobResult = {
+                ok: true,
+                dryRun,
+                scanned: Number(summary.scanned) || 0,
+                approved: Number(summary.approved) || 0,
+                flagged: Number(summary.flagged) || 0,
+                skipped: Number(summary.skipped) || 0,
+                errors: Number(summary.errors) || 0,
+                note: String(summary.note || ''),
+                source,
+                who,
+                at,
+              };
+              if (partial.includeCandidates) result.candidates = plan.candidates;
+              saveLastRun(result);
+              resolve(result);
+            };
+
+            if (dryRun) {
+              return finish({ approved: plan.candidates.length, includeCandidates: true });
+            }
+
+            const applyPatchesThenApprove = () => {
+              let left = plan.candidates.length;
+              let approved = 0;
+              let errors = 0;
+              if (!left) return finish({ approved: 0 });
+              plan.candidates.forEach((cand) => {
+                const trip = updated.find(
+                  (t) => String(t._cid) === cand.cid && String(t._rawKey) === cand.rawKey,
+                );
+                if (!trip || !shouldAutoApproveCleanTrip(trip)) {
+                  if (--left === 0) finish({ approved, errors });
+                  return;
+                }
+                approveOne(cand, trip, who, (err) => {
+                  if (err) errors++;
+                  else approved++;
+                  if (--left === 0) finish({ approved, errors });
+                });
+              });
+            };
+
+            persistPatches(patches, applyPatchesThenApprove);
+          } catch (e: any) {
+            reject(e);
+          }
+        });
+      });
+    });
+  });
+}
+
 /**
  * POST /api/sa/tm-clean-scan
  * Body: { dryRun?: boolean, councilId?: string, companyId?: string }
@@ -244,117 +393,96 @@ router.post('/api/sa/tm-clean-scan', async (req, res) => {
   const auth = await requireSa(req);
   if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
   const dryRun = !!(req.body && req.body.dryRun);
-  const councilFilter = String(req.body?.councilId || req.query.councilId || '').trim();
-  const companyFilter = String(req.body?.companyId || req.query.companyId || '').trim();
-  const who = 'sa-tm-clean-scan:' + auth.uid;
+  const councilId = String(req.body?.councilId || req.query.councilId || '').trim();
+  const companyId = String(req.body?.companyId || req.query.companyId || '').trim();
+  try {
+    const result = await runTmCleanScanJob({
+      dryRun,
+      councilId: councilId || undefined,
+      companyId: companyId || undefined,
+      who: 'sa-tm-clean-scan:' + auth.uid,
+      source: 'manual',
+    });
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: String(e?.message || e || 'clean-scan failed') });
+  }
+});
 
-  loadFlatTrips((allTrips) => {
-    let trips = allTrips;
-    if (councilFilter) trips = trips.filter((t) => String(t.councilId || '') === councilFilter);
-    if (companyFilter) trips = trips.filter((t) => String(t._cid || '') === companyFilter);
-    const cids = trips.map((t) => String(t._cid || '')).filter(Boolean);
-    loadTariffs(cids, (tariffByCid) => {
-      loadCards((cardsByNumber) => {
-        const patches = applyAnomalyScan(trips, tariffByCid, cardsByNumber);
-        const byKey: Record<string, Record<string, unknown>> = {};
-        patches.forEach((p) => {
-          byKey[p.cid + '/' + p.rawKey] = p.patch;
-        });
-        const updated = trips.map((t) => {
-          const patch = byKey[String(t._cid) + '/' + String(t._rawKey)];
-          if (!patch) return t;
-          return {
-            ...t,
-            status: patch.status != null ? patch.status : t.status,
-            flagReasons: patch.flagReasons !== undefined ? patch.flagReasons : t.flagReasons,
-            anomalyDetail: patch.anomalyDetail !== undefined ? patch.anomalyDetail : t.anomalyDetail,
-            anomalyScannedAt:
-              patch.anomalyScannedAt != null ? patch.anomalyScannedAt : t.anomalyScannedAt,
-            flaggedAt: patch.flaggedAt != null ? patch.flaggedAt : t.flaggedAt,
-          };
-        });
-        const plan = planCleanAutoApprovals(updated);
-        const flagged = patches.filter((p) => String(p.patch.status || '') === 'flagged').length;
+router.get('/api/sa/tm-clean-scan/_health', (_req, res) => {
+  res.json({
+    ok: true,
+    service: 'tm-clean-scan',
+    scheduler: {
+      intervalMs: TM_CLEAN_SCAN_INTERVAL_MS,
+      startDelayMs: TM_CLEAN_SCAN_START_DELAY_MS,
+    },
+  });
+});
 
-        if (dryRun) {
-          return res.json({
-            ok: true,
-            dryRun: true,
-            ...summarizeCleanScanResult({
-              scanned: plan.scanned,
-              approved: plan.candidates.length,
-              flagged,
-              skipped: plan.skipped,
-            }),
-            candidates: plan.candidates,
-          });
-        }
-
-        const applyPatchesThenApprove = () => {
-          let left = plan.candidates.length;
-          let approved = 0;
-          let errors = 0;
-          if (!left) {
-            return res.json({
-              ok: true,
-              dryRun: false,
-              ...summarizeCleanScanResult({
-                scanned: plan.scanned,
-                approved: 0,
-                flagged,
-                skipped: plan.skipped,
-              }),
-            });
-          }
-          plan.candidates.forEach((cand) => {
-            const trip = updated.find(
-              (t) => String(t._cid) === cand.cid && String(t._rawKey) === cand.rawKey,
-            );
-            // Re-check gate after scan merge
-            if (!trip || !shouldAutoApproveCleanTrip(trip)) {
-              if (--left === 0) {
-                res.json({
-                  ok: true,
-                  dryRun: false,
-                  ...summarizeCleanScanResult({
-                    scanned: plan.scanned,
-                    approved,
-                    flagged,
-                    skipped: plan.skipped,
-                    errors,
-                  }),
-                });
-              }
-              return;
-            }
-            approveOne(cand, trip, who, (err) => {
-              if (err) errors++;
-              else approved++;
-              if (--left === 0) {
-                res.json({
-                  ok: true,
-                  dryRun: false,
-                  ...summarizeCleanScanResult({
-                    scanned: plan.scanned,
-                    approved,
-                    flagged,
-                    skipped: plan.skipped,
-                    errors,
-                  }),
-                });
-              }
-            });
-          });
-        };
-
-        persistPatches(patches, applyPatchesThenApprove);
-      });
+router.get('/api/sa/tm-clean-scan/last-run', (_req, res) => {
+  fbRead(TM_CLEAN_SCAN_LAST_RUN_PATH, (err: any, data: any) => {
+    if (err) return res.status(500).json({ error: String(err.message || err) });
+    res.json({
+      ok: true,
+      lastRun: data && typeof data === 'object' ? data : null,
+      intervalMs: TM_CLEAN_SCAN_INTERVAL_MS,
     });
   });
 });
 
-router.get('/api/sa/tm-clean-scan/_health', (_req, res) => {
-  res.json({ ok: true, service: 'tm-clean-scan' });
-});
+let _schedulerStarted = false;
+let _schedulerRunning = false;
+
+export function startTmCleanScanScheduler(): void {
+  if (_schedulerStarted) return;
+  _schedulerStarted = true;
+
+  const tick = () => {
+    if (_schedulerRunning) {
+      console.log('[tm-clean-scan] scheduler skipped — previous run still in progress');
+      return;
+    }
+    _schedulerRunning = true;
+    const started = Date.now();
+    console.log('[tm-clean-scan] hourly job starting');
+    runTmCleanScanJob({
+      dryRun: false,
+      who: 'sa-tm-clean-scan:scheduler',
+      source: 'scheduler',
+    })
+      .then((r) => {
+        console.log(
+          '[tm-clean-scan] hourly job done',
+          JSON.stringify({
+            ms: Date.now() - started,
+            scanned: r.scanned,
+            approved: r.approved,
+            flagged: r.flagged,
+            skipped: r.skipped,
+            errors: r.errors,
+          }),
+        );
+      })
+      .catch((e) => {
+        console.error('[tm-clean-scan] hourly job failed:', e?.message || e);
+      })
+      .finally(() => {
+        _schedulerRunning = false;
+      });
+  };
+
+  setTimeout(() => {
+    tick();
+    setInterval(tick, TM_CLEAN_SCAN_INTERVAL_MS);
+  }, TM_CLEAN_SCAN_START_DELAY_MS);
+  console.log(
+    '[tm-clean-scan] scheduler armed — first run in',
+    TM_CLEAN_SCAN_START_DELAY_MS / 1000,
+    's, then every',
+    TM_CLEAN_SCAN_INTERVAL_MS / 60000,
+    'min',
+  );
+}
 
 export default router;

@@ -56,9 +56,13 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
 </ul></div></aside>
 <div id="page_content"><div id="page_content_inner">
 <div class="tm-wrap">
-  <div class="notice">Walks currently submitted trips (no date window by design), runs anomaly scan, auto-approves <strong>submitted + clean + never-flagged + never-edited</strong> into claim batches. Council Trips UI is unchanged.</div>
+  <div class="notice">Walks currently submitted trips (no date window by design), runs anomaly scan, auto-approves <strong>submitted + clean + never-flagged + never-edited</strong> into claim batches. Runs <strong>automatically every hour</strong>; buttons below are for dry-run / manual override. Council Trips UI is unchanged.</div>
   <div class="tm-card" style="margin-top:16px">
-    <div class="tm-bar"><h3>Run SA clean-trip scan</h3></div>
+    <div class="tm-bar"><h3>Automatic schedule</h3></div>
+    <div id="scan-last" style="padding:14px 18px;font-size:13px;color:#555">Loading last scheduled run…</div>
+  </div>
+  <div class="tm-card" style="margin-top:16px">
+    <div class="tm-bar"><h3>Manual override</h3></div>
     <div class="filt">
       <div><label>Council (optional)</label><select id="scan-council"><option value="">All councils</option></select></div>
       <div><label>Company (optional)</label><select id="scan-company"><option value="">All companies</option></select></div>
@@ -91,7 +95,32 @@ window._fbOnLogin = function() {
     });
     document.getElementById('scan-company').innerHTML = coOpts;
   });
+  loadLastRun();
 };
+function loadLastRun(){
+  var el=document.getElementById('scan-last');
+  if(!el) return;
+  fetch('/api/sa/tm-clean-scan/last-run').then(function(r){ return r.json(); }).then(function(j){
+    var lr=j&&j.lastRun;
+    var intervalMin=Math.round((j&&j.intervalMs?j.intervalMs:3600000)/60000);
+    if(!lr||!lr.at){
+      el.innerHTML='No automatic run logged yet. Schedule: every <strong>'+intervalMin+' minutes</strong> (first run a few minutes after server start).';
+      return;
+    }
+    var when=new Date(Number(lr.at));
+    var whenStr=isNaN(when.getTime())?String(lr.at):when.toLocaleString();
+    var other=Math.max(0, n(lr.scanned)-n(lr.approved)-n(lr.flagged));
+    el.innerHTML=
+      '<div style="margin-bottom:6px"><strong>Last run:</strong> '+whenStr+
+      ' <span style="color:#888">('+(lr.source||'unknown')+(lr.who?' · '+lr.who:'')+')</span></div>'+
+      '<div>'+n(lr.scanned)+' checked · '+n(lr.approved)+' auto-approved · '+
+      n(lr.flagged)+' flagged · '+other+' skipped'+(n(lr.errors)?' · <span style="color:#C62828">'+n(lr.errors)+' errors</span>':'')+
+      '</div>'+
+      '<div style="margin-top:6px;color:#888;font-size:12px">Automatic schedule: every '+intervalMin+' minutes. Manual Dry run / Run scan below still work as override.</div>';
+  }).catch(function(){
+    el.textContent='Could not load last-run status.';
+  });
+}
 function saApi(method, path, body){
   var user = firebase.auth().currentUser;
   if(!user) return Promise.reject(new Error('Not signed in'));
@@ -143,6 +172,7 @@ function runScan(dryRun){
     companyId: document.getElementById('scan-company').value.trim()||undefined
   }).then(function(j){
     out.innerHTML=formatScanSummary(j||{});
+    if(!dryRun) loadLastRun();
   }).catch(function(e){
     var detail=(e&&e.body&&e.body.error)||'';
     out.innerHTML='<div class="scan-error">Error: '+(e&&e.message||e)+(detail&&detail!==(e&&e.message)?' — '+detail:'')+'</div>';

@@ -117,3 +117,38 @@ test('SA clean-scan lib + route wiring', () => {
   assert.match(routeSrc, /applyAnomalyScan/);
   assert.match(appSrc, /tmCleanScan/);
 });
+
+test('hourly scheduler is a thin trigger over runTmCleanScanJob', () => {
+  assert.match(routeSrc, /export function runTmCleanScanJob/);
+  assert.match(routeSrc, /export function startTmCleanScanScheduler/);
+  assert.match(routeSrc, /TM_CLEAN_SCAN_INTERVAL_MS\s*=\s*60\s*\*\s*60\s*\*\s*1000/);
+  assert.match(routeSrc, /source:\s*'scheduler'/);
+  assert.match(routeSrc, /who:\s*'sa-tm-clean-scan:scheduler'/);
+  assert.match(routeSrc, /dryRun:\s*false/);
+  assert.match(routeSrc, /_schedulerRunning/);
+  assert.match(appSrc, /startTmCleanScanScheduler/);
+});
+
+test('last-run is persisted for live runs and exposed on GET', () => {
+  assert.match(routeSrc, /platformTmCleanScan\/lastRun/);
+  assert.match(routeSrc, /function saveLastRun/);
+  assert.match(routeSrc, /if \(result\.dryRun\) return/);
+  assert.match(routeSrc, /\/api\/sa\/tm-clean-scan\/last-run/);
+  assert.match(routeSrc, /intervalMs:\s*TM_CLEAN_SCAN_INTERVAL_MS/);
+});
+
+test('Clean Scan page shows schedule + last-run; manual override unchanged', () => {
+  const page = readFileSync(
+    join(root, 'taxitime.co.nz/superadmin360taxi/TM-Clean-Scan.aspx'),
+    'utf8',
+  );
+  assert.match(page, /scan-last/);
+  assert.match(page, /loadLastRun/);
+  assert.match(page, /\/api\/sa\/tm-clean-scan\/last-run/);
+  assert.match(page, /automatically every hour/i);
+  assert.match(page, /onclick="runScan\(true\)"/);
+  assert.match(page, /onclick="runScan\(false\)"/);
+  assert.match(page, /scan-council/);
+  assert.match(page, /scan-company/);
+  assert.doesNotMatch(page, /scan-from|scan-to|date range/i);
+});

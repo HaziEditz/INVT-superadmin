@@ -17,7 +17,7 @@ import rentalRouter    from './routes/rental';
 import saAdminRouter   from './routes/sa-admin';
 import saWalletRouter  from './routes/sa-wallet';
 import platformPaymentsRouter from './routes/platformPayments';
-import tmCleanScanRouter from './routes/tmCleanScan';
+import tmCleanScanRouter, { startTmCleanScanScheduler } from './routes/tmCleanScan';
 import tmSettlementRouter from './routes/tmSettlement';
 import { startNormalizer } from './normalizer';
 import { startNotificationRelay } from './notificationRelay';
@@ -190,6 +190,7 @@ app.listen(PORT, '0.0.0.0', () => {
   hydrateAllSessions().catch(e => console.error('[sessions] hydrate failed:', e?.message || e));
   startNormalizer();
   startNotificationRelay();
+  startTmCleanScanScheduler();
 });
 
 export default app;
