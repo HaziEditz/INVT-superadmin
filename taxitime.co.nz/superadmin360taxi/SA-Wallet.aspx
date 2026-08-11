@@ -240,7 +240,7 @@ function api(method, path, body){
   var url='/api/sa-wallet/'+path;
   var user = firebase.auth().currentUser;
   if(!user){ return Promise.reject(new Error('Not signed in')); }
-  return user.getIdToken().then(function(idToken){
+  return user.getIdToken(true).then(function(idToken){
     var opts={method:method, headers:{'Content-Type':'application/json', 'Authorization':'Bearer '+idToken}};
     if(body){ opts.body = JSON.stringify(body); }
     return fetch(url, opts).then(function(r){

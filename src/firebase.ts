@@ -5,10 +5,26 @@ export const DB_SECRET   = process.env.FIREBASE_DB_SECRET || '';
 
 /** Web API key for Identity Toolkit (bookawaka2026). Env overrides when set. */
 export const FIREBASE_WEB_API_KEY = 'AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ';
+/**
+ * SA portal browser Auth is still taxilatest (SA-Login.aspx / ASPX firebase.initializeApp).
+ * Bearer ID tokens from those pages must be verified against this project key.
+ * RTDB + council Auth create/sign-in use bookawaka2026 above.
+ */
+export const SA_PORTAL_WEB_API_KEY = 'AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA';
 export const DB_BASE_STRIPE = 'https://bookawaka2026-564e1-default-rtdb.firebaseio.com';
 
 function resolveWebApiKey(): string {
   return String(process.env.FIREBASE_WEB_API_KEY || FIREBASE_WEB_API_KEY || '').trim();
+}
+
+/** Deduped Identity Toolkit keys to try when verifying browser-issued ID tokens. */
+export function resolveIdTokenVerifyKeys(): string[] {
+  const keys = [
+    String(process.env.FIREBASE_WEB_API_KEY || '').trim(),
+    FIREBASE_WEB_API_KEY,
+    SA_PORTAL_WEB_API_KEY,
+  ].filter(Boolean);
+  return Array.from(new Set(keys));
 }
 
 // ── Core Firebase REST helpers ────────────────────────────────────────────────
@@ -106,13 +122,15 @@ export function fbAuthSendReset(email, cb) {
 }
 
 // ── Firebase Auth REST (Promise-based, for newer routes) ──────────────────────
-export function authRestPost(endpoint, body) {
+export function authRestPostWithKey(endpoint, body, apiKey) {
   return new Promise((resolve, reject) => {
+    const key = String(apiKey || '').trim();
+    if (!key) return resolve({ error: { message: 'FIREBASE_WEB_API_KEY not set' } });
     const bodyStr = JSON.stringify(body);
     const opts = {
       hostname: 'identitytoolkit.googleapis.com',
       port: 443,
-      path: '/v1/accounts:' + endpoint + '?key=' + resolveWebApiKey(),
+      path: '/v1/accounts:' + endpoint + '?key=' + key,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyStr) }
     };
@@ -127,6 +145,10 @@ export function authRestPost(endpoint, body) {
     req.write(bodyStr);
     req.end();
   });
+}
+
+export function authRestPost(endpoint, body) {
+  return authRestPostWithKey(endpoint, body, resolveWebApiKey());
 }
 
 export function generateTempPassword() {
@@ -181,8 +203,15 @@ export async function firebaseSignIn(email, password): Promise<string | null> {
 }
 
 // ── Verify Firebase ID token via REST ─────────────────────────────────────────
+// Tries bookawaka2026 + SA portal (taxilatest) keys — SA ASPX pages issue taxilatest tokens.
 export async function verifyFirebaseToken(idToken): Promise<string | null> {
-  const data: any = await authRestPost('lookup', { idToken });
-  if (data.users && data.users[0]) return data.users[0].localId;
+  const token = String(idToken || '').trim();
+  if (!token) return null;
+  for (const key of resolveIdTokenVerifyKeys()) {
+    const data: any = await authRestPostWithKey('lookup', { idToken: token }, key);
+    if (data && data.users && data.users[0] && data.users[0].localId) {
+      return data.users[0].localId;
+    }
+  }
   return null;
 }
