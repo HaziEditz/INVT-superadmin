@@ -17,6 +17,8 @@ import rentalRouter    from './routes/rental';
 import saAdminRouter   from './routes/sa-admin';
 import saWalletRouter  from './routes/sa-wallet';
 import platformPaymentsRouter from './routes/platformPayments';
+import tmCleanScanRouter from './routes/tmCleanScan';
+import tmSettlementRouter from './routes/tmSettlement';
 import { startNormalizer } from './normalizer';
 import { startNotificationRelay } from './notificationRelay';
 import { hydrateAllSessions } from './sessions';
@@ -122,6 +124,8 @@ app.use(rentalRouter);
 app.use(saAdminRouter);
 app.use(saWalletRouter);
 app.use(platformPaymentsRouter);
+app.use(tmCleanScanRouter);
+app.use(tmSettlementRouter);
 
 // ── Static file serving ───────────────────────────────────────────────────────
 const mimeTypes: Record<string, string> = {
