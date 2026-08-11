@@ -28,6 +28,62 @@ export type BatchCreatePlan = {
 
 export type ExistingBatchDecision = 'create' | 'refresh' | 'skip';
 
+/** Approve upsert decision (includes addendum spill when month is locked). */
+export type ApproveBatchDecision = 'create' | 'refresh' | 'addendum';
+
+const BATCH_KEY_RE = /^(\d{4}-\d{2})(?:-b([2-9]|[1-9]\d+))?$/;
+
+/** Base YYYY-MM from keys like 2026-08 or 2026-08-b2. */
+export function baseYmFromBatchKey(key: string | null | undefined): string | null {
+  const m = String(key || '')
+    .trim()
+    .match(BATCH_KEY_RE);
+  return m ? m[1] : null;
+}
+
+/** Parse batch month key → base month + sequence (base=1, -b2=2, …). */
+export function parseBatchMonthKey(
+  key: string | null | undefined,
+): { baseYm: string; seq: number; batchKey: string } | null {
+  const batchKey = String(key || '').trim();
+  const m = batchKey.match(BATCH_KEY_RE);
+  if (!m) return null;
+  const baseYm = m[1];
+  const seq = m[2] ? parseInt(m[2], 10) : 1;
+  if (!Number.isFinite(seq) || seq < 1) return null;
+  return { baseYm, seq, batchKey };
+}
+
+/** Next unpaid sibling key after locked primary (2026-08 → 2026-08-b2 → b3…). */
+export function nextAddendumMonthKey(
+  baseYm: string,
+  existingKeys: Iterable<string> | null | undefined,
+): string {
+  const base = String(baseYm || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(base)) return base || '0000-00-b2';
+  let maxSeq = 1;
+  for (const k of existingKeys || []) {
+    const parsed = parseBatchMonthKey(k);
+    if (!parsed || parsed.baseYm !== base) continue;
+    if (parsed.seq > maxSeq) maxSeq = parsed.seq;
+  }
+  return `${base}-b${maxSeq + 1}`;
+}
+
+export function isOpenClaimBatchStatus(status: unknown): boolean {
+  const st = String(status || '')
+    .trim()
+    .toLowerCase();
+  return !st || st === 'draft' || st === 'submitted';
+}
+
+export function isLockedClaimBatchStatus(status: unknown): boolean {
+  const st = String(status || '')
+    .trim()
+    .toLowerCase();
+  return st === 'approved' || st === 'paid';
+}
+
 /** Whether an existing RTDB batch row may be created/refreshed by the test trigger. */
 export function shouldWriteBatchCreate(existing: { status?: string } | null | undefined): ExistingBatchDecision {
   if (!existing || typeof existing !== 'object') return 'create';
@@ -35,6 +91,71 @@ export function shouldWriteBatchCreate(existing: { status?: string } | null | un
   if (!st || st === 'draft') return 'create';
   if (st === 'submitted') return 'refresh';
   return 'skip';
+}
+
+/**
+ * Choose which company batch key to write for an approved trip.
+ * Open draft/submitted (base or addendum) → refresh; locked base → new/open addendum.
+ */
+export function resolveApproveBatchKey(
+  companyBatches: Record<string, unknown> | null | undefined,
+  baseYm: string,
+): {
+  batchKey: string;
+  existing: Record<string, unknown> | null;
+  decision: ApproveBatchDecision;
+} {
+  const base = String(baseYm || '').trim();
+  const map =
+    companyBatches && typeof companyBatches === 'object'
+      ? (companyBatches as Record<string, unknown>)
+      : {};
+  const keys = Object.keys(map);
+
+  // Prefer any open sibling for this month (highest seq = latest addendum).
+  const openSiblings = keys
+    .map((k) => parseBatchMonthKey(k))
+    .filter((p): p is NonNullable<typeof p> => !!p && p.baseYm === base)
+    .filter((p) => {
+      const row = map[p.batchKey];
+      return row && typeof row === 'object' && isOpenClaimBatchStatus((row as { status?: unknown }).status);
+    })
+    .sort((a, b) => b.seq - a.seq);
+
+  if (openSiblings.length) {
+    const pick = openSiblings[0];
+    const existing = map[pick.batchKey] as Record<string, unknown>;
+    return {
+      batchKey: pick.batchKey,
+      existing,
+      decision: pick.seq === 1 && shouldWriteBatchCreate(existing) === 'create' ? 'create' : 'refresh',
+    };
+  }
+
+  const baseRow = map[base];
+  if (!baseRow || typeof baseRow !== 'object') {
+    return { batchKey: base, existing: null, decision: 'create' };
+  }
+  if (isOpenClaimBatchStatus((baseRow as { status?: unknown }).status)) {
+    const decision = shouldWriteBatchCreate(baseRow as { status?: string });
+    return {
+      batchKey: base,
+      existing: baseRow as Record<string, unknown>,
+      decision: decision === 'create' ? 'create' : 'refresh',
+    };
+  }
+
+  // Primary month locked (approved/paid) — spill to unpaid addendum.
+  const addendumKey = nextAddendumMonthKey(base, keys);
+  const existingAdd = map[addendumKey];
+  if (existingAdd && typeof existingAdd === 'object' && isOpenClaimBatchStatus((existingAdd as { status?: unknown }).status)) {
+    return {
+      batchKey: addendumKey,
+      existing: existingAdd as Record<string, unknown>,
+      decision: 'addendum',
+    };
+  }
+  return { batchKey: addendumKey, existing: null, decision: 'addendum' };
 }
 
 /**
@@ -137,6 +258,7 @@ export function computeDisplayBatchTotals(
 /**
  * Upsert one approved trip into an open month batch (create or refresh submitted/draft).
  * Skips approved/paid batches so council claim lock is preserved.
+ * Prefer planApprovedTripBatchUpsert when company sibling batches are available (addendum spill).
  */
 export function mergeApprovedTripIntoBatch(
   existing: Record<string, unknown> | null | undefined,
@@ -146,11 +268,16 @@ export function mergeApprovedTripIntoBatch(
     now?: number;
     submittedRef?: string;
     notes?: string;
+    /** Override path month key (e.g. 2026-08-b2). Defaults to trip month. */
+    batchKey?: string;
+    /** Force decision label when writing a new addendum. */
+    decision?: ApproveBatchDecision | ExistingBatchDecision;
   },
 ): {
-  decision: ExistingBatchDecision;
+  decision: ApproveBatchDecision | ExistingBatchDecision;
   cid: string;
   ym: string;
+  batchKey: string;
   pathSuffix: string;
   added: boolean;
   payload: Record<string, unknown>;
@@ -162,7 +289,10 @@ export function mergeApprovedTripIntoBatch(
   const who = String(opts.who || 'council').trim() || 'council';
   let ym = tripMonthKey(trip);
   if (!ym) ym = new Date(now).toISOString().slice(0, 7);
-  const decision = shouldWriteBatchCreate(existing as { status?: string } | null);
+  const batchKey = String(opts.batchKey || ym).trim() || ym;
+  const forced = opts.decision;
+  let decision: ApproveBatchDecision | ExistingBatchDecision =
+    forced || shouldWriteBatchCreate(existing as { status?: string } | null);
   if (decision === 'skip') return null;
 
   const ex = existing && typeof existing === 'object' ? existing : {};
@@ -186,6 +316,7 @@ export function mergeApprovedTripIntoBatch(
   }
 
   totalSubsidy = +totalSubsidy.toFixed(2);
+  const isAddendum = decision === 'addendum' || /-b\d+$/.test(batchKey);
   const payload: Record<string, unknown> = {
     status: 'submitted',
     submittedAt: (ex as { submittedAt?: unknown }).submittedAt || now,
@@ -193,24 +324,123 @@ export function mergeApprovedTripIntoBatch(
     submittedRef:
       (ex as { submittedRef?: unknown }).submittedRef ||
       opts.submittedRef ||
-      'council-trip-approve',
+      (isAddendum ? 'council-trip-approve-addendum' : 'council-trip-approve'),
     notes:
       (ex as { notes?: unknown }).notes ||
       opts.notes ||
-      'Auto-added when council approved trip',
+      (isAddendum
+        ? 'Addendum batch — late approvals after month claim was locked'
+        : 'Auto-added when council approved trip'),
     tripCount: trips.length,
     totalTrips: trips.length,
     claimAmount: totalSubsidy,
     totalSubsidy,
     trips,
   };
+  if (isAddendum) {
+    const parent = baseYmFromBatchKey(batchKey) || ym;
+    payload.isAddendum = true;
+    payload.parentBatchKey = parent;
+  }
   return {
-    decision,
+    decision: isAddendum && decision !== 'refresh' ? 'addendum' : decision,
     cid,
     ym,
-    pathSuffix: cid + '/' + ym,
+    batchKey,
+    pathSuffix: cid + '/' + batchKey,
     added: !already,
     payload,
+  };
+}
+
+/**
+ * Approve → batch upsert with addendum spill when the primary month batch is locked.
+ * Reads all company month keys under tmBatches/{council}/{cid}.
+ */
+export function planApprovedTripBatchUpsert(
+  companyBatches: Record<string, unknown> | null | undefined,
+  trip: CouncilTripLike,
+  opts: {
+    who: string;
+    now?: number;
+    submittedRef?: string;
+    notes?: string;
+  },
+): {
+  decision: ApproveBatchDecision;
+  cid: string;
+  ym: string;
+  batchKey: string;
+  pathSuffix: string;
+  added: boolean;
+  payload: Record<string, unknown>;
+} | null {
+  const cid = String(trip._cid || '').trim();
+  const rawKey = String(trip._rawKey || '').trim();
+  if (!cid || !rawKey) return null;
+  const now = opts.now != null ? Number(opts.now) : Date.now();
+  let baseYm = tripMonthKey(trip);
+  if (!baseYm) baseYm = new Date(now).toISOString().slice(0, 7);
+
+  const map =
+    companyBatches && typeof companyBatches === 'object'
+      ? (companyBatches as Record<string, unknown>)
+      : {};
+
+  // Idempotent: if trip already listed on any sibling, refresh that open batch
+  // or no-op when it already sits on a locked claim.
+  for (const key of Object.keys(map)) {
+    const row = map[key];
+    if (!row || typeof row !== 'object') continue;
+    const parsed = parseBatchMonthKey(key);
+    if (!parsed || parsed.baseYm !== baseYm) continue;
+    const refs = normalizeBatchTripRefs((row as { trips?: unknown }).trips, cid);
+    if (!refs.some((r) => r.cid === cid && r.rawKey === rawKey)) continue;
+    if (isLockedClaimBatchStatus((row as { status?: unknown }).status)) {
+      return null; // already claimed in locked batch — do not duplicate
+    }
+    const merged = mergeApprovedTripIntoBatch(row as Record<string, unknown>, trip, {
+      ...opts,
+      now,
+      batchKey: key,
+      decision: parsed.seq > 1 ? 'addendum' : 'refresh',
+    });
+    if (!merged) return null;
+    return {
+      decision: parsed.seq > 1 ? 'addendum' : 'refresh',
+      cid: merged.cid,
+      ym: merged.ym,
+      batchKey: merged.batchKey,
+      pathSuffix: merged.pathSuffix,
+      added: merged.added,
+      payload: merged.payload,
+    };
+  }
+
+  const slot = resolveApproveBatchKey(map, baseYm);
+  const merged = mergeApprovedTripIntoBatch(slot.existing, trip, {
+    ...opts,
+    now,
+    batchKey: slot.batchKey,
+    decision: slot.decision,
+    submittedRef:
+      opts.submittedRef ||
+      (slot.decision === 'addendum' ? 'council-trip-approve-addendum' : 'council-trip-approve'),
+    notes:
+      opts.notes ||
+      (slot.decision === 'addendum'
+        ? 'Addendum batch — late approvals after month claim was locked'
+        : undefined),
+  });
+  if (!merged) return null;
+  return {
+    decision: slot.decision,
+    cid: merged.cid,
+    ym: merged.ym,
+    batchKey: merged.batchKey,
+    pathSuffix: merged.pathSuffix,
+    added: merged.added,
+    payload: merged.payload,
   };
 }
 

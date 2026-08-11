@@ -264,87 +264,203 @@ function computeDisplayBatchTotals(batch, tripRows) {
 
 
 function mergeApprovedTripIntoBatch(existing, trip, opts) {
-
   const cid = String(trip._cid || '').trim();
-
   const rawKey = String(trip._rawKey || '').trim();
-
   if (!cid || !rawKey) return null;
-
   const now = opts.now != null ? Number(opts.now) : Date.now();
-
   const who = String(opts.who || 'council').trim() || 'council';
-
   let ym = tripMonthKey(trip);
-
   if (!ym) ym = new Date(now).toISOString().slice(0, 7);
-
-  const decision = shouldWriteBatchCreate(existing);
-
+  const batchKey = String(opts.batchKey || ym).trim() || ym;
+  let decision = opts.decision || shouldWriteBatchCreate(existing);
   if (decision === 'skip') return null;
-
   const ex = existing && typeof existing === 'object' ? existing : {};
-
   const trips = normalizeBatchTripRefs(ex.trips, cid);
-
   const already = trips.some((x) => x.cid === cid && x.rawKey === rawKey);
-
   let totalSubsidy =
-
     parseFloat(String(ex.totalSubsidy != null ? ex.totalSubsidy : ex.claimAmount || 0)) || 0;
-
   if (!already) {
-
     trips.push({ cid, rawKey });
-
     totalSubsidy += subsidyOfTrip(trip);
-
   } else if (!trips.length) {
-
     trips.push({ cid, rawKey });
-
     totalSubsidy = subsidyOfTrip(trip);
-
   }
-
   totalSubsidy = +totalSubsidy.toFixed(2);
-
-  return {
-
-    decision,
-
-    cid,
-
-    ym,
-
-    pathSuffix: cid + '/' + ym,
-
-    added: !already,
-
-    payload: {
-
-      status: 'submitted',
-
-      submittedAt: ex.submittedAt || now,
-
-      submittedBy: ex.submittedBy || who,
-
-      submittedRef: ex.submittedRef || opts.submittedRef || 'council-trip-approve',
-
-      tripCount: trips.length,
-
-      totalTrips: trips.length,
-
-      claimAmount: totalSubsidy,
-
-      totalSubsidy,
-
-      trips,
-
-    },
-
+  const isAddendum = decision === 'addendum' || /-b\d+$/.test(batchKey);
+  const payload = {
+    status: 'submitted',
+    submittedAt: ex.submittedAt || now,
+    submittedBy: ex.submittedBy || who,
+    submittedRef:
+      ex.submittedRef ||
+      opts.submittedRef ||
+      (isAddendum ? 'council-trip-approve-addendum' : 'council-trip-approve'),
+    notes:
+      ex.notes ||
+      opts.notes ||
+      (isAddendum
+        ? 'Addendum batch — late approvals after month claim was locked'
+        : 'Auto-added when council approved trip'),
+    tripCount: trips.length,
+    totalTrips: trips.length,
+    claimAmount: totalSubsidy,
+    totalSubsidy,
+    trips,
   };
+  if (isAddendum) {
+    payload.isAddendum = true;
+    payload.parentBatchKey = baseYmFromBatchKey(batchKey) || ym;
+  }
+  return {
+    decision: isAddendum && decision !== 'refresh' ? 'addendum' : decision,
+    cid,
+    ym,
+    batchKey,
+    pathSuffix: cid + '/' + batchKey,
+    added: !already,
+    payload,
+  };
+}
 
+const BATCH_KEY_RE = /^(\d{4}-\d{2})(?:-b([2-9]|[1-9]\d+))?$/;
+
+function baseYmFromBatchKey(key) {
+  const m = String(key || '').trim().match(BATCH_KEY_RE);
+  return m ? m[1] : null;
+}
+
+function parseBatchMonthKey(key) {
+  const batchKey = String(key || '').trim();
+  const m = batchKey.match(BATCH_KEY_RE);
+  if (!m) return null;
+  const baseYm = m[1];
+  const seq = m[2] ? parseInt(m[2], 10) : 1;
+  if (!Number.isFinite(seq) || seq < 1) return null;
+  return { baseYm, seq, batchKey };
+}
+
+function nextAddendumMonthKey(baseYm, existingKeys) {
+  const base = String(baseYm || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(base)) return base || '0000-00-b2';
+  let maxSeq = 1;
+  for (const k of existingKeys || []) {
+    const parsed = parseBatchMonthKey(k);
+    if (!parsed || parsed.baseYm !== base) continue;
+    if (parsed.seq > maxSeq) maxSeq = parsed.seq;
+  }
+  return `${base}-b${maxSeq + 1}`;
+}
+
+function isOpenClaimBatchStatus(status) {
+  const st = String(status || '').trim().toLowerCase();
+  return !st || st === 'draft' || st === 'submitted';
+}
+
+function isLockedClaimBatchStatus(status) {
+  const st = String(status || '').trim().toLowerCase();
+  return st === 'approved' || st === 'paid';
+}
+
+function resolveApproveBatchKey(companyBatches, baseYm) {
+  const base = String(baseYm || '').trim();
+  const map = companyBatches && typeof companyBatches === 'object' ? companyBatches : {};
+  const keys = Object.keys(map);
+  const openSiblings = keys
+    .map((k) => parseBatchMonthKey(k))
+    .filter((p) => p && p.baseYm === base)
+    .filter((p) => {
+      const row = map[p.batchKey];
+      return row && typeof row === 'object' && isOpenClaimBatchStatus(row.status);
+    })
+    .sort((a, b) => b.seq - a.seq);
+  if (openSiblings.length) {
+    const pick = openSiblings[0];
+    const existing = map[pick.batchKey];
+    return {
+      batchKey: pick.batchKey,
+      existing,
+      decision: pick.seq === 1 && shouldWriteBatchCreate(existing) === 'create' ? 'create' : 'refresh',
+    };
+  }
+  const baseRow = map[base];
+  if (!baseRow || typeof baseRow !== 'object') {
+    return { batchKey: base, existing: null, decision: 'create' };
+  }
+  if (isOpenClaimBatchStatus(baseRow.status)) {
+    const decision = shouldWriteBatchCreate(baseRow);
+    return {
+      batchKey: base,
+      existing: baseRow,
+      decision: decision === 'create' ? 'create' : 'refresh',
+    };
+  }
+  const addendumKey = nextAddendumMonthKey(base, keys);
+  const existingAdd = map[addendumKey];
+  if (existingAdd && typeof existingAdd === 'object' && isOpenClaimBatchStatus(existingAdd.status)) {
+    return { batchKey: addendumKey, existing: existingAdd, decision: 'addendum' };
+  }
+  return { batchKey: addendumKey, existing: null, decision: 'addendum' };
+}
+
+function planApprovedTripBatchUpsert(companyBatches, trip, opts) {
+  const cid = String(trip._cid || '').trim();
+  const rawKey = String(trip._rawKey || '').trim();
+  if (!cid || !rawKey) return null;
+  const now = opts.now != null ? Number(opts.now) : Date.now();
+  let baseYm = tripMonthKey(trip);
+  if (!baseYm) baseYm = new Date(now).toISOString().slice(0, 7);
+  const map = companyBatches && typeof companyBatches === 'object' ? companyBatches : {};
+  for (const key of Object.keys(map)) {
+    const row = map[key];
+    if (!row || typeof row !== 'object') continue;
+    const parsed = parseBatchMonthKey(key);
+    if (!parsed || parsed.baseYm !== baseYm) continue;
+    const refs = normalizeBatchTripRefs(row.trips, cid);
+    if (!refs.some((r) => r.cid === cid && r.rawKey === rawKey)) continue;
+    if (isLockedClaimBatchStatus(row.status)) return null;
+    const merged = mergeApprovedTripIntoBatch(row, trip, {
+      ...opts,
+      now,
+      batchKey: key,
+      decision: parsed.seq > 1 ? 'addendum' : 'refresh',
+    });
+    if (!merged) return null;
+    return {
+      decision: parsed.seq > 1 ? 'addendum' : 'refresh',
+      cid: merged.cid,
+      ym: merged.ym,
+      batchKey: merged.batchKey,
+      pathSuffix: merged.pathSuffix,
+      added: merged.added,
+      payload: merged.payload,
+    };
+  }
+  const slot = resolveApproveBatchKey(map, baseYm);
+  const merged = mergeApprovedTripIntoBatch(slot.existing, trip, {
+    ...opts,
+    now,
+    batchKey: slot.batchKey,
+    decision: slot.decision,
+    submittedRef:
+      opts.submittedRef ||
+      (slot.decision === 'addendum' ? 'council-trip-approve-addendum' : 'council-trip-approve'),
+    notes:
+      opts.notes ||
+      (slot.decision === 'addendum'
+        ? 'Addendum batch — late approvals after month claim was locked'
+        : undefined),
+  });
+  if (!merged) return null;
+  return {
+    decision: slot.decision,
+    cid: merged.cid,
+    ym: merged.ym,
+    batchKey: merged.batchKey,
+    pathSuffix: merged.pathSuffix,
+    added: merged.added,
+    payload: merged.payload,
+  };
 }
 
 
@@ -683,6 +799,108 @@ test('mergeApprovedTripIntoBatch skips paid batches', () => {
 
 });
 
+test('nextAddendumMonthKey increments past locked primary and siblings', () => {
+  assert.equal(nextAddendumMonthKey('2026-08', ['2026-08']), '2026-08-b2');
+  assert.equal(nextAddendumMonthKey('2026-08', ['2026-08', '2026-08-b2']), '2026-08-b3');
+  assert.equal(baseYmFromBatchKey('2026-08-b2'), '2026-08');
+});
+
+test('planApprovedTripBatchUpsert spills to addendum when month is paid', () => {
+  const plan = planApprovedTripBatchUpsert(
+    {
+      '2026-08': {
+        status: 'paid',
+        trips: [
+          { cid: '860869', rawKey: '8692608073' },
+          { cid: '860869', rawKey: '8692608081' },
+          { cid: '860869', rawKey: '8692608086' },
+        ],
+        totalSubsidy: 29.49,
+      },
+    },
+    {
+      _cid: '860869',
+      _rawKey: '8692608092',
+      status: 'approved',
+      completedAt: Date.parse('2026-08-08T16:00:00Z'),
+      tmCouncilPays: 12.5,
+    },
+    { who: 'Council', now: Date.parse('2026-08-08T17:00:00Z') },
+  );
+  assert.ok(plan);
+  assert.equal(plan.decision, 'addendum');
+  assert.equal(plan.batchKey, '2026-08-b2');
+  assert.equal(plan.pathSuffix, '860869/2026-08-b2');
+  assert.equal(plan.payload.status, 'submitted');
+  assert.equal(plan.payload.isAddendum, true);
+  assert.equal(plan.payload.parentBatchKey, '2026-08');
+  assert.deepEqual(plan.payload.trips, [{ cid: '860869', rawKey: '8692608092' }]);
+});
+
+test('planApprovedTripBatchUpsert appends second late approve into open addendum', () => {
+  const plan = planApprovedTripBatchUpsert(
+    {
+      '2026-08': { status: 'paid', trips: [{ cid: '860869', rawKey: 'a' }] },
+      '2026-08-b2': {
+        status: 'submitted',
+        trips: [{ cid: '860869', rawKey: '8692608092' }],
+        totalSubsidy: 12.5,
+      },
+    },
+    {
+      _cid: '860869',
+      _rawKey: '869260810113',
+      status: 'approved',
+      completedAt: Date.parse('2026-08-10T12:00:00Z'),
+      tmCouncilPays: 12.14,
+    },
+    { who: 'Council', now: Date.parse('2026-08-10T13:00:00Z') },
+  );
+  assert.ok(plan);
+  assert.equal(plan.decision, 'refresh');
+  assert.equal(plan.batchKey, '2026-08-b2');
+  assert.equal(plan.payload.tripCount, 2);
+  assert.equal(plan.added, true);
+});
+
+test('planApprovedTripBatchUpsert does not duplicate trip already on paid batch', () => {
+  const plan = planApprovedTripBatchUpsert(
+    {
+      '2026-08': {
+        status: 'paid',
+        trips: [{ cid: '860869', rawKey: '8692608073' }],
+      },
+    },
+    {
+      _cid: '860869',
+      _rawKey: '8692608073',
+      status: 'approved',
+      completedAt: Date.parse('2026-08-08T04:00:00Z'),
+      tmSubsidy: 1,
+    },
+    { who: 'Council', now: Date.parse('2026-08-08T05:00:00Z') },
+  );
+  assert.equal(plan, null);
+});
+
+test('planApprovedTripBatchUpsert still creates primary when month empty', () => {
+  const plan = planApprovedTripBatchUpsert(
+    {},
+    {
+      _cid: '860869',
+      _rawKey: 'trip1',
+      status: 'approved',
+      completedAt: Date.parse('2026-08-08T04:10:22Z'),
+      tmSubsidy: 15.5,
+    },
+    { who: 'Council', now: 999 },
+  );
+  assert.ok(plan);
+  assert.equal(plan.decision, 'create');
+  assert.equal(plan.batchKey, '2026-08');
+  assert.equal(plan.pathSuffix, '860869/2026-08');
+});
+
 
 
 test('computeDisplayBatchTotals counts stubs without status', () => {
@@ -735,6 +953,12 @@ test('council wires sort helper + map gen + auto-batch on approve', () => {
 
   assert.match(createSrc, /export function mergeApprovedTripIntoBatch/);
 
+  assert.match(createSrc, /export function planApprovedTripBatchUpsert/);
+
+  assert.match(createSrc, /export function resolveApproveBatchKey/);
+
+  assert.match(createSrc, /export function nextAddendumMonthKey/);
+
   assert.match(createSrc, /export function computeDisplayBatchTotals/);
 
   assert.match(councilSrc, /compareTripsNewestFirst/);
@@ -755,7 +979,7 @@ test('council wires sort helper + map gen + auto-batch on approve', () => {
 
   assert.match(councilSrc, /afterCouncilApproveAddToBatch/);
 
-  assert.match(councilSrc, /mergeApprovedTripIntoBatch/);
+  assert.match(councilSrc, /planApprovedTripBatchUpsert/);
 
   assert.match(councilSrc, /computeDisplayBatchTotals/);
 

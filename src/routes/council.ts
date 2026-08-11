@@ -72,7 +72,7 @@ import { compareTripsNewestFirst, tripActivityMs, tripMonthKey } from '../lib/tm
 import {
   planCouncilBatchCreates,
   shouldWriteBatchCreate,
-  mergeApprovedTripIntoBatch,
+  planApprovedTripBatchUpsert,
   computeDisplayBatchTotals,
   type CouncilTripLike,
 } from '../lib/tmBatchCreate';
@@ -81,7 +81,8 @@ const router = Router();
 
 /**
  * After council approves a trip, upsert it into that month's open claim batch
- * so trips cannot sit approved with no batch.
+ * so trips cannot sit approved with no batch. If the primary month batch is
+ * already approved/paid, spill into an unpaid addendum (YYYY-MM-b2, …).
  */
 function upsertApprovedTripIntoMonthBatch(
   councilId: string,
@@ -93,21 +94,20 @@ function upsertApprovedTripIntoMonthBatch(
   const rawKey = String(tripLike._rawKey || '').trim();
   if (!councilId || !cid || !rawKey) return cb();
   const now = Date.now();
-  const ymGuess = tripMonthKey(tripLike) || new Date(now).toISOString().slice(0, 7);
-  const path = 'tmBatches/' + councilId + '/' + cid + '/' + ymGuess;
-  fbRead(path, (_e: any, existing: any) => {
-    const merged = mergeApprovedTripIntoBatch(existing, tripLike, {
+  // Read all month keys for this company so locked primary months can spill.
+  fbRead('tmBatches/' + councilId + '/' + cid, (_e: any, companyBatches: any) => {
+    const plan = planApprovedTripBatchUpsert(companyBatches, tripLike, {
       who,
       now,
       submittedRef: 'council-trip-approve',
     });
-    if (!merged) return cb();
-    const writePath = 'tmBatches/' + councilId + '/' + merged.pathSuffix;
-    fbWrite('PATCH', writePath, merged.payload, () => {
+    if (!plan) return cb();
+    const writePath = 'tmBatches/' + councilId + '/' + plan.pathSuffix;
+    fbWrite('PATCH', writePath, plan.payload, () => {
       fbWrite(
         'PATCH',
         'tmTripStatus/' + cid + '/' + rawKey,
-        { batchId: merged.pathSuffix, batchYm: merged.ym },
+        { batchId: plan.pathSuffix, batchYm: plan.batchKey },
         () => cb(),
       );
     });

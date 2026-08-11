@@ -126,8 +126,10 @@ function ymFromDateInput(raw) {
 }
 
 function batchYmInDateRange(ym, from, to) {
-  const month = String(ym || '').trim();
-  if (!/^\d{4}-\d{2}$/.test(month)) {
+  const raw = String(ym || '').trim();
+  const monthMatch = raw.match(/^(\d{4}-\d{2})(?:-b(?:[2-9]|[1-9]\d+))?$/);
+  const month = monthMatch ? monthMatch[1] : '';
+  if (!month) {
     return !ymFromDateInput(from) && !ymFromDateInput(to);
   }
   const fromYm = ymFromDateInput(from);
@@ -165,6 +167,19 @@ test('filterClaimBatches status + From/To month range', () => {
     filterClaimBatches(rows, { status: 'all', from: '2026-07-01', to: '2026-08-31' }).map((b) => b._ym + ':' + b.status),
     ['2026-07:approved', '2026-08:paid', '2026-08:paid'],
   );
+});
+
+test('filterClaimBatches includes addendum keys in From/To month range', () => {
+  const rows = [
+    { _ym: '2026-08', status: 'paid' },
+    { _ym: '2026-08-b2', status: 'submitted' },
+    { _ym: '2026-09-b2', status: 'submitted' },
+  ];
+  assert.deepEqual(
+    filterClaimBatches(rows, { status: 'all', from: '2026-08-01', to: '2026-08-31' }).map((b) => b._ym),
+    ['2026-08', '2026-08-b2'],
+  );
+  assert.equal(filterClaimBatches(rows, { status: 'submitted', from: '2026-08-01', to: '2026-08-31' }).length, 1);
 });
 
 test('source exports paid helpers and storage', () => {

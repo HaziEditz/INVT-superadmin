@@ -153,8 +153,11 @@ export function batchYmInDateRange(
   from?: string | null,
   to?: string | null,
 ): boolean {
-  const month = String(ym || '').trim();
-  if (!/^\d{4}-\d{2}$/.test(month)) {
+  const raw = String(ym || '').trim();
+  // Accept primary YYYY-MM and addendum keys like 2026-08-b2.
+  const monthMatch = raw.match(/^(\d{4}-\d{2})(?:-b(?:[2-9]|[1-9]\d+))?$/);
+  const month = monthMatch ? monthMatch[1] : '';
+  if (!month) {
     // Unknown month: only include when no date filter is active
     return !ymFromDateInput(from) && !ymFromDateInput(to);
   }
