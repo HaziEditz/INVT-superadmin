@@ -43,6 +43,13 @@ test('TM Clean Scan uses council/company dropdowns and no date range', () => {
   assert.doesNotMatch(cleanScan, /type="month"/);
 });
 
+test('TM Clean Scan shows readable summary not raw JSON dump', () => {
+  assert.match(cleanScan, /function formatScanSummary/);
+  assert.match(cleanScan, /Need human review \(flagged\)/);
+  assert.match(cleanScan, /Skipped for other reasons/);
+  assert.doesNotMatch(cleanScan, /JSON\.stringify\(j,\s*null,\s*2\)/);
+});
+
 test('never-edited gate wired in anomaly + owner edit stamps editedAt', () => {
   assert.match(anomaly, /export function tripWasEverEdited/);
   assert.match(anomaly, /if \(tripWasEverEdited\(trip\)\) return false/);
