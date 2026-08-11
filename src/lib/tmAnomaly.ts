@@ -407,6 +407,60 @@ export function isClaimEligibleStatus(status: string | null | undefined): boolea
   return s === 'approved' || s === 'paid';
 }
 
+/**
+ * True if this trip was ever anomaly-flagged (even if later cleared / resubmitted).
+ * Uses flaggedAt and event log — does not change detection rules.
+ */
+export function tripWasEverFlagged(
+  trip: AnomalyTripLike & {
+    flaggedAt?: unknown;
+    events?: Record<string, unknown> | null;
+  },
+): boolean {
+  const flaggedAt = trip?.flaggedAt;
+  if (flaggedAt != null && flaggedAt !== '' && Number(flaggedAt) !== 0) return true;
+  const events = trip?.events;
+  if (events && typeof events === 'object') {
+    for (const ev of Object.values(events)) {
+      if (!ev || typeof ev !== 'object') continue;
+      const row = ev as { type?: unknown; toStatus?: unknown };
+      const type = String(row.type || '')
+        .trim()
+        .toLowerCase();
+      const to = String(row.toStatus || '')
+        .trim()
+        .toLowerCase();
+      if (type === 'flagged' || to === 'flagged') return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Clean submitted trips that have never been flagged may auto-approve into the claim batch.
+ * Previously-flagged trips (even if now clean) still require manual council approval.
+ */
+export function shouldAutoApproveCleanTrip(
+  trip: AnomalyTripLike & {
+    flaggedAt?: unknown;
+    events?: Record<string, unknown> | null;
+  },
+): boolean {
+  if (!trip || typeof trip !== 'object') return false;
+  const st = String(trip.status || '')
+    .trim()
+    .toLowerCase();
+  if (st !== 'submitted') return false;
+  if (tripWasEverFlagged(trip)) return false;
+  const reasons = Array.isArray(trip.flagReasons)
+    ? trip.flagReasons.map((r) => String(r || '').trim()).filter(Boolean)
+    : [];
+  if (reasons.length) return false;
+  const detail = String(trip.anomalyDetail || '').trim();
+  if (detail) return false;
+  return true;
+}
+
 /** Archived trips are soft-deleted from queues / claims / anomaly auto-moves. */
 export function isActiveWorkflowStatus(status: string | null | undefined): boolean {
   const s = String(status || '').trim().toLowerCase();

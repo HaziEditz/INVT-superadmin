@@ -20,6 +20,7 @@ import {
   applyAnomalyScan,
   partitionCleanAndFlagged,
   isClaimEligibleStatus,
+  shouldAutoApproveCleanTrip,
   type AnomalyStatusPatch,
 } from '../lib/tmAnomaly';
 import {
@@ -542,7 +543,8 @@ function scanAndRefreshTrips(trips: any[], cb: (updated: any[]) => void): void {
           flaggedAt: patch.flaggedAt != null ? patch.flaggedAt : t.flaggedAt,
         };
       });
-      cb(updated);
+      // Sweep: clean never-flagged submitted → approved + claim batch (incl. existing Pending).
+      autoApproveCleanNeverFlaggedTrips(updated, cb);
     });
   }
   loadTariffsForCids(cids, (map) => {
@@ -552,6 +554,80 @@ function scanAndRefreshTrips(trips: any[], cb: (updated: any[]) => void): void {
   loadTmCardsByNumber((map) => {
     cardsByNumber = map;
     runScan();
+  });
+}
+
+/**
+ * After anomaly scan: auto-approve submitted trips that are clean and were never flagged.
+ * Reuses afterCouncilApproveAddToBatch (addendum-aware). Previously-flagged trips stay submitted.
+ */
+function autoApproveCleanNeverFlaggedTrips(trips: any[], cb: (updated: any[]) => void): void {
+  const list = Array.isArray(trips) ? trips : [];
+  const candidates = list.filter((t) => shouldAutoApproveCleanTrip(t));
+  if (!candidates.length) return cb(list);
+
+  let left = candidates.length;
+  const approvedKeys = new Set<string>();
+  const now = Date.now();
+  const who = 'system-auto-approve';
+
+  const finish = () => {
+    const out = list.map((t) => {
+      const k = String(t._cid) + '/' + String(t._rawKey);
+      if (!approvedKeys.has(k)) return t;
+      return {
+        ...t,
+        status: 'approved',
+        approvedAt: now,
+        approvedBy: who,
+        autoApproved: true,
+      };
+    });
+    cb(out);
+  };
+
+  candidates.forEach((t) => {
+    const cid = String(t._cid || '').trim();
+    const rawKey = String(t._rawKey || '').trim();
+    const councilId = String(t.councilId || '').trim();
+    const k = cid + '/' + rawKey;
+    if (!cid || !rawKey || !councilId) {
+      if (--left === 0) finish();
+      return;
+    }
+    fbWrite(
+      'PATCH',
+      'tmTripStatus/' + cid + '/' + rawKey,
+      {
+        status: 'approved',
+        approvedAt: now,
+        approvedBy: who,
+        autoApproved: true,
+      },
+      (err: any) => {
+        if (err) {
+          if (--left === 0) finish();
+          return;
+        }
+        approvedKeys.add(k);
+        appendTripEvent(
+          cid,
+          rawKey,
+          buildTripEvent('approved', {
+            by: who,
+            byRole: 'system',
+            fromStatus: 'submitted',
+            toStatus: 'approved',
+            note: 'Auto-approved: clean trip with no prior flags',
+          }),
+          () => {
+            afterCouncilApproveAddToBatch(councilId, cid, rawKey, who, t, () => {
+              if (--left === 0) finish();
+            });
+          },
+        );
+      },
+    );
   });
 }
 

@@ -222,6 +222,33 @@ function isClaimEligibleStatus(status) {
   const s = String(status || '').trim().toLowerCase();
   return s === 'approved' || s === 'paid';
 }
+function tripWasEverFlagged(trip) {
+  const flaggedAt = trip?.flaggedAt;
+  if (flaggedAt != null && flaggedAt !== '' && Number(flaggedAt) !== 0) return true;
+  const events = trip?.events;
+  if (events && typeof events === 'object') {
+    for (const ev of Object.values(events)) {
+      if (!ev || typeof ev !== 'object') continue;
+      const type = String(ev.type || '').trim().toLowerCase();
+      const to = String(ev.toStatus || '').trim().toLowerCase();
+      if (type === 'flagged' || to === 'flagged') return true;
+    }
+  }
+  return false;
+}
+function shouldAutoApproveCleanTrip(trip) {
+  if (!trip || typeof trip !== 'object') return false;
+  const st = String(trip.status || '').trim().toLowerCase();
+  if (st !== 'submitted') return false;
+  if (tripWasEverFlagged(trip)) return false;
+  const reasons = Array.isArray(trip.flagReasons)
+    ? trip.flagReasons.map((r) => String(r || '').trim()).filter(Boolean)
+    : [];
+  if (reasons.length) return false;
+  const detail = String(trip.anomalyDetail || '').trim();
+  if (detail) return false;
+  return true;
+}
 function applyAnomalyScan(trips, tariffByCid, cardsByNumber) {
   const patches = [];
   for (const trip of trips) {
@@ -505,8 +532,52 @@ test('isClaimEligibleStatus excludes flagged/revision/rejected', () => {
   assert.equal(isClaimEligibleStatus('submitted'), false);
 });
 
+test('shouldAutoApproveCleanTrip: never-flagged clean submitted auto-approves', () => {
+  assert.equal(
+    shouldAutoApproveCleanTrip({
+      status: 'submitted',
+      flagReasons: [],
+      anomalyDetail: null,
+    }),
+    true,
+  );
+});
+
+test('shouldAutoApproveCleanTrip: previously flagged then cleared still requires manual approval', () => {
+  assert.equal(
+    shouldAutoApproveCleanTrip({
+      status: 'submitted',
+      flagReasons: [],
+      anomalyDetail: null,
+      flaggedAt: 1786205003066,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldAutoApproveCleanTrip({
+      status: 'submitted',
+      flagReasons: [],
+      events: {
+        e1: { type: 'flagged', toStatus: 'flagged', at: 1 },
+      },
+    }),
+    false,
+  );
+  // Still dirty → no auto-approve
+  assert.equal(
+    shouldAutoApproveCleanTrip({
+      status: 'submitted',
+      flagReasons: ['card_expired'],
+    }),
+    false,
+  );
+  assert.equal(shouldAutoApproveCleanTrip({ status: 'flagged', flagReasons: [] }), false);
+});
+
 test('tmAnomaly source exports claim helper and rules', () => {
   assert.match(anomalySrc, /export function isClaimEligibleStatus/);
+  assert.match(anomalySrc, /export function shouldAutoApproveCleanTrip/);
+  assert.match(anomalySrc, /export function tripWasEverFlagged/);
   assert.match(anomalySrc, /same_card_reuse_3min/);
   assert.match(anomalySrc, /same_card_same_time_diff_taxi/);
   assert.match(anomalySrc, /applyAnomalyScan/);
@@ -525,6 +596,10 @@ test('council portal loads tmCards into anomaly scan', () => {
   assert.match(councilSrc, /loadTmCardsByNumber/);
   assert.match(councilSrc, /fbRead\('tmCards'/);
   assert.match(councilSrc, /applyAnomalyScan\(list, tariffByCid \|\| \{\}, cardsByNumber/);
+  assert.match(councilSrc, /autoApproveCleanNeverFlaggedTrips/);
+  assert.match(councilSrc, /shouldAutoApproveCleanTrip/);
+  assert.match(councilSrc, /afterCouncilApproveAddToBatch/);
+  assert.match(councilSrc, /system-auto-approve/);
   assert.match(councilSrc, /limit_exceeded_daily/);
   assert.match(councilSrc, /card_expired/);
   assert.match(councilSrc, /implausible_short_trip/);
