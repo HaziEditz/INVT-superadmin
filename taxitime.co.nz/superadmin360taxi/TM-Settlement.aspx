@@ -47,7 +47,7 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
 </ul></div></aside>
 <div id="page_content"><div id="page_content_inner">
 <div class="tm-wrap">
-  <div class="notice" id="set-label">BookaWaka settlement — platform fees not charged yet. chargeEnabled stays false; execute-payouts is blocked.</div>
+  <div class="notice" id="set-label">BookaWaka settlement — loading chargeEnabled…</div>
   <div class="tm-card" style="margin-top:16px">
     <div class="tm-bar"><h3>Council invoice / paid tracking / payout plans</h3></div>
     <div class="filt">
@@ -60,7 +60,7 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
       <button class="tm-btn" onclick="buildInvoice()">Build draft invoice</button>
       <button class="tm-btn" onclick="markPaid()">Mark council paid BookaWaka</button>
       <button class="tm-btn" onclick="planPayouts()">Plan company payouts</button>
-      <button class="tm-btn" style="background:#C62828" onclick="executePayouts()">Execute payouts (blocked)</button>
+      <button class="tm-btn" style="background:#C62828" id="set-exec-btn" onclick="executePayouts()">Execute payouts</button>
     </div>
     <div id="set-preview" style="padding:0 18px 12px;display:none">
       <div style="font-size:13px;font-weight:600;margin-bottom:6px">Company line preview</div>
@@ -80,9 +80,20 @@ var setCouncils = {}, setCompanies = {}, lastInvoice = null;
   document.getElementById('set-ym').value=m.getFullYear()+'-'+String(m.getMonth()+1).padStart(2,'0');
 })();
 window._fbOnLogin = function() {
-  Promise.all([adminRead('tmConfig'), adminRead('superClients')]).then(function(res) {
+  Promise.all([adminRead('tmConfig'), adminRead('superClients'), adminRead('platformTmFees/defaults')]).then(function(res) {
     setCouncils = res[0] || {};
     setCompanies = res[1] || {};
+    var defaults = res[2] || {};
+    var on = defaults.chargeEnabled === true;
+    var label = document.getElementById('set-label');
+    var execBtn = document.getElementById('set-exec-btn');
+    if (on) {
+      label.textContent = 'BookaWaka settlement — chargeEnabled ON (test mode). Plan payouts allowed; execute-payouts still returns 501 until banking connector is wired.';
+      if (execBtn) execBtn.textContent = 'Execute payouts (501 until banking wired)';
+    } else {
+      label.textContent = 'BookaWaka settlement — platform fees not charged yet. chargeEnabled is false; execute-payouts is blocked.';
+      if (execBtn) execBtn.textContent = 'Execute payouts (blocked)';
+    }
     var cOpts = '<option value="">Select council…</option>';
     Object.keys(setCouncils).sort().forEach(function(id) {
       cOpts += '<option value="'+id+'">'+(setCouncils[id].name||id)+'</option>';

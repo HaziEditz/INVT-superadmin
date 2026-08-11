@@ -75,7 +75,7 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
       <div><label>Council fee per trip ($)</label><input id="fee-council" type="number" min="0" step="0.01" value="0"/></div>
       <div><label>Company fee per trip ($)</label><input id="fee-company" type="number" min="0" step="0.01" value="0"/></div>
       <div><label>chargeEnabled</label>
-        <input id="fee-charge" type="checkbox" disabled/> <span style="font-size:12px;color:#888">Hard off (locked)</span>
+        <input id="fee-charge" type="checkbox"/> <span style="font-size:12px;color:#888">Settlement charge gate (test mode OK)</span>
       </div>
     </div>
     <div id="fee-msg" style="padding:0 18px 16px;font-size:12px;color:#888"></div>
@@ -122,18 +122,25 @@ function loadDefaults(){
     d = d || {};
     document.getElementById('fee-council').value = d.councilFeePerTrip != null ? d.councilFeePerTrip : 0;
     document.getElementById('fee-company').value = d.companyFeePerTrip != null ? d.companyFeePerTrip : 0;
-    document.getElementById('fee-charge').checked = false;
+    document.getElementById('fee-charge').checked = d.chargeEnabled === true;
+    document.getElementById('fee-label').textContent = d.chargeEnabled === true
+      ? 'BookaWaka platform fees — chargeEnabled ON (settlement gate open; execute-payouts still needs banking connector)'
+      : 'BookaWaka platform fees — not charged yet';
   }).catch(function(){});
 }
 function saveDefaults(){
+  var on = !!document.getElementById('fee-charge').checked;
   var payload = {
     councilFeePerTrip: Math.max(0, Math.round((parseFloat(document.getElementById('fee-council').value)||0)*100)/100),
     companyFeePerTrip: Math.max(0, Math.round((parseFloat(document.getElementById('fee-company').value)||0)*100)/100),
-    chargeEnabled: false,
+    chargeEnabled: on,
     updatedAt: Date.now()
   };
   adminWrite('platformTmFees/defaults','PUT',payload).then(function(){
-    document.getElementById('fee-msg').innerHTML = '<span style="color:#2e7d32">Saved — chargeEnabled remains false.</span>';
+    document.getElementById('fee-msg').innerHTML = on
+      ? '<span style="color:#2e7d32">Saved — chargeEnabled is ON.</span>'
+      : '<span style="color:#2e7d32">Saved — chargeEnabled is OFF.</span>';
+    loadDefaults();
   }).catch(function(e){
     document.getElementById('fee-msg').textContent = 'Error: '+(e&&e.message||e);
   });
