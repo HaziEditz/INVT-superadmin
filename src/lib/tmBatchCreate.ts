@@ -256,6 +256,26 @@ export function computeDisplayBatchTotals(
 }
 
 /**
+ * Approved trip with no batch linkage — claim-lock spill failed or pre-addendum orphan.
+ * Paid trips are not orphans even without batchId (legacy paid cascade).
+ */
+export function isOrphanApprovedTrip(t: CouncilTripLike | null | undefined): boolean {
+  if (!t || typeof t !== 'object') return false;
+  const st = String(t.status || '')
+    .trim()
+    .toLowerCase();
+  if (st !== 'approved') return false;
+  const batchId = String((t as { batchId?: unknown }).batchId || '').trim();
+  const batchYm = String((t as { batchYm?: unknown }).batchYm || '').trim();
+  return !batchId && !batchYm;
+}
+
+/** Approved trips missing batchId/batchYm (permanent Claim Batches safeguard). */
+export function listOrphanApprovedTrips(trips: CouncilTripLike[] | null | undefined): CouncilTripLike[] {
+  return (trips || []).filter(isOrphanApprovedTrip);
+}
+
+/**
  * Upsert one approved trip into an open month batch (create or refresh submitted/draft).
  * Skips approved/paid batches so council claim lock is preserved.
  * Prefer planApprovedTripBatchUpsert when company sibling batches are available (addendum spill).

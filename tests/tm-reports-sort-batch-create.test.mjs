@@ -901,6 +901,33 @@ test('planApprovedTripBatchUpsert still creates primary when month empty', () =>
   assert.equal(plan.pathSuffix, '860869/2026-08');
 });
 
+function isOrphanApprovedTrip(t) {
+  if (!t || typeof t !== 'object') return false;
+  const st = String(t.status || '').trim().toLowerCase();
+  if (st !== 'approved') return false;
+  const batchId = String(t.batchId || '').trim();
+  const batchYm = String(t.batchYm || '').trim();
+  return !batchId && !batchYm;
+}
+
+function listOrphanApprovedTrips(trips) {
+  return (trips || []).filter(isOrphanApprovedTrip);
+}
+
+test('listOrphanApprovedTrips finds approved without batch linkage', () => {
+  const orphans = listOrphanApprovedTrips([
+    { _rawKey: 'a', status: 'approved' },
+    { _rawKey: 'b', status: 'approved', batchId: '860869/2026-08-b2', batchYm: '2026-08-b2' },
+    { _rawKey: 'c', status: 'paid' },
+    { _rawKey: 'd', status: 'flagged' },
+    { _rawKey: 'e', status: 'approved', batchYm: '2026-08' },
+  ]);
+  assert.deepEqual(
+    orphans.map((t) => t._rawKey),
+    ['a'],
+  );
+});
+
 
 
 test('computeDisplayBatchTotals counts stubs without status', () => {
@@ -959,6 +986,10 @@ test('council wires sort helper + map gen + auto-batch on approve', () => {
 
   assert.match(createSrc, /export function nextAddendumMonthKey/);
 
+  assert.match(createSrc, /export function listOrphanApprovedTrips/);
+
+  assert.match(createSrc, /export function isOrphanApprovedTrip/);
+
   assert.match(createSrc, /export function computeDisplayBatchTotals/);
 
   assert.match(councilSrc, /compareTripsNewestFirst/);
@@ -980,6 +1011,10 @@ test('council wires sort helper + map gen + auto-batch on approve', () => {
   assert.match(councilSrc, /afterCouncilApproveAddToBatch/);
 
   assert.match(councilSrc, /planApprovedTripBatchUpsert/);
+
+  assert.match(councilSrc, /listOrphanApprovedTrips/);
+
+  assert.match(councilSrc, /Orphan approved \(no batch\)/);
 
   assert.match(councilSrc, /computeDisplayBatchTotals/);
 

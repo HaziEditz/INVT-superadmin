@@ -74,6 +74,8 @@ import {
   shouldWriteBatchCreate,
   planApprovedTripBatchUpsert,
   computeDisplayBatchTotals,
+  listOrphanApprovedTrips,
+  subsidyOfTrip,
   type CouncilTripLike,
 } from '../lib/tmBatchCreate';
 
@@ -2626,7 +2628,7 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
     });
     const claimNotice =
       `<p style="font-size:12.5px;color:#666;margin:-4px 0 14px;padding:10px 12px;background:#FFF8E1;border-left:4px solid #E65100;border-radius:4px">` +
-      `Approving a trip automatically adds it to that month&rsquo;s claim batch. ` +
+      `Approving a trip automatically adds it to that month&rsquo;s claim batch (or an unpaid addendum if that month is already approved/paid). ` +
       `Trips with status flagged, revision_needed, rejected, or archived are excluded from claims. Only approved trips are claimable.` +
       (flaggedExcluded > 0
         ? `<div style="margin-top:6px">${flaggedExcluded} trip${flaggedExcluded === 1 ? '' : 's'} excluded this period — ` +
@@ -2731,6 +2733,37 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
         const totalHoistFiltered = inDate.reduce((s, b) => s + Number(b._displayHoist || 0), 0);
         const totalHoistUsesFiltered = inDate.reduce((s, b) => s + Number(b._displayHoistUses || 0), 0);
         const paidMissingProof = paid.filter((b) => proofMissingFlag(b)).length;
+        const orphanApproved = listOrphanApprovedTrips(councilTrips || []);
+        const orphanSubsidy = +orphanApproved.reduce((s, t) => s + subsidyOfTrip(t), 0).toFixed(2);
+        const orphanRowsHtml = orphanApproved
+          .map((t: any) => {
+            const cid = String(t._cid || '');
+            const rawKey = String(t._rawKey || '');
+            const cname = namesMap[cid] || 'Operator ' + cid;
+            const sub = subsidyOfTrip(t);
+            const tripsHref =
+              `/council-portal/trips?t=${te}&status=approved&q=${encodeURIComponent(rawKey)}` +
+              (cid ? `&company=${encodeURIComponent(cid)}` : '');
+            return `<tr>
+<td>${esc(cname)} <span style="color:#999;font-size:11px">${esc(cid)}</span></td>
+<td style="font-family:monospace">${esc(rawKey)}</td>
+<td style="text-align:right">$${sub.toFixed(2)}</td>
+<td><a class="cp-btn-sm" href="${tripsHref}">Open in Trips</a></td>
+</tr>`;
+          })
+          .join('');
+        const orphanPanel =
+          orphanApproved.length > 0
+            ? `<div class="cp-card" style="margin-bottom:14px;border-left:4px solid #E65100">
+  <div class="cp-card-hd"><h3 style="color:#E65100">Orphan approved (no batch)</h3>
+    <span style="font-size:12px;color:#666">${orphanApproved.length} trip${orphanApproved.length === 1 ? '' : 's'} · $${orphanSubsidy.toFixed(2)}</span></div>
+  <div class="cp-card-bd" style="padding-top:8px">
+    <p style="font-size:12.5px;color:#666;margin-bottom:10px">These trips are approved but have no claim batch linkage. Late approvals after a month is paid should create an addendum (<code>YYYY-MM-b2</code>); if this list is non-empty, investigate before paying claims.</p>
+    <table class="cp-tbl"><thead><tr><th>Operator</th><th>Trip</th><th style="text-align:right">Claim (%/cap)</th><th></th></tr></thead>
+    <tbody>${orphanRowsHtml}</tbody></table>
+  </div>
+</div>`
+            : '';
         const tabHref = (t: string) => `/council-portal/batches?t=${te}&tab=${t}${qKeep}`;
         const tabsHtml = `<div class="cp-tabs">
   <a class="cp-tab${tab === 'submitted' ? ' on' : ''}" href="${tabHref('submitted')}">Submitted<span class="cp-tab-n">${submitted.length}</span></a>
@@ -2895,11 +2928,13 @@ ${(() => {
   <div class="cp-stat"><div class="cp-stat-v">$${totalPending.toFixed(2)}</div><div class="cp-stat-l">Pending claim (%/cap)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${approved.length}</div><div class="cp-stat-l">Approved (unpaid)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totalApproved.toFixed(2)}</div><div class="cp-stat-l">Approved claim (%/cap)</div></div>
+  <div class="cp-stat${orphanApproved.length ? ' warn' : ''}"><div class="cp-stat-v">${orphanApproved.length}</div><div class="cp-stat-l">Orphan approved (no batch)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totalHoistFiltered.toFixed(2)}</div><div class="cp-stat-l">Hoist $ (date filter)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${totalHoistUsesFiltered}</div><div class="cp-stat-l">Hoist Uses (date filter)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${paid.length}</div><div class="cp-stat-l">Paid</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totalPaid.toFixed(2)}</div><div class="cp-stat-l">Paid claim (%/cap)${paidMissingProof ? ` · <span style="color:#E65100;font-size:11px">${paidMissingProof} missing proof</span>` : ''}</div></div>
 </div>
+${orphanPanel}
 ${filterBar}
 ${tabsHtml}
 <div class="cp-card" style="overflow-x:auto">
