@@ -121,6 +121,9 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
       <li><a href="TM-Trips.aspx">All Trips</a></li>
       <li><a href="TM-Flagged.aspx">Flagged Trips</a></li>
       <li><a href="TM-Batches.aspx">Claim Batches</a></li>
+      <li><a href="TM-Platform-Fees.aspx">Platform Fees</a></li>
+      <li><a href="TM-Clean-Scan.aspx">Clean-trip Scan</a></li>
+      <li><a href="TM-Settlement.aspx">Settlement</a></li>
       <li><a href="TM-Reports.aspx">Monthly Reports</a></li>
     </ul></li>
     <li class="current_section" title="Food Delivery"><a href="#"><span class="menu_icon"><i class="material-icons">&#xE56C;</i></span><span class="menu_title">Food Delivery</span></a><ul>

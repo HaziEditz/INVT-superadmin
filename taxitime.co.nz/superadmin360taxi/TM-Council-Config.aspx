@@ -106,6 +106,20 @@ firebase.initializeApp(config);
           <li><a href="Define%20Distance%20Units.aspx">Define Distance Units</a></li>
         </ul>
       </li>
+    <li class="current_section" title="Total Mobility"><a href="#"><span class="menu_icon"><i class="material-icons">&#xE8CC;</i></span><span class="menu_title">Total Mobility</span></a><ul>
+      <li><a href="TM-Setup.aspx">TM Setup Hub</a></li>
+      <li><a href="TM-Council-Config.aspx" style="font-weight:700;color:#1565C0">&#9658; Council Config (Advanced)</a></li>
+      <li><a href="TM-Cards.aspx">Passenger Cards</a></li>
+      <li><a href="TM-Trips.aspx">All Trips</a></li>
+      <li><a href="TM-Flagged.aspx">Flagged Trips</a></li>
+      <li><a href="TM-Batches.aspx">Claim Batches</a></li>
+      <li><a href="TM-Platform-Fees.aspx">Platform Fees</a></li>
+      <li><a href="TM-Clean-Scan.aspx">Clean-trip Scan</a></li>
+      <li><a href="TM-Settlement.aspx">Settlement</a></li>
+      <li><a href="TM-Reports.aspx">Monthly Reports</a></li>
+      <li><a href="TM-Settings.aspx">TM Settings (Advanced)</a></li>
+      <li><a href="/council-portal" target="_blank">Council Portal &#8599;</a></li>
+    </ul></li>
       <li class="current_section" title="Freight Delivery"><a href="#"><span class="menu_icon"><i class="material-icons">&#xE558;</i></span><span class="menu_title">Freight Delivery</span></a><ul>
       <li><a href="FR-Orders.aspx">All Orders</a></li>
       <li><a href="FR-Payouts.aspx">Payouts</a></li>
