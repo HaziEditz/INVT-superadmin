@@ -198,6 +198,14 @@ test('council batches tabs + cascade + attach proof', () => {
   assert.match(councilSrc, /No proof uploaded|PROOF_MISSING_LABEL/);
   assert.match(councilSrc, /storeBatchProof/);
   assert.match(councilSrc, /\/api\/council-batch-doc/);
+  assert.match(councilSrc, /\/api\/council-batch-bulk-action/);
+  assert.match(councilSrc, /parseBatchKeysFromBody/);
+  assert.match(councilSrc, /cpBatchToggleAll/);
+  assert.match(councilSrc, /cpBatchSelUpdate/);
+  assert.match(councilSrc, /Select all matching/);
+  assert.match(councilSrc, /Approve selected/);
+  assert.match(councilSrc, /Mark Paid — selected/);
+  assert.match(councilSrc, /cp-batch-cb/);
   assert.match(councilSrc, /cpOpenMarkPaid/);
   assert.match(councilSrc, /filterClaimBatches/);
   assert.match(councilSrc, /name="from"/);

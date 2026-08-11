@@ -2166,6 +2166,28 @@ function parseTripKeysFromBody(body: any): Array<{ cid: string; rawKey: string }
   return out;
 }
 
+/** Batch keys as cid/ym (ym may be addendum e.g. 2026-08-b2). */
+function parseBatchKeysFromBody(body: any): Array<{ cid: string; ym: string }> {
+  const raw = body.batchKeys != null ? body.batchKeys : body.batch;
+  const list = Array.isArray(raw) ? raw : raw != null && raw !== '' ? [raw] : [];
+  const out: Array<{ cid: string; ym: string }> = [];
+  const seen = new Set<string>();
+  list.forEach((v: any) => {
+    const s = String(v || '').trim();
+    if (!s) return;
+    const slash = s.indexOf('/');
+    if (slash <= 0) return;
+    const cid = s.slice(0, slash).trim();
+    const ym = s.slice(slash + 1).trim();
+    if (!cid || !ym) return;
+    const k = cid + '/' + ym;
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push({ cid, ym });
+  });
+  return out;
+}
+
 // ── Bulk approve clean submitted trips ─────────────────────────────────────────
 router.post('/api/council-bulk-approve', (req, res) => {
   const token = (req.body._token as string) || '';
@@ -2931,6 +2953,59 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
   }
   <p style="flex-basis:100%;font-size:11.5px;color:#888;margin:0">From/To filter by claim month (YYYY-MM). Flagged = rejected, needs revision, or paid without proof.</p>
 </form>`;
+        const batchFilterHiddens =
+          `<input type="hidden" name="tab" value="${esc(tab)}"/>` +
+          `<input type="hidden" name="from" value="${esc(filterFrom)}"/>` +
+          `<input type="hidden" name="to" value="${esc(filterTo)}"/>`;
+        let batchBulkToolbar = '';
+        if (filtered.length) {
+          const allMatchN = filtered.length;
+          if (tab === 'submitted') {
+            batchBulkToolbar = `<div style="margin:12px 16px 0;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+<form id="cp-batch-bulk" method="POST" action="/api/council-batch-bulk-action" style="display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center" onsubmit="return cpBatchBulkSelected(this)">
+  <input type="hidden" name="_token" value="${esc(token)}"/>
+  <input type="hidden" name="action" id="cp-batch-bulk-action" value="approve"/>
+  ${batchFilterHiddens}
+  <label style="font-size:12px;color:#555;font-weight:600"><input type="checkbox" id="cp-batch-check-all" onchange="cpBatchToggleAll(this.checked)"/> Select all matching</label>
+  <button type="submit" class="cp-btn cp-btn-g" onclick="document.getElementById('cp-batch-bulk-action').value='approve'">&#10003; Approve selected</button>
+  <button type="submit" class="cp-btn cp-btn-r" onclick="document.getElementById('cp-batch-bulk-action').value='reject'">&#10007; Reject selected</button>
+</form>
+<form method="POST" action="/api/council-batch-bulk-action" style="display:inline" onsubmit="return confirm('Approve all ${allMatchN} Submitted batch(es) matching filters?')">
+  <input type="hidden" name="_token" value="${esc(token)}"/>
+  <input type="hidden" name="action" value="approve"/>
+  <input type="hidden" name="allMatching" value="1"/>
+  ${batchFilterHiddens}
+  <button type="submit" class="cp-btn" style="background:#1B5E20;color:#fff">&#10003; Approve all matching (${allMatchN})</button>
+</form>
+</div>
+<div id="cp-batch-sel-summary" style="margin:8px 16px 0;font-size:12.5px;color:#555;min-height:1.2em"></div>`;
+          } else if (tab === 'approved') {
+            batchBulkToolbar = `<div style="margin:12px 16px 0;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+<form id="cp-batch-bulk" method="POST" action="/api/council-batch-bulk-action" style="display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center" onsubmit="return cpBatchBulkSelected(this)">
+  <input type="hidden" name="_token" value="${esc(token)}"/>
+  <input type="hidden" name="action" value="paid"/>
+  ${batchFilterHiddens}
+  <label style="font-size:12px;color:#555;font-weight:600"><input type="checkbox" id="cp-batch-check-all" onchange="cpBatchToggleAll(this.checked)"/> Select all matching</label>
+  <button type="submit" class="cp-btn cp-btn-g">&#128181; Mark Paid — selected</button>
+</form>
+<form method="POST" action="/api/council-batch-bulk-action" style="display:inline" onsubmit="return confirm('Mark all ${allMatchN} Approved (unpaid) batch(es) as Paid? Proof can be uploaded per batch afterward.')">
+  <input type="hidden" name="_token" value="${esc(token)}"/>
+  <input type="hidden" name="action" value="paid"/>
+  <input type="hidden" name="allMatching" value="1"/>
+  ${batchFilterHiddens}
+  <button type="submit" class="cp-btn" style="background:#00695C;color:#fff">&#128181; Mark Paid — all matching (${allMatchN})</button>
+</form>
+</div>
+<div id="cp-batch-sel-summary" style="margin:8px 16px 0;font-size:12.5px;color:#555;min-height:1.2em"></div>`;
+          } else {
+            // Paid / Flagged / All — selection + live totals; row actions stay per-batch
+            batchBulkToolbar = `<div style="margin:12px 16px 0;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+<label style="font-size:12px;color:#555;font-weight:600"><input type="checkbox" id="cp-batch-check-all" onchange="cpBatchToggleAll(this.checked)"/> Select all matching</label>
+<span style="font-size:12px;color:#888">Selection totals only on this tab — use row actions for proof upload / status changes.</span>
+</div>
+<div id="cp-batch-sel-summary" style="margin:8px 16px 0;font-size:12.5px;color:#555;min-height:1.2em"></div>`;
+          }
+        }
         const rows = filtered
           .map((b) => {
             const subDt = b.submittedAt ? new Date(b.submittedAt).toLocaleDateString('en-NZ') : '—';
@@ -2981,6 +3056,8 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
               Array.isArray(b._hoistDays) ? b._hoistDays : [];
             const hoistTotal = Number(b._displayHoist || 0);
             const hoistUses = Number(b._displayHoistUses || 0);
+            const batchKey = String(b._cid) + '/' + String(b._ym);
+            const cbFormAttr = tab === 'submitted' || tab === 'approved' ? ' form="cp-batch-bulk"' : '';
             const hoistDayRows = hoistDays.length
               ? hoistDays
                   .map(
@@ -2990,6 +3067,10 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
                   .join('')
               : `<tr><td colspan="4" style="color:#aaa;font-style:italic">No hoist usage in this batch</td></tr>`;
             return `<tr>
+<td><input type="checkbox" class="cp-batch-cb" name="batch" value="${esc(batchKey)}"${cbFormAttr}
+  data-cid="${esc(b._cid)}" data-cname="${esc(b._cname)}" data-ym="${esc(b._ym)}"
+  data-trips="${Number(b._displayTrips || 0)}" data-subsidy="${Number(b._displaySubsidy || 0)}"
+  data-hoist="${hoistTotal}" data-hoist-uses="${hoistUses}" onchange="cpBatchSelUpdate()"/></td>
 <td style="font-weight:600">${esc(b._cname)}</td>
 <td style="font-family:monospace">${esc(b._ym)}</td>
 <td style="text-align:right">${b._displayTrips}</td>
@@ -3003,7 +3084,7 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
 <td style="white-space:nowrap">${actionBtns}</td>
 </tr>
 <tr>
-<td colspan="11" style="padding:6px 12px 12px;background:#FAFAFA">
+<td colspan="12" style="padding:6px 12px 12px;background:#FAFAFA">
 <details>
 <summary style="cursor:pointer;font-size:12.5px;font-weight:600;color:#33691E">Hoist by day — $${hoistTotal.toFixed(2)} · ${hoistUses} uses</summary>
 <table class="cp-tbl" style="margin-top:8px;max-width:520px">
@@ -3064,8 +3145,9 @@ ${filterBar}
 ${tabsHtml}
 <div class="cp-card" style="overflow-x:auto">
 <p style="font-size:13px;color:#666;padding:12px 16px 0">Flow: <strong>Submitted → Approved → Paid</strong>. Marking Paid cascades all trips in the batch to Paid. Proof of payment / invoice is optional but flagged if missing.</p>
+${batchBulkToolbar}
 ${filtered.length ? `<table class="cp-tbl" style="margin-top:8px">
-<thead><tr><th>Operator</th><th>Month</th><th style="text-align:right">Trips</th><th style="text-align:right">Council claim (%/cap)</th><th style="text-align:right">Hoist $</th><th style="text-align:right">Uses</th><th>Status</th><th>Submitted</th><th>Approved</th><th>Proof</th><th>Action</th></tr></thead>
+<thead><tr><th style="width:36px"></th><th>Operator</th><th>Month</th><th style="text-align:right">Trips</th><th style="text-align:right">Council claim (%/cap)</th><th style="text-align:right">Hoist $</th><th style="text-align:right">Uses</th><th>Status</th><th>Submitted</th><th>Approved</th><th>Proof</th><th>Action</th></tr></thead>
 <tbody>${rows}</tbody></table>` : '<div class="cp-empty">No batches match these filters.</div>'}
 </div>
 <div class="cp-ov" id="cp-paid-ov" onclick="if(event.target===this)cpCloseMarkPaid()">
@@ -3093,6 +3175,58 @@ var _cpTab = ${JSON.stringify(tab)};
 var _cpFrom = ${JSON.stringify(filterFrom)};
 var _cpTo = ${JSON.stringify(filterTo)};
 var _paidCtx = null;
+function cpBatchToggleAll(on){
+  document.querySelectorAll('.cp-batch-cb').forEach(function(cb){ cb.checked = !!on; });
+  cpBatchSelUpdate();
+}
+function cpBatchSelUpdate(){
+  var el = document.getElementById('cp-batch-sel-summary');
+  if(!el) return;
+  var checked = Array.prototype.slice.call(document.querySelectorAll('.cp-batch-cb:checked'));
+  var master = document.getElementById('cp-batch-check-all');
+  var all = document.querySelectorAll('.cp-batch-cb');
+  if(master && all.length){
+    master.checked = checked.length === all.length && all.length > 0;
+    master.indeterminate = checked.length > 0 && checked.length < all.length;
+  }
+  if(!checked.length){ el.textContent = ''; return; }
+  var byCid = {};
+  var trips = 0, subsidy = 0, hoist = 0, hoistUses = 0;
+  checked.forEach(function(cb){
+    var cid = cb.getAttribute('data-cid') || '';
+    var cname = cb.getAttribute('data-cname') || cid;
+    var t = Number(cb.getAttribute('data-trips') || 0) || 0;
+    var s = Number(cb.getAttribute('data-subsidy') || 0) || 0;
+    var h = Number(cb.getAttribute('data-hoist') || 0) || 0;
+    var u = Number(cb.getAttribute('data-hoist-uses') || 0) || 0;
+    trips += t; subsidy += s; hoist += h; hoistUses += u;
+    if(!byCid[cid]) byCid[cid] = { cname: cname, batches: 0, trips: 0, subsidy: 0, hoist: 0 };
+    byCid[cid].batches++;
+    byCid[cid].trips += t;
+    byCid[cid].subsidy += s;
+    byCid[cid].hoist += h;
+  });
+  var parts = Object.keys(byCid).map(function(cid){
+    var r = byCid[cid];
+    return r.cname + ' (' + cid + '): ' + r.batches + ' batch(es), ' + r.trips + ' trips, $' + r.subsidy.toFixed(2) + ' claim, $' + r.hoist.toFixed(2) + ' hoist';
+  });
+  el.innerHTML = '<strong>Selected:</strong> ' + checked.length + ' batch(es) · ' + trips + ' trips · $' + subsidy.toFixed(2) + ' claim · $' + hoist.toFixed(2) + ' hoist' +
+    (hoistUses ? ' · ' + hoistUses + ' hoist uses' : '') +
+    (parts.length ? '<div style="margin-top:4px;color:#666">' + parts.join('<br/>') + '</div>' : '');
+}
+function cpBatchBulkSelected(form){
+  var n = document.querySelectorAll('.cp-batch-cb:checked').length;
+  if(!n){ alert('Select at least one batch.'); return false; }
+  var actionEl = form.querySelector('[name="action"]');
+  var action = actionEl ? String(actionEl.value || '') : '';
+  if(action === 'paid'){
+    return confirm('Mark ' + n + ' selected Approved batch(es) as Paid? Trips will cascade to Paid. Proof can be uploaded per batch afterward.');
+  }
+  if(action === 'reject'){
+    return confirm('Reject ' + n + ' selected Submitted batch(es)?');
+  }
+  return confirm('Approve ' + n + ' selected Submitted batch(es)?');
+}
 function cpOpenMarkPaid(cid, ym, amt){
   _paidCtx = { cid: cid, ym: ym, attachOnly: false };
   document.getElementById('cp-paid-title').textContent = 'Mark batch paid';
@@ -3390,6 +3524,159 @@ router.post('/api/council-batch-action', (req, res) => {
         finishPaid(batch, stored, action === 'attach_proof');
       },
     );
+  });
+});
+
+/** Bulk approve / reject / mark-paid for selected claim batches (Claim Batches checkboxes). */
+router.post('/api/council-batch-bulk-action', (req, res) => {
+  const token = (req.body._token as string) || '';
+  const action = String(req.body.action || '').trim();
+  const allMatching = String(req.body.allMatching || '') === '1';
+  const tab = normalizeClaimBatchStatusFilter(String(req.body.tab || 'submitted'));
+  const filterFrom = String(req.body.from || '').trim();
+  const filterTo = String(req.body.to || '').trim();
+  const payRef = String(req.body.payRef || '').trim();
+  const sess = cpGetSession(token);
+  const te = encodeURIComponent(token);
+  const redirect = (msg: string, mt: string, t = tab) =>
+    res.redirect(
+      '/council-portal/batches?t=' +
+        te +
+        '&tab=' +
+        encodeURIComponent(t) +
+        (filterFrom ? '&from=' + encodeURIComponent(filterFrom) : '') +
+        (filterTo ? '&to=' + encodeURIComponent(filterTo) : '') +
+        '&msg=' +
+        encodeURIComponent(msg) +
+        '&mt=' +
+        mt,
+    );
+  if (!sess || !['approve', 'reject', 'paid'].includes(action)) {
+    return redirect('Invalid request', 'err');
+  }
+  const selected = parseBatchKeysFromBody(req.body);
+  const who = sess.name || sess.councilId;
+
+  fbRead('tmBatches/' + sess.councilId, (errB: any, batchData: any) => {
+    if (errB) return redirect('Could not load batches', 'err');
+    const data = batchData && typeof batchData === 'object' ? batchData : {};
+    const flat: Array<{ cid: string; ym: string; status: string }> = [];
+    Object.keys(data).forEach((cid) => {
+      const months = data[cid] || {};
+      Object.keys(months).forEach((ym) => {
+        const b = months[ym];
+        if (!b || typeof b !== 'object') return;
+        flat.push({
+          cid,
+          ym,
+          status: String(b.status || '').trim().toLowerCase(),
+          ...b,
+          _cid: cid,
+          _ym: ym,
+        } as any);
+      });
+    });
+    const inDate = filterClaimBatches(flat as any[], {
+      status: tab === 'all' ? 'all' : tab,
+      from: filterFrom,
+      to: filterTo,
+    });
+    let targets: Array<{ cid: string; ym: string; status: string; row?: any }>;
+    if (allMatching) {
+      targets = inDate.map((b: any) => ({
+        cid: String(b._cid || b.cid),
+        ym: String(b._ym || b.ym),
+        status: String(b.status || '').toLowerCase(),
+        row: b,
+      }));
+    } else {
+      const set = new Set(selected.map((k) => k.cid + '/' + k.ym));
+      targets = inDate
+        .filter((b: any) => set.has(String(b._cid || b.cid) + '/' + String(b._ym || b.ym)))
+        .map((b: any) => ({
+          cid: String(b._cid || b.cid),
+          ym: String(b._ym || b.ym),
+          status: String(b.status || '').toLowerCase(),
+          row: b,
+        }));
+    }
+    if (!targets.length) {
+      return redirect(
+        allMatching ? 'No batches match the current filters.' : 'No batches selected.',
+        'err',
+      );
+    }
+
+    const needStatus =
+      action === 'approve' || action === 'reject'
+        ? 'submitted'
+        : action === 'paid'
+          ? 'approved'
+          : '';
+    const eligible = targets.filter((t) => t.status === needStatus);
+    if (!eligible.length) {
+      return redirect(
+        action === 'paid'
+          ? 'None of the selected batches are Approved (unpaid).'
+          : 'None of the selected batches are Submitted.',
+        'err',
+      );
+    }
+
+    let left = eligible.length;
+    let ok = 0;
+    let fail = 0;
+    const finishAll = () => {
+      const verb =
+        action === 'approve' ? 'Approved' : action === 'reject' ? 'Rejected' : 'Marked paid';
+      const nextTab = action === 'approve' ? 'approved' : action === 'paid' ? 'paid' : tab;
+      redirect(
+        verb +
+          ' ' +
+          ok +
+          ' batch(es).' +
+          (fail ? ' ' + fail + ' failed or skipped.' : '') +
+          (action === 'paid' ? ' Reminder: no proof uploaded on bulk mark-paid.' : ''),
+        ok ? 'ok' : 'err',
+        nextTab,
+      );
+    };
+
+    eligible.forEach((t) => {
+      const path = 'tmBatches/' + sess.councilId + '/' + t.cid + '/' + t.ym;
+      if (action === 'approve' || action === 'reject') {
+        const patch =
+          action === 'approve'
+            ? { status: 'approved', approvedAt: Date.now(), approvedBy: who }
+            : { status: 'rejected', rejectedAt: Date.now(), rejectedBy: who };
+        fbWrite('PATCH', path, patch, (errW: any) => {
+          if (errW) fail++;
+          else ok++;
+          if (--left === 0) finishAll();
+        });
+        return;
+      }
+      // paid
+      fbRead(path, (eRead: any, batch: any) => {
+        if (eRead || !batch || String(batch.status || '').toLowerCase() !== 'approved') {
+          fail++;
+          if (--left === 0) finishAll();
+          return;
+        }
+        const patch = buildPaidBatchPatch({ who, payRef: payRef || null });
+        fbWrite('PATCH', path, patch, (errW: any) => {
+          if (errW) {
+            fail++;
+            if (--left === 0) finishAll();
+            return;
+          }
+          cascadeBatchTripsToPaid(batch, t.cid, t.ym, who, () => {
+            ok++;
+            if (--left === 0) finishAll();
+          });
+        });
+      });
+    });
   });
 });
 
