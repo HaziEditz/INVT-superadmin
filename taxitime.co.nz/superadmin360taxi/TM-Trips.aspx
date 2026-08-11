@@ -176,7 +176,7 @@ firebase.initializeApp(config);
     </select>
     <input type="date" id="tt-f-from" onchange="renderTT()"/>
     <input type="date" id="tt-f-to" onchange="renderTT()"/>
-    <input type="text" id="tt-f-search" placeholder="Job ID / Driver / Card #&#8230;" oninput="renderTT()" style="min-width:180px"/>
+    <input type="text" id="tt-f-search" placeholder="Booking ID / Driver / Card #&#8230;" oninput="renderTT()" style="min-width:180px"/>
     <button class="tm-btn" style="background:#fff;border:1px solid #ddd;color:#333;font-size:12px" onclick="clearTTFilters()">Clear</button>
   </div>
   <div id="tt-bulk-bar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px;padding:8px 10px;background:#FAFAFA;border:1px solid #eee;border-radius:6px">
@@ -191,7 +191,7 @@ firebase.initializeApp(config);
     <table class="tm-tbl">
       <thead><tr>
         <th style="width:36px"></th>
-        <th>Job ID</th><th>Driver</th><th>Vehicle</th><th>Voucher #</th><th>Passenger</th><th>Council</th>
+        <th>Booking ID</th><th>Driver</th><th>Vehicle</th><th>Voucher #</th><th>Passenger</th><th>Council</th>
         <th>Date</th><th>Pickup</th><th>Dropoff</th><th>Fare</th><th>TM Sub.</th><th>Hoist</th><th>Uses</th><th>Pax Pays</th><th>Status</th><th>Actions</th>
       </tr></thead>
       <tbody id="tt-tb"><tr><td colspan="17" style="text-align:center;padding:40px;color:#9e9e9e">Loading&#8230;</td></tr></tbody>
@@ -551,7 +551,7 @@ function viewTT(id) {
   document.getElementById('tt-dtitle').textContent = 'Trip ' + id;
   document.getElementById('tt-detail-body').innerHTML = flagHtml +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 18px;font-size:13px">' +
-    row2('Job ID', id) + row2('Status', ttStatusBadge(t.status)) +
+    row2('Booking ID', id) + row2('Status', ttStatusBadge(t.status)) +
     row2('Driver', (t.driverName || '\u2014')) + row2('Vehicle', (t.vehicleId || '\u2014') + (t.vehicleHoistEquipped ? ' <span class="bx bx-b" style="font-size:10px">Hoist</span>' : '')) +
     row2('Voucher #', (t.allCardNums && t.allCardNums.length > 1 ? t.allCardNums.join(', ') : (t.cardNumber || '\u2014'))) + row2('Passenger', (t.passengerName || '\u2014')) +
     row2('Council', (cnames[t.councilId] || t.councilId || '\u2014')) + row2('Trip Category', (t.tmTripCategory || '\u2014')) +

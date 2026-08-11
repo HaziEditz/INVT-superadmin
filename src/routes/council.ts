@@ -1602,6 +1602,7 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
             const uses = hoistUsesOf(t);
             return `<tr class="cp-row-click" data-idx="${idx}" onclick="openCpDetail(${idx})">
 ${cb}
+<td style="font-family:monospace;font-size:12px;white-space:nowrap">${esc(d.id || t._rawKey || '—')}</td>
 <td>${esc(d.dateTime || '—')}</td>
 <td style="font-size:12px;color:#555">${esc(d.companyName)}</td>
 <td>${esc(d.passengerName)}</td>
@@ -1647,7 +1648,7 @@ ${cb}
         const hasFilters = !!(q || filterCompany || filterFrom || filterTo || status !== 'all');
         const thead =
           (showCheckbox ? '<th></th>' : '') +
-          '<th>Date</th><th>Operator</th><th>Passenger</th><th>Driver</th><th>Pickup</th><th>Dropoff</th><th>Distance</th><th>Trip Time</th><th>Meter</th><th>Hoist $</th><th>Uses</th><th>Council claim</th><th>Pax</th><th>Status</th><th>Actions</th>';
+          '<th>Booking ID</th><th>Date</th><th>Operator</th><th>Passenger</th><th>Driver</th><th>Pickup</th><th>Dropoff</th><th>Distance</th><th>Trip Time</th><th>Meter</th><th>Hoist $</th><th>Uses</th><th>Council claim</th><th>Pax</th><th>Status</th><th>Actions</th>';
 
         const body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:6px">Trips</h2>
@@ -2670,7 +2671,7 @@ function tripDetailModalHtml(d: TmTripDetail, stOrTrip?: any): string {
   return `
 <div data-cid="${esc(d.cid)}" data-rawkey="${esc(d.rawKey)}" data-status="${esc(d.status)}">
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 18px;margin-bottom:14px">
-  ${row('Job / Booking', esc(d.id))}
+  ${row('Booking ID', esc(d.id))}
   ${row('Status', statusBadge(d.status))}
   ${row('Operator', esc(d.companyName))}
   ${row('Driver', esc(d.driverName))}
