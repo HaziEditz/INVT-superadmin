@@ -1792,6 +1792,33 @@ function cpProcessGeocodeQueue(){
     setTimeout(cpProcessGeocodeQueue, 1100);
   });
 }
+function cpFetchDrivingRoute(puLL, duLL){
+  // OSRM public API expects lon,lat order; returns GeoJSON coordinates [lon,lat].
+  var url = 'https://router.project-osrm.org/route/v1/driving/' +
+    Number(puLL[1]) + ',' + Number(puLL[0]) + ';' +
+    Number(duLL[1]) + ',' + Number(duLL[0]) +
+    '?overview=full&geometries=geojson';
+  var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  var timer = setTimeout(function(){ try{ if(ctrl) ctrl.abort(); }catch(e){} }, 8000);
+  return fetch(url, {
+    headers: { 'Accept': 'application/json' },
+    signal: ctrl ? ctrl.signal : undefined
+  }).then(function(r){
+    if(!r.ok) throw new Error('route http '+r.status);
+    return r.json();
+  }).then(function(data){
+    var coords = data && data.routes && data.routes[0] && data.routes[0].geometry &&
+      data.routes[0].geometry.coordinates;
+    if(!Array.isArray(coords) || !coords.length) return null;
+    return coords.map(function(c){ return [Number(c[1]), Number(c[0])]; })
+      .filter(function(ll){ return Number.isFinite(ll[0]) && Number.isFinite(ll[1]); });
+  }).catch(function(){
+    return null;
+  }).then(function(latlngs){
+    clearTimeout(timer);
+    return latlngs && latlngs.length >= 2 ? latlngs : null;
+  });
+}
 function cpDrawTripMap(puLL, duLL, gen){
   if(gen != null && gen !== _cpMapGen) return;
   var el = document.getElementById('cp-trip-map');
@@ -1816,12 +1843,34 @@ function cpDrawTripMap(puLL, duLL, gen){
     L.marker(duLL).addTo(_cpMap).bindPopup('Dropoff');
     bounds.push(duLL);
   }
-  if(puLL && duLL){
-    L.polyline([puLL, duLL], {color:'#1B5E20', weight:5, opacity:0.92}).addTo(_cpMap);
+  function finishBounds(extra){
+    var all = bounds.slice();
+    if(Array.isArray(extra)){
+      for(var i=0;i<extra.length;i++) all.push(extra[i]);
+    }
+    if(all.length > 1) _cpMap.fitBounds(all, {padding:[24,24]});
+    else if(all.length === 1) _cpMap.setView(all[0], 15);
+    setTimeout(function(){ if(_cpMap && (gen == null || gen === _cpMapGen)) _cpMap.invalidateSize(); }, 120);
   }
-  if(bounds.length > 1) _cpMap.fitBounds(bounds, {padding:[24,24]});
-  else if(bounds.length === 1) _cpMap.setView(bounds[0], 15);
-  setTimeout(function(){ if(_cpMap && (gen == null || gen === _cpMapGen)) _cpMap.invalidateSize(); }, 120);
+  if(puLL && duLL){
+    cpMapStatus('Routing along roads…');
+    cpFetchDrivingRoute(puLL, duLL).then(function(latlngs){
+      if(gen != null && gen !== _cpMapGen) return;
+      if(!_cpMap) return;
+      if(latlngs){
+        L.polyline(latlngs, {color:'#1B5E20', weight:5, opacity:0.92}).addTo(_cpMap);
+        cpMapStatus('');
+        finishBounds(latlngs);
+      } else {
+        // Fallback: straight line if OSRM fails / times out / CORS
+        L.polyline([puLL, duLL], {color:'#1B5E20', weight:5, opacity:0.92, dashArray:'6 8'}).addTo(_cpMap);
+        cpMapStatus('Road route unavailable — showing straight line.');
+        finishBounds();
+      }
+    });
+    return;
+  }
+  finishBounds();
 }
 function initCpTripMap(d, gen){
   if(gen == null) gen = _cpMapGen;

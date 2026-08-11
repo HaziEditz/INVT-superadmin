@@ -1024,6 +1024,12 @@ test('council wires sort helper + map gen + auto-batch on approve', () => {
 
   assert.match(councilSrc, /weight:5/);
 
+  assert.match(councilSrc, /router\.project-osrm\.org\/route\/v1\/driving/);
+
+  assert.match(councilSrc, /cpFetchDrivingRoute/);
+
+  assert.match(councilSrc, /Road route unavailable/);
+
   assert.match(councilSrc, /rows\.sort\(compareTripsNewestFirst\)/);
 
 });
