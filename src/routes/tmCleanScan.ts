@@ -93,6 +93,7 @@ function loadFlatTrips(cb: (trips: any[]) => void): void {
             events: st.events || null,
             batchId: st.batchId,
             platformFeeStampAt: st.platformFeeStampAt,
+            editedAt: st.editedAt || null,
           });
         });
       });
@@ -226,7 +227,7 @@ function approveOne(
         byRole: 'system',
         fromStatus: 'submitted',
         toStatus: 'approved',
-        note: 'SA clean-scan auto-approved: clean trip with no prior flags',
+        note: 'SA clean-scan auto-approved: clean never-flagged never-edited trip',
       });
       fbWrite('PUT', 'tmTripStatus/' + cand.cid + '/' + cand.rawKey + '/events/' + ek, ev, () => {
         stampAndUpsertBatch(cand.councilId, cand.cid, cand.rawKey, who, trip, cb);

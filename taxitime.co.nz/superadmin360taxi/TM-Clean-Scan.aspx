@@ -23,7 +23,7 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
 .notice{padding:12px 16px;background:#E3F2FD;border-left:4px solid #1565C0;font-size:13px;color:#0D47A1;margin:0}
 .filt{padding:16px 18px;display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
 .filt label{display:block;font-size:11px;color:#666;margin-bottom:3px}
-.filt input,.filt select{padding:7px 9px;border:1px solid #ddd;border-radius:4px;font-size:13px}
+.filt input,.filt select{padding:7px 9px;border:1px solid #ddd;border-radius:4px;font-size:13px;min-width:180px}
 #scan-out{padding:16px 18px;font-family:monospace;font-size:12px;white-space:pre-wrap;background:#FAFAFA;min-height:80px}
 </style>
 <link href="assets/css/bw-theme.css" rel="stylesheet"/>
@@ -45,12 +45,12 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
 </ul></div></aside>
 <div id="page_content"><div id="page_content_inner">
 <div class="tm-wrap">
-  <div class="notice">Walks all companies/trips, runs anomaly scan, auto-approves <strong>submitted + clean + never-flagged</strong> into claim batches (addendum-aware). Council Trips UI is unchanged.</div>
+  <div class="notice">Walks currently submitted trips (no date window by design), runs anomaly scan, auto-approves <strong>submitted + clean + never-flagged + never-edited</strong> into claim batches. Council Trips UI is unchanged.</div>
   <div class="tm-card" style="margin-top:16px">
     <div class="tm-bar"><h3>Run SA clean-trip scan</h3></div>
     <div class="filt">
-      <div><label>Council ID (optional)</label><input id="scan-council" placeholder="cncl_…"/></div>
-      <div><label>Company ID (optional)</label><input id="scan-company" placeholder="860869"/></div>
+      <div><label>Council (optional)</label><select id="scan-council"><option value="">All councils</option></select></div>
+      <div><label>Company (optional)</label><select id="scan-company"><option value="">All companies</option></select></div>
       <div>
         <button class="tm-btn sec" onclick="runScan(true)">Dry run</button>
         <button class="tm-btn" onclick="runScan(false)">Run scan</button>
@@ -63,6 +63,24 @@ firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDom
 <script src="assets/js/common.min.js"></script>
 <script src="assets/js/tm-helpers.js"></script>
 <script>
+window._fbOnLogin = function() {
+  Promise.all([adminRead('tmConfig'), adminRead('superClients')]).then(function(res) {
+    var councils = res[0] || {};
+    var companies = res[1] || {};
+    var cOpts = '<option value="">All councils</option>';
+    Object.keys(councils).sort().forEach(function(id) {
+      cOpts += '<option value="'+id+'">'+(councils[id].name||id)+'</option>';
+    });
+    document.getElementById('scan-council').innerHTML = cOpts;
+    var coOpts = '<option value="">All companies</option>';
+    Object.keys(companies).sort(function(a,b){
+      return String(companies[a].name||a).localeCompare(String(companies[b].name||b));
+    }).forEach(function(id) {
+      coOpts += '<option value="'+id+'">'+(companies[id].name||id)+'</option>';
+    });
+    document.getElementById('scan-company').innerHTML = coOpts;
+  });
+};
 function saApi(method, path, body){
   var user = firebase.auth().currentUser;
   if(!user) return Promise.reject(new Error('Not signed in'));

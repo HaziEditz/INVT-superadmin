@@ -24,10 +24,24 @@ function tripWasEverFlagged(trip) {
   }
   return false;
 }
+function tripWasEverEdited(trip) {
+  const editedAt = trip?.editedAt;
+  if (editedAt != null && editedAt !== '' && Number(editedAt) !== 0) return true;
+  const events = trip?.events;
+  if (events && typeof events === 'object') {
+    for (const ev of Object.values(events)) {
+      if (!ev || typeof ev !== 'object') continue;
+      const type = String(ev.type || '').trim().toLowerCase();
+      if (type === 'owner_edited' || type === 'council_edited' || type === 'sa_edited') return true;
+    }
+  }
+  return false;
+}
 function shouldAutoApproveCleanTrip(trip) {
   if (!trip || typeof trip !== 'object') return false;
   if (String(trip.status || '').trim().toLowerCase() !== 'submitted') return false;
   if (tripWasEverFlagged(trip)) return false;
+  if (tripWasEverEdited(trip)) return false;
   const reasons = Array.isArray(trip.flagReasons)
     ? trip.flagReasons.map((r) => String(r || '').trim()).filter(Boolean)
     : [];
@@ -80,10 +94,18 @@ test('planCleanAutoApprovals picks only submitted clean never-flagged', () => {
       status: 'pending',
       flagReasons: [],
     },
+    {
+      _cid: '860869',
+      _rawKey: 'd',
+      councilId: 'cncl_a',
+      status: 'submitted',
+      flagReasons: [],
+      events: { e1: { type: 'owner_edited' } },
+    },
   ]);
   assert.equal(plan.candidates.length, 1);
   assert.equal(plan.candidates[0].rawKey, 'a');
-  assert.equal(plan.scanned, 3);
+  assert.equal(plan.scanned, 4);
 });
 
 test('SA clean-scan lib + route wiring', () => {

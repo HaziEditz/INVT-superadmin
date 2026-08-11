@@ -413,6 +413,7 @@ function loadCouncilTrips(councilId: string, cb: (err: any, trips: any[]) => voi
             resubmittedBy: st.resubmittedBy || null,
             restoredAt: st.restoredAt || null,
             events: st.events || null,
+            editedAt: st.editedAt || null,
             platformFeeCouncil: st.platformFeeCouncil ?? null,
             platformFeeCompany: st.platformFeeCompany ?? null,
             platformFeeStampAt: st.platformFeeStampAt ?? null,
@@ -663,7 +664,7 @@ function autoApproveCleanNeverFlaggedTrips(trips: any[], cb: (updated: any[]) =>
             byRole: 'system',
             fromStatus: 'submitted',
             toStatus: 'approved',
-            note: 'Auto-approved: clean trip with no prior flags',
+            note: 'Auto-approved: clean trip with no prior flags or edits',
           }),
           () => {
             afterCouncilApproveAddToBatch(councilId, cid, rawKey, who, t, () => {
@@ -1147,18 +1148,21 @@ router.post('/api/council-trip-edit', (req, res) => {
     const fieldsChanged = Object.keys(patch);
     const who = sess.name || sess.councilId;
     const emitEditedAndRedirect = (okMsg: string) => {
-      appendTripEvent(
-        tripCid,
-        tripRawKey,
-        buildTripEvent('council_edited', {
-          by: who,
-          byRole: 'council',
-          fieldsChanged: fieldsChanged.length ? fieldsChanged : null,
-        }),
-        () => {
-          res.redirect(base + '&msg=' + encodeURIComponent(okMsg) + '&mt=ok');
-        },
-      );
+      const editedAt = Date.now();
+      fbWrite('PATCH', 'tmTripStatus/' + tripCid + '/' + tripRawKey, { editedAt }, () => {
+        appendTripEvent(
+          tripCid,
+          tripRawKey,
+          buildTripEvent('council_edited', {
+            by: who,
+            byRole: 'council',
+            fieldsChanged: fieldsChanged.length ? fieldsChanged : null,
+          }),
+          () => {
+            res.redirect(base + '&msg=' + encodeURIComponent(okMsg) + '&mt=ok');
+          },
+        );
+      });
     };
     const finish = () => {
       if (!resubmit) {

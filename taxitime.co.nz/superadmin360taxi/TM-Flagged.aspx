@@ -52,7 +52,7 @@ firebase.initializeApp(config);
 .tm-msg{margin-top:8px;font-size:13px}.tm-msg.ok{color:#2E7D32}.tm-msg.err{color:#C62828}
 .fc{display:inline-block;background:#FFEBEE;color:#C62828;border:1px solid #FFCDD2;border-radius:10px;padding:1px 7px;font-size:11px;font-weight:600;margin:1px}
 .filt{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:11px 18px;background:#fafafa;border-bottom:1px solid #f0f0f0}
-.filt select{padding:6px 9px;border:1px solid #ddd;border-radius:4px;font-size:13px}
+.filt select,.filt input[type=date]{padding:6px 9px;border:1px solid #ddd;border-radius:4px;font-size:13px}
 </style>
 <link href="assets/css/bw-theme.css" rel="stylesheet"/>
 </head>
@@ -161,6 +161,7 @@ firebase.initializeApp(config);
   </div>
   <div class="filt">
     <select id="fl-f-council" onchange="renderFL()"><option value="">All Councils</option></select>
+    <select id="fl-f-company" onchange="renderFL()"><option value="">All Companies</option></select>
     <select id="fl-f-reason" onchange="renderFL()">
       <option value="">All Flag Reasons</option>
       <option value="waiting_charged">Waiting Charged</option>
@@ -181,6 +182,8 @@ firebase.initializeApp(config);
       <option value="company_approved">Awaiting Council</option>
       <option value="rejected">Rejected by Council</option>
     </select>
+    <input type="date" id="fl-f-from" onchange="renderFL()" title="From"/>
+    <input type="date" id="fl-f-to" onchange="renderFL()" title="To"/>
   </div>
   <div style="overflow-x:auto">
     <table class="tm-tbl">
@@ -226,15 +229,35 @@ firebase.initializeApp(config);
 <script src="assets/js/altair_admin_common.min.js"></script>
 <script src="assets/js/tm-helpers.js"></script>
 <script>
-var flData = {}, flAllTM = {}, flCouncils = {}, flEid = null;
+var flData = {}, flAllTM = {}, flCouncils = {}, flCompanies = {}, flEid = null;
 window._fbOnLogin = function() {
-  adminRead('tmConfig').then(function(d) { flCouncils = d || {}; populateFLCouncils(); });
+  Promise.all([adminRead('tmConfig'), adminRead('superClients')]).then(function(res) {
+    flCouncils = res[0] || {};
+    flCompanies = res[1] || {};
+    populateFLCouncils();
+  });
   loadFL();
 };
 function populateFLCouncils() {
   var o = '<option value="">All Councils</option>';
   Object.entries(flCouncils).forEach(function(kv) { o += '<option value="' + kv[0] + '">' + ((kv[1].name) || kv[0]) + '</option>'; });
   document.getElementById('fl-f-council').innerHTML = o;
+}
+function populateFLCompanies() {
+  var sel = document.getElementById('fl-f-company');
+  if (!sel) return;
+  var old = sel.value;
+  var map = {};
+  Object.keys(flData).forEach(function(id) {
+    var cid = String((flData[id] && flData[id]._cid) || '').trim();
+    if (!cid) return;
+    map[cid] = (flCompanies[cid] && (flCompanies[cid].name || flCompanies[cid].companyName)) || ('Operator ' + cid);
+  });
+  var o = '<option value="">All Companies</option>';
+  Object.keys(map).sort(function(a,b){ return map[a].localeCompare(map[b]); }).forEach(function(cid) {
+    o += '<option value="' + cid + '"' + (cid === old ? ' selected' : '') + '>' + map[cid] + '</option>';
+  });
+  sel.innerHTML = o;
 }
 function mapTMTripFL(j, cid, rawKey) {
   return {
@@ -288,8 +311,9 @@ function loadFL() {
         var flaggedStatuses = ['flagged','company_approved','rejected','revision_needed'];
         if (flaggedStatuses.indexOf(t.status) !== -1) flData[id] = t;
       });
+      populateFLCompanies();
       renderFL();
-    }).catch(function() { renderFL(); });
+    }).catch(function() { populateFLCompanies(); renderFL(); });
   }).catch(function() { renderFL(); });
 }
 function refreshFL() {
@@ -298,13 +322,20 @@ function refreshFL() {
 }
 function renderFL() {
   var fC = document.getElementById('fl-f-council').value;
+  var fCo = document.getElementById('fl-f-company') ? document.getElementById('fl-f-company').value : '';
   var fR = document.getElementById('fl-f-reason').value;
   var fSt = document.getElementById('fl-f-stage').value;
+  var fFrom = document.getElementById('fl-f-from') ? document.getElementById('fl-f-from').value : '';
+  var fTo = document.getElementById('fl-f-to') ? document.getElementById('fl-f-to').value : '';
   var entries = Object.entries(flData).filter(function(kv) {
     var t = kv[1];
     if (fC && t.councilId !== fC) return false;
+    if (fCo && String(t._cid || '') !== fCo) return false;
     if (fR && !(t.flagReasons || []).includes(fR)) return false;
     if (fSt && t.status !== fSt) return false;
+    var day = t.startTime ? String(t.startTime).slice(0, 10) : '';
+    if (fFrom && day && day < fFrom) return false;
+    if (fTo && day && day > fTo) return false;
     return true;
   });
   entries.sort(function(a,b) { return tripActivityMs(b[1]) - tripActivityMs(a[1]); });
@@ -375,9 +406,22 @@ function saveFL(doApprove) {
   };
   var t = flData[id] || {};
   var path = 'tmTripStatus/' + t._cid + '/' + t._rawKey;
+  var editedAt = Date.now();
+  updates.editedAt = editedAt;
   adminWrite(path, 'PATCH', updates)
     .then(function() {
       Object.assign(flData[id], updates);
+      var ek = '-e' + editedAt + '_' + Math.random().toString(36).slice(2, 7);
+      return adminWrite('tmTripStatus/' + t._cid + '/' + t._rawKey + '/events/' + ek, 'PUT', {
+        at: editedAt,
+        type: 'council_edited',
+        by: 'SA',
+        byRole: 'sa',
+        toStatus: updates.status,
+        note: updates.resolutionNote || null
+      }).catch(function() {});
+    })
+    .then(function() {
       if (doApprove) { delete flData[id]; }
       renderFL(); closeFLEdit(); toastr.success('Trip updated.');
     }).catch(function(e) { flMsg('Save failed: ' + e, false); });

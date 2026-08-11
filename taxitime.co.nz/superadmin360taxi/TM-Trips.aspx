@@ -165,6 +165,7 @@ firebase.initializeApp(config);
   </div>
   <div class="filt">
     <select id="tt-f-council" onchange="renderTT()"><option value="">All Councils</option></select>
+    <select id="tt-f-company" onchange="renderTT()"><option value="">All Companies</option></select>
     <select id="tt-f-status" onchange="renderTT()">
       <option value="">All Statuses</option>
       <option value="pending">Pending</option>
@@ -238,14 +239,16 @@ firebase.initializeApp(config);
 <script src="assets/js/altair_admin_common.min.js"></script>
 <script src="assets/js/tm-helpers.js"></script>
 <script>
-var ttData = {}, ttCouncils = {}, ttCards = {}, tmStatuses = {};
+var ttData = {}, ttCouncils = {}, ttCards = {}, tmStatuses = {}, ttCompanies = {};
 window._fbOnLogin = function() {
   Promise.all([
     adminRead('tmConfig'),
-    adminRead('tmCards')
+    adminRead('tmCards'),
+    adminRead('superClients')
   ]).then(function(res) {
     ttCouncils = res[0] || {};
     ttCards    = res[1] || {};
+    ttCompanies = res[2] || {};
     populateTTCouncils();
     loadTT();
   });
@@ -254,6 +257,23 @@ function populateTTCouncils() {
   var o = '<option value="">All Councils</option>';
   Object.entries(ttCouncils).forEach(function(kv) { o += '<option value="' + kv[0] + '">' + ((kv[1].name) || kv[0]) + '</option>'; });
   document.getElementById('tt-f-council').innerHTML = o;
+}
+function populateTTCompanies() {
+  var sel = document.getElementById('tt-f-company');
+  if (!sel) return;
+  var old = sel.value;
+  var map = {};
+  Object.keys(ttData).forEach(function(id) {
+    var cid = String((ttData[id] && ttData[id]._cid) || '').trim();
+    if (!cid) return;
+    var name = (ttCompanies[cid] && (ttCompanies[cid].name || ttCompanies[cid].companyName)) || ('Operator ' + cid);
+    map[cid] = name;
+  });
+  var o = '<option value="">All Companies</option>';
+  Object.keys(map).sort(function(a,b){ return map[a].localeCompare(map[b]); }).forEach(function(cid) {
+    o += '<option value="' + cid + '"' + (cid === old ? ' selected' : '') + '>' + map[cid] + '</option>';
+  });
+  sel.innerHTML = o;
 }
 
 function calcTMSubsidy(meterFare, councilId) {
@@ -443,7 +463,8 @@ function loadTT() {
         }
       });
       renderTT();
-    }).catch(function() { renderTT(); });
+      populateTTCompanies();
+    }).catch(function() { renderTT(); populateTTCompanies(); });
   }).catch(function() {
     document.getElementById('tt-tb').innerHTML = '<tr><td colspan="15" style="text-align:center;padding:40px;color:#C62828">Error loading trips.</td></tr>';
   });
@@ -454,12 +475,13 @@ function refreshTT() {
 }
 
 function clearTTFilters() {
-  ['tt-f-council','tt-f-status'].forEach(function(x) { document.getElementById(x).value = ''; });
-  ['tt-f-from','tt-f-to','tt-f-search'].forEach(function(x) { document.getElementById(x).value = ''; });
+  ['tt-f-council','tt-f-company','tt-f-status'].forEach(function(x) { var el=document.getElementById(x); if(el) el.value = ''; });
+  ['tt-f-from','tt-f-to','tt-f-search'].forEach(function(x) { var el=document.getElementById(x); if(el) el.value = ''; });
   renderTT();
 }
 function renderTT() {
   var fC = document.getElementById('tt-f-council').value;
+  var fCo = document.getElementById('tt-f-company') ? document.getElementById('tt-f-company').value : '';
   var fS = document.getElementById('tt-f-status').value;
   var fFrom = document.getElementById('tt-f-from').value;
   var fTo = document.getElementById('tt-f-to').value;
@@ -467,6 +489,7 @@ function renderTT() {
   var entries = Object.entries(ttData).filter(function(kv) {
     var t = kv[1];
     if (fC && t.councilId !== fC) return false;
+    if (fCo && String(t._cid || '') !== fCo) return false;
     if (fS && t.status !== fS) return false;
     if (fFrom && t.startTime && _tzToDate(t.startTime) < fFrom) return false;
     if (fTo && t.startTime && _tzToDate(t.startTime) > fTo) return false;

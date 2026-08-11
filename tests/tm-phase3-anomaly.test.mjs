@@ -236,11 +236,25 @@ function tripWasEverFlagged(trip) {
   }
   return false;
 }
+function tripWasEverEdited(trip) {
+  const editedAt = trip?.editedAt;
+  if (editedAt != null && editedAt !== '' && Number(editedAt) !== 0) return true;
+  const events = trip?.events;
+  if (events && typeof events === 'object') {
+    for (const ev of Object.values(events)) {
+      if (!ev || typeof ev !== 'object') continue;
+      const type = String(ev.type || '').trim().toLowerCase();
+      if (type === 'owner_edited' || type === 'council_edited' || type === 'sa_edited') return true;
+    }
+  }
+  return false;
+}
 function shouldAutoApproveCleanTrip(trip) {
   if (!trip || typeof trip !== 'object') return false;
   const st = String(trip.status || '').trim().toLowerCase();
   if (st !== 'submitted') return false;
   if (tripWasEverFlagged(trip)) return false;
+  if (tripWasEverEdited(trip)) return false;
   const reasons = Array.isArray(trip.flagReasons)
     ? trip.flagReasons.map((r) => String(r || '').trim()).filter(Boolean)
     : [];
@@ -574,10 +588,39 @@ test('shouldAutoApproveCleanTrip: previously flagged then cleared still requires
   assert.equal(shouldAutoApproveCleanTrip({ status: 'flagged', flagReasons: [] }), false);
 });
 
+test('shouldAutoApproveCleanTrip: previously edited clean trip still requires manual approval', () => {
+  assert.equal(
+    shouldAutoApproveCleanTrip({
+      status: 'submitted',
+      flagReasons: [],
+      anomalyDetail: null,
+      editedAt: 99,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldAutoApproveCleanTrip({
+      status: 'submitted',
+      flagReasons: [],
+      events: { e1: { type: 'owner_edited', at: 1 } },
+    }),
+    false,
+  );
+  assert.equal(
+    shouldAutoApproveCleanTrip({
+      status: 'submitted',
+      flagReasons: [],
+      events: { e1: { type: 'council_edited', at: 1 } },
+    }),
+    false,
+  );
+});
+
 test('tmAnomaly source exports claim helper and rules', () => {
   assert.match(anomalySrc, /export function isClaimEligibleStatus/);
   assert.match(anomalySrc, /export function shouldAutoApproveCleanTrip/);
   assert.match(anomalySrc, /export function tripWasEverFlagged/);
+  assert.match(anomalySrc, /export function tripWasEverEdited/);
   assert.match(anomalySrc, /same_card_reuse_3min/);
   assert.match(anomalySrc, /same_card_same_time_diff_taxi/);
   assert.match(anomalySrc, /applyAnomalyScan/);

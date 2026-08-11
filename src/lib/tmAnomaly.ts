@@ -437,12 +437,40 @@ export function tripWasEverFlagged(
 }
 
 /**
- * Clean submitted trips that have never been flagged may auto-approve into the claim batch.
- * Previously-flagged trips (even if now clean) still require manual council approval.
+ * True if this trip was ever edited by owner/council/SA (even if later clean).
+ * Uses editedAt and event log — does not change edit UI or detection rules.
+ */
+export function tripWasEverEdited(
+  trip: AnomalyTripLike & {
+    editedAt?: unknown;
+    events?: Record<string, unknown> | null;
+  },
+): boolean {
+  const editedAt = trip?.editedAt;
+  if (editedAt != null && editedAt !== '' && Number(editedAt) !== 0) return true;
+  const events = trip?.events;
+  if (events && typeof events === 'object') {
+    for (const ev of Object.values(events)) {
+      if (!ev || typeof ev !== 'object') continue;
+      const type = String((ev as { type?: unknown }).type || '')
+        .trim()
+        .toLowerCase();
+      if (type === 'owner_edited' || type === 'council_edited' || type === 'sa_edited') {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Clean submitted trips that have never been flagged and never edited may auto-approve.
+ * Previously-flagged or edited trips (even if now clean) still require manual council approval.
  */
 export function shouldAutoApproveCleanTrip(
   trip: AnomalyTripLike & {
     flaggedAt?: unknown;
+    editedAt?: unknown;
     events?: Record<string, unknown> | null;
   },
 ): boolean {
@@ -452,6 +480,7 @@ export function shouldAutoApproveCleanTrip(
     .toLowerCase();
   if (st !== 'submitted') return false;
   if (tripWasEverFlagged(trip)) return false;
+  if (tripWasEverEdited(trip)) return false;
   const reasons = Array.isArray(trip.flagReasons)
     ? trip.flagReasons.map((r) => String(r || '').trim()).filter(Boolean)
     : [];
