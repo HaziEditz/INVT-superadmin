@@ -99,7 +99,7 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
     <b>Paid / unpaid:</b> Cash = held by driver (not owed). Card / EFTPOS / TM / Account / Hoist = company owes driver share until Mark Paid.
     Mark Paid locks that driver&rsquo;s period. Bank details are reference-only for manual transfer.<br/>
     <b>Jobs legend:</b> Done = completed &middot; Canc = cancelled &middot; Rej = rejected &middot; <b>NS = No Show</b> &middot; Tot = total.<br/>
-    <b>Sources:</b> Disp = dispatch console &middot; App = passenger app &middot; Web = website &middot; Food = food delivery &middot; Frt = freight &middot; Hail = driver app / street hail.
+    <b>Sources:</b> Disp = dispatch console &middot; App = passenger app &middot; Web = website &middot; Food = food delivery &middot; Frt = freight &middot; Hail = driver app / street hail / queue &middot; Other = recognised but unmapped &middot; Unk = missing source field.
   </div>
 
   <div class="sa-card">
@@ -146,11 +146,13 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
         <thead><tr>
           <th>Driver</th><th>Hours</th><th>Jobs</th>
           <th title="Dispatch console">Disp</th><th title="Passenger app">App</th><th title="Website">Web</th>
-          <th title="Food delivery">Food</th><th title="Freight delivery">Frt</th><th title="Driver app / street hail">Hail</th>
+          <th title="Food delivery">Food</th><th title="Freight delivery">Frt</th><th title="Driver app / street hail / queue">Hail</th>
+          <th title="Recognised source not in Disp/App/Web/Food/Frt/Hail">Other</th>
+          <th title="Missing source / bookingSource field">Unk</th>
           <th>Vehicles</th><th>Cash held</th><th>Card</th><th>EFTPOS</th><th>TM</th><th>Account</th><th>Hoist</th>
           <th>Company owes</th><th>Status</th><th>Bank</th><th></th>
         </tr></thead>
-        <tbody id="dos-tb"><tr><td colspan="20" class="empty">Choose a company to load.</td></tr></tbody>
+        <tbody id="dos-tb"><tr><td colspan="22" class="empty">Choose a company to load.</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -597,7 +599,7 @@ function dosNormalizeJobSource(job){
   if(svc.indexOf('food')>=0||raw.indexOf('food')>=0) return 'food';
   if(svc.indexOf('freight')>=0||raw.indexOf('freight')>=0||raw.indexOf('parcel')>=0) return 'freight';
   if(raw.indexOf('hail')>=0||raw.indexOf('driverapp')>=0||raw.indexOf('driver_app')>=0||raw.indexOf('driver-app')>=0||
-     raw.indexOf('driver created')>=0||raw.indexOf('street')>=0) return 'hail';
+     raw.indexOf('driver created')>=0||raw.indexOf('street')>=0||raw==='queue'||raw.indexOf('driverqueue')>=0) return 'hail';
   if(raw.indexOf('dispatch')>=0||raw.indexOf('console')>=0) return 'dispatch';
   if(raw.indexOf('web')>=0||raw.indexOf('website')>=0) return 'website';
   if(raw.indexOf('passenger')>=0||raw.indexOf('rider')>=0||raw.indexOf('pax')>=0) return 'passenger_app';
@@ -798,14 +800,14 @@ function dosIngestDriversMeta(dataRoot, dataCid, cid){
 function dosLoad(){
   var cid=document.getElementById('dos-company').value;
   if(!cid){
-    document.getElementById('dos-tb').innerHTML='<tr><td colspan="20" class="empty">Choose a company to load.</td></tr>';
+    document.getElementById('dos-tb').innerHTML='<tr><td colspan="22" class="empty">Choose a company to load.</td></tr>';
     document.getElementById('dos-stats').style.display='none';
     document.getElementById('dos-title').textContent='Select a company';
     return;
   }
   _dosPeriod=dosCurrentPeriod();
   document.getElementById('dos-title').textContent=(allCompanies[cid]&&allCompanies[cid].name||cid)+' \u2014 '+_dosPeriod.label;
-  document.getElementById('dos-tb').innerHTML='<tr><td colspan="20" class="empty">Loading\u2026</td></tr>';
+  document.getElementById('dos-tb').innerHTML='<tr><td colspan="22" class="empty">Loading\u2026</td></tr>';
 
   Promise.all([
     _fbGet('companies/'+cid+'/cardSettings').catch(function(){return {};}),
@@ -885,7 +887,8 @@ function dosLoad(){
         copy.bookingId=copy.bookingId||bid;
         var rawDid=String(copy.driverId||copy.DriverId||did||'').trim();
         if(!rawDid||rawDid===bid||rawDid===String(copy.bookingId||'')) return;
-        var canonDid=dosResolveDriverId(rawDid, canon, cid)||rawDid;
+        var canonDid=dosResolveDriverId(rawDid, canon, cid);
+        if(!canonDid) return; // rejected company/phantom ids (e.g. "0") — do not fall back
         copy.driverId=canonDid;
         var ts=dosJobTs(copy);
         if(ts>=_dosPeriod.fromMs && ts<=_dosPeriod.toMs) allJobs.push(copy);
@@ -932,7 +935,7 @@ function dosLoad(){
 
     dosRender();
   }).catch(function(e){
-    document.getElementById('dos-tb').innerHTML='<tr><td colspan="20" class="empty">Error: '+esc(e&&e.message||e)+'</td></tr>';
+    document.getElementById('dos-tb').innerHTML='<tr><td colspan="22" class="empty">Error: '+esc(e&&e.message||e)+'</td></tr>';
   });
 }
 
@@ -951,7 +954,7 @@ function dosRender(){
     '<div class="stat"><div class="v">'+dosFmtDur(workMin)+'</div><div class="l">Hours worked</div></div>';
 
   if(!rows.length){
-    document.getElementById('dos-tb').innerHTML='<tr><td colspan="20" class="empty">No driver activity in this period.</td></tr>';
+    document.getElementById('dos-tb').innerHTML='<tr><td colspan="22" class="empty">No driver activity in this period.</td></tr>';
   } else {
     document.getElementById('dos-tb').innerHTML=rows.map(function(r){
       var mark=r.locked
@@ -973,6 +976,8 @@ function dosRender(){
         '<td>'+(r.sources.food||0)+'</td>'+
         '<td>'+(r.sources.freight||0)+'</td>'+
         '<td>'+(r.sources.hail||0)+'</td>'+
+        '<td>'+(r.sources.other||0)+'</td>'+
+        '<td>'+(r.sources.unknown||0)+'</td>'+
         '<td>'+esc(r.vehicles.join(', ')||'\u2014')+'</td>'+
         '<td class="money">'+dosFormatPayWithCount(r.cashHeld, r.pay.cash.count)+'</td>'+
         '<td class="money">'+dosFormatPayWithCount(r.pay.card.owed, r.pay.card.count)+'</td>'+
@@ -1064,7 +1069,7 @@ function dosExportCsv(){
   var cid=document.getElementById('dos-company').value;
   var headers=['Company','Driver','DriverId','Period','Hours','BreakMin',
     'Done','Cancelled','Rejected','NoShow','JobsTotal',
-    'Disp','App','Web','Food','Frt','Hail','Vehicles',
+    'Disp','App','Web','Food','Frt','Hail','Other','Unknown','Vehicles',
     'CashHeld','CashCount','CardOwed','CardCount','EftposOwed','EftposCount',
     'TmTrips','TmFare','TmSubsidy','TmHoist','TmHoistUses','TmPassengerPays','TmOwed','TmPaid',
     'AccountOwed','AccountCount','HoistOwed','HoistCount',
@@ -1077,6 +1082,7 @@ function dosExportCsv(){
       (r.workMinutes/60).toFixed(1), r.breakMinutes,
       r.outcomes.completed, r.outcomes.cancelled, r.outcomes.rejected, r.outcomes.no_show, r.outcomes.total,
       r.sources.dispatch||0, r.sources.passenger_app||0, r.sources.website||0, r.sources.food||0, r.sources.freight||0, r.sources.hail||0,
+      r.sources.other||0, r.sources.unknown||0,
       r.vehicles.join(' '),
       r.cashHeld.toFixed(2), r.pay.cash.count, r.pay.card.owed.toFixed(2), r.pay.card.count,
       r.pay.eftpos.owed.toFixed(2), r.pay.eftpos.count,
