@@ -344,6 +344,8 @@ test('source uses NZ day bounds + Auckland date display (not bare Date.parse loc
   assert.match(councilSrc, /Pacific\/Auckland/);
   assert.match(councilSrc, /function tripHistoryHtml/);
   assert.match(councilSrc, /formatNzDateTime\(e\.at\)/);
+  assert.match(councilSrc, /hist-tz:Pacific\/Auckland/);
+  assert.match(councilSrc, /\/api\/council-tz-check/);
   assert.doesNotMatch(
     councilSrc.slice(councilSrc.indexOf('function tripHistoryHtml'), councilSrc.indexOf('function companyFilterOptionsHtml')),
     /toLocaleString\('en-NZ'\)/,

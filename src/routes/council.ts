@@ -459,7 +459,7 @@ function tripHistoryHtml(stOrTrip: any): string {
 </div>`;
     })
     .join('');
-  return `<div class="cp-timeline"><div class="cp-timeline-hd">History</div>${items}</div>`;
+  return `<div class="cp-timeline"><!-- hist-tz:Pacific/Auckland --><div class="cp-timeline-hd">History</div>${items}</div>`;
 }
 
 function companyFilterOptionsHtml(trips: any[], selected: string): string {
@@ -906,6 +906,18 @@ router.get('/api/council-geocode', (req, res) => {
     if (err && !ll) return res.status(502).json({ error: 'geocode_failed', detail: err });
     if (!ll) return res.json({ lat: null, lon: null });
     res.json({ lat: ll.lat, lon: ll.lon });
+  });
+});
+
+/** Public TZ stamp — same formatter as trip History (no secrets). */
+router.get('/api/council-tz-check', (req, res) => {
+  const atRaw = req.query.at != null ? Number(req.query.at) : 1786542075684;
+  const at = Number.isFinite(atRaw) && atRaw > 0 ? atRaw : 1786542075684;
+  res.json({
+    v: 'hist-tz-auckland-v1',
+    at,
+    auckland: formatNzDateTime(at),
+    dateOnly: formatNzDate(at),
   });
 });
 
