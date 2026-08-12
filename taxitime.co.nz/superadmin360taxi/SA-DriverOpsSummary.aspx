@@ -3,7 +3,7 @@
 <head id="Head1"><meta charset="utf-8"/><title>Driver Ops &amp; Payments &mdash; BookaWaka Admin</title>
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate"/>
 <meta http-equiv="Pragma" content="no-cache"/>
-<meta name="dos-build" content="track-c-v3-tm-subsidy"/>
+<meta name="dos-build" content="track-c-v4-eff-pct"/>
 <link rel="icon" href="assets/img/bw-logo.png"/>
 <script src="assets/js/jquery.min.js"></script>
 <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet"/>
@@ -109,7 +109,7 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
 
 <div id="page_content"><div id="page_content_inner">
 <div class="sa-wrap">
-  <h2 style="font-size:18px;font-weight:700;margin-bottom:4px">Driver Ops &amp; Payment Summary <span class="build-stamp" id="dos-build-stamp">Track C · TM subsidy owed</span></h2>
+  <h2 style="font-size:18px;font-weight:700;margin-bottom:4px">Driver Ops &amp; Payment Summary <span class="build-stamp" id="dos-build-stamp">Track C · eff. TM %</span></h2>
   <p style="font-size:13px;color:#888;margin-bottom:14px">Company-scoped view of what each company owes its drivers. Same rules as the owner panel.</p>
 
   <div class="hint">
@@ -786,8 +786,6 @@ function dosBuildDriverSummaryRow(opts){
   var sources=dosEmptySourceTotals();
   var tmDetail=dosEmptyTmDetail();
   var vehicles={};
-  var pctSamples=[];
-  var paxPctSamples=[];
   jobs.forEach(function(job){
     var outcome=dosNormalizeJobOutcome(job.jobstatus||job.JobStatus||job.status||job.Status||'');
     outcomes[outcome]=(outcomes[outcome]||0)+1; outcomes.total++;
@@ -803,8 +801,6 @@ function dosBuildDriverSummaryRow(opts){
       tmDetail.fare+=parts.fare; tmDetail.subsidy+=parts.subsidy; tmDetail.hoist+=parts.hoistAmt; tmDetail.passengerPays+=parts.passengerPays;
       var uses=parseInt(job.hoistUses||job.HoistUses||job.hoistCount||job.tmHoistCount||0,10)||0;
       tmDetail.hoistUses+=uses;
-      if(parts.councilPct!=null) pctSamples.push(parts.councilPct);
-      if(parts.passengerPct!=null) paxPctSamples.push(parts.passengerPct);
     }
     dosJobPaymentLines(job, cardSettings).forEach(function(line){
       var b=line.bucket;
@@ -813,9 +809,12 @@ function dosBuildDriverSummaryRow(opts){
       if(b==='hoist' && line.uses) pay.hoist.uses=(pay.hoist.uses||0)+line.uses;
     });
   });
-  if(pctSamples.length){ tmDetail.councilPct=Math.round((pctSamples.reduce(function(a,b){return a+b;},0)/pctSamples.length)*10)/10; }
-  if(paxPctSamples.length){ tmDetail.passengerPct=Math.round((paxPctSamples.reduce(function(a,b){return a+b;},0)/paxPctSamples.length)*10)/10; }
-  else if(tmDetail.councilPct!=null){ tmDetail.passengerPct=Math.round((100-tmDetail.councilPct)*10)/10; }
+  // Dollar-effective meter split (excludes hoist). Not Council Config / not per-trip avg.
+  var meterSplitBase=tmDetail.subsidy+tmDetail.passengerPays;
+  if(meterSplitBase>0.009){
+    tmDetail.councilPct=Math.round((tmDetail.subsidy/meterSplitBase)*1000)/10;
+    tmDetail.passengerPct=Math.round((100-tmDetail.councilPct)*10)/10;
+  }
   tmDetail.owed=Math.round((pay.tm.owed+pay.hoist.owed)*100)/100;
   tmDetail.fare=Math.round(tmDetail.fare*100)/100;
   tmDetail.subsidy=Math.round(tmDetail.subsidy*100)/100;
@@ -1119,8 +1118,8 @@ function dosRender(){
       var t=r.tmDetail;
       var tmMain=t.trips?dosFormatPayWithCount(r.tmLocked?t.paid:t.owed, t.trips):'$0.00';
       var tmPctBits=[];
-      if(t.councilPct!=null) tmPctBits.push('Council '+t.councilPct+'%');
-      if(t.passengerPct!=null) tmPctBits.push('Pax '+t.passengerPct+'%');
+      if(t.councilPct!=null) tmPctBits.push('Council eff. '+t.councilPct+'%');
+      if(t.passengerPct!=null) tmPctBits.push('Pax eff. '+t.passengerPct+'%');
       var tmSub=t.trips?('Sub '+money(t.subsidy)+' \u00b7 Hoist '+money(t.hoist)+(tmPctBits.length?' \u00b7 '+tmPctBits.join(' / '):'')+(t.passengerPays?' \u00b7 Pax '+money(t.passengerPays):'')):'';
       function lockedNote(before){ return ' <span class="dos-sub" style="color:#2E7D32">('+money(before)+' locked)</span>'; }
       return '<tr>'+
@@ -1177,9 +1176,9 @@ function dosOpenDetail(driverId){
   html+='<div class="sa-kv" style="border-top:1px solid #eee;padding-top:10px;margin-top:4px">'+
     '<div><div class="k">TM trips</div><div class="val">'+t.trips+'</div></div>'+
     '<div><div class="k">TM fare</div><div class="val">'+money(t.fare)+'</div></div>'+
-    '<div><div class="k">TM subsidy</div><div class="val">'+money(t.subsidy)+(t.councilPct!=null?' ('+t.councilPct+'%)':'')+'</div></div>'+
+    '<div><div class="k">TM subsidy</div><div class="val">'+money(t.subsidy)+(t.councilPct!=null?' (eff. '+t.councilPct+'%)':'')+'</div></div>'+
     '<div><div class="k">TM hoist</div><div class="val">'+money(t.hoist)+(t.hoistUses?' \u00d7'+t.hoistUses:'')+'</div></div>'+
-    '<div><div class="k">Pax pays</div><div class="val">'+money(t.passengerPays||0)+(t.passengerPct!=null?' ('+t.passengerPct+'%)':'')+'</div></div>'+
+    '<div><div class="k">Pax pays</div><div class="val">'+money(t.passengerPays||0)+(t.passengerPct!=null?' (eff. '+t.passengerPct+'%)':'')+'</div></div>'+
     '<div><div class="k">TM owed</div><div class="val" style="color:#E65100">'+money(t.owed)+'</div></div>'+
     '<div><div class="k">TM paid</div><div class="val" style="color:#2E7D32">'+money(t.paid)+'</div></div>'+
   '</div>';
