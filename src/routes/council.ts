@@ -918,6 +918,7 @@ router.get('/api/council-tz-check', (req, res) => {
     at,
     auckland: formatNzDateTime(at),
     dateOnly: formatNzDate(at),
+    batchesUi: 'advanced-repair-collapsed',
   });
 });
 
@@ -3206,9 +3207,13 @@ ${(() => {
   const defaultYm = new Date().toISOString().slice(0, 7);
   const companyOpts = companyFilterOptionsHtml(councilTrips || [], filterCompany);
   const approvedCount = (councilTrips || []).filter((t: any) => isClaimEligibleStatus(t.status)).length;
-  return `<div class="cp-card" style="margin-bottom:16px;border:1px dashed #A5D6A7">
-  <div class="cp-card-bd">
-    <div style="font-size:13px;font-weight:700;color:#1B5E20;margin-bottom:6px">Rebuild / submit batch <span style="font-weight:500;color:#888;font-size:11.5px">(repair)</span></div>
+  return `<details class="cp-card" style="margin-bottom:16px;border:1px dashed #BDBDBD;background:#FAFAFA">
+  <summary style="cursor:pointer;padding:12px 16px;font-size:13px;font-weight:700;color:#616161;list-style:none;display:flex;align-items:center;gap:8px">
+    <span style="font-size:11px;color:#9E9E9E">▸</span> Advanced / Repair
+    <span style="font-weight:500;color:#9E9E9E;font-size:11.5px">— rebuild or refresh open claim batches (not for everyday use)</span>
+  </summary>
+  <div class="cp-card-bd" style="border-top:1px solid #EEEEEE;padding-top:12px">
+    <div style="font-size:13px;font-weight:700;color:#1B5E20;margin-bottom:6px">Rebuild / submit batch</div>
     <p style="font-size:12.5px;color:#666;margin:0 0 10px">Approving a trip automatically adds it to that month&rsquo;s Submitted batch. Use this only to rebuild or refresh open batches from all <strong>approved</strong> trips (${approvedCount} claim-eligible trip${approvedCount === 1 ? '' : 's'} loaded).</p>
     <form method="POST" action="/api/council-batch-create" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
       <input type="hidden" name="_token" value="${esc(token)}"/>
@@ -3230,7 +3235,7 @@ ${(() => {
       <button type="submit" class="cp-btn cp-btn-g">Rebuild / submit batch</button>
     </form>
   </div>
-</div>`;
+</details>`;
 })()}
 <div class="cp-stats" style="margin-bottom:18px">
   <div class="cp-stat"><div class="cp-stat-v">${submitted.length}</div><div class="cp-stat-l">Awaiting Approval</div></div>
