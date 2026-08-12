@@ -667,10 +667,12 @@ function dosJobPaymentLines(job, cardSettings){
   var lines=[];
   var main=dosCompanyOwesDriver(fare, pm, cardSettings);
   if(dosIsTmJob(job)){
-    if(main.bucket==='cash'||main.bucket==='eftpos'||main.bucket==='account'){
-      lines.push({kind:'main', bucket:main.bucket, gross:main.gross, owed:0, commission:0});
-    }
+    // Remainder gross = passenger portion only (council subsidy is not cash/EFTPOS/Account held).
     var parts=dosTmSubsidyParts(job);
+    if(main.bucket==='cash'||main.bucket==='eftpos'||main.bucket==='account'){
+      var paxGross=parts.passengerPays>0?parts.passengerPays:Math.max(0,Math.round((parts.fare-parts.hoistAmt-parts.subsidy)*100)/100);
+      lines.push({kind:'main', bucket:main.bucket, gross:paxGross, owed:0, commission:0});
+    }
     if(parts.subsidy>0){
       lines.push({kind:'tm_subsidy', bucket:'tm', gross:parts.subsidy, owed:parts.subsidy, commission:0});
     }
