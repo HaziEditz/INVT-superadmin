@@ -1,6 +1,9 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head id="Head1"><meta charset="utf-8"/><title>Driver Ops &amp; Payments &mdash; BookaWaka Admin</title>
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate"/>
+<meta http-equiv="Pragma" content="no-cache"/>
+<meta name="dos-build" content="track-c-v2-layout"/>
 <link rel="icon" href="assets/img/bw-logo.png"/>
 <script src="assets/js/jquery.min.js"></script>
 <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet"/>
@@ -34,13 +37,26 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
 .stat{background:#fafafa;border:1px solid #eee;border-radius:8px;padding:10px 12px}
 .stat .v{font-size:18px;font-weight:800;color:#00695C}.stat .v.owed{color:#E65100}.stat .l{font-size:10px;color:#9e9e9e;text-transform:uppercase;font-weight:700;margin-top:2px}
 .tbl-wrap{overflow-x:auto;max-height:640px;overflow-y:auto}
-.tbl{width:100%;border-collapse:collapse;font-size:12px;min-width:1900px}
-.tbl th{background:#E0F2F1;padding:9px 10px;text-align:left;font-weight:700;color:#00695C;border-bottom:2px solid #B2DFDB;white-space:nowrap}
-.tbl td{padding:8px 10px;border-bottom:1px solid #f5f5f5;vertical-align:middle}
+.tbl{width:100%;border-collapse:collapse;font-size:12px;min-width:1280px}
+.tbl th{background:#E0F2F1;padding:8px 8px;text-align:left;font-weight:700;color:#00695C;border-bottom:2px solid #B2DFDB;white-space:nowrap}
+.tbl thead tr.grp th{background:#00695C;color:#fff;border-bottom:1px solid #004D40;text-align:center;font-size:10px;letter-spacing:.04em;text-transform:uppercase;padding:6px 8px}
+.tbl thead tr.grp th.g-src{background:#455A64}
+.tbl thead tr.grp th.g-pay{background:#37474F}
+.tbl thead tr.grp th.g-owed{background:#E65100}
+.tbl thead tr.sub th{background:#F1F8F7;font-size:10px;color:#546e7a;border-bottom:2px solid #B2DFDB;text-align:center;padding:6px 6px}
+.tbl td{padding:8px 8px;border-bottom:1px solid #f0f0f0;vertical-align:middle}
+.tbl td.num,.tbl th.num{text-align:center;font-variant-numeric:tabular-nums}
+.tbl td.money,.tbl th.money-h{text-align:right;font-variant-numeric:tabular-nums}
+.tbl td.col-owed{background:#FFF8F3}
 .tbl tr:hover td{background:#F1F8F7}
+.tbl tr:hover td.col-owed{background:#FFECB3}
+.tbl td.sticky-driver,.tbl th.sticky-driver{position:sticky;left:0;z-index:1;background:#fff;box-shadow:2px 0 0 #ECEFF1}
+.tbl thead th.sticky-driver{z-index:3;background:#E0F2F1}
+.tbl thead tr.grp th.sticky-driver{background:#00695C;z-index:4}
 .money{font-weight:700;font-variant-numeric:tabular-nums}
 .owed{color:#E65100}.pill{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px}
 .pill.open{background:#FFF3E0;color:#E65100}.pill.paid{background:#E8F5E9;color:#2E7D32}.pill.partial{background:#E3F2FD;color:#1565C0}
+.build-stamp{display:inline-block;margin-left:8px;font-size:10px;font-weight:700;color:#00695C;background:#E0F2F1;border:1px solid #B2DFDB;border-radius:4px;padding:2px 6px;vertical-align:middle}
 .empty{text-align:center;padding:40px;color:#aaa}
 .bank{font-family:monospace;font-size:11px;color:#546e7a}
 .dos-sub{font-size:10px;color:#90a4ae;margin-top:2px}
@@ -93,7 +109,7 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
 
 <div id="page_content"><div id="page_content_inner">
 <div class="sa-wrap">
-  <h2 style="font-size:18px;font-weight:700;margin-bottom:4px">Driver Ops &amp; Payment Summary</h2>
+  <h2 style="font-size:18px;font-weight:700;margin-bottom:4px">Driver Ops &amp; Payment Summary <span class="build-stamp" id="dos-build-stamp">Track C · Card/TM split</span></h2>
   <p style="font-size:13px;color:#888;margin-bottom:14px">Company-scoped view of what each company owes its drivers. Same rules as the owner panel.</p>
 
   <div class="hint">
@@ -148,15 +164,39 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
     <div id="dos-stats" class="stats" style="display:none"></div>
     <div class="tbl-wrap">
       <table class="tbl">
-        <thead><tr>
-          <th>Driver</th><th>Hours</th><th>Jobs</th>
-          <th title="Dispatch console">Disp</th><th title="Passenger app">App</th><th title="Website">Web</th>
-          <th title="Food delivery">Food</th><th title="Freight delivery">Frt</th><th title="Driver app / street hail / queue">Hail</th>
-          <th title="Recognised source not in Disp/App/Web/Food/Frt/Hail">Other</th>
-          <th title="Missing source / bookingSource field">Unk</th>
-          <th>Vehicles</th><th>Cash held</th><th>Card</th><th>EFTPOS</th><th>TM</th><th>Account</th><th>Hoist</th>
-          <th>Card owes</th><th>TM owes</th><th>Total unpaid</th><th>Status</th><th>Bank</th><th></th>
-        </tr></thead>
+        <thead>
+          <tr class="grp">
+            <th class="sticky-driver" rowspan="2">Driver</th>
+            <th rowspan="2">Hours</th>
+            <th rowspan="2">Jobs</th>
+            <th class="g-src" colspan="8">Sources</th>
+            <th rowspan="2">Vehicles</th>
+            <th class="g-pay" colspan="6">Payments</th>
+            <th class="g-owed" colspan="3">Unpaid</th>
+            <th rowspan="2">Status</th>
+            <th rowspan="2">Bank</th>
+            <th rowspan="2">Actions</th>
+          </tr>
+          <tr class="sub">
+            <th class="num" title="Dispatch console">Disp</th>
+            <th class="num" title="Passenger app">App</th>
+            <th class="num" title="Website">Web</th>
+            <th class="num" title="Food delivery">Food</th>
+            <th class="num" title="Freight">Frt</th>
+            <th class="num" title="Driver app / hail / queue">Hail</th>
+            <th class="num" title="Recognised but unmapped">Oth</th>
+            <th class="num" title="Missing source">Unk</th>
+            <th class="money-h">Cash</th>
+            <th class="money-h">Card</th>
+            <th class="money-h">EFTPOS</th>
+            <th class="money-h">TM</th>
+            <th class="money-h">Account</th>
+            <th class="money-h">Hoist</th>
+            <th class="money-h">Card</th>
+            <th class="money-h">TM</th>
+            <th class="money-h">Total</th>
+          </tr>
+        </thead>
         <tbody id="dos-tb"><tr><td colspan="24" class="empty">Choose a company to load.</td></tr></tbody>
       </table>
     </div>
@@ -1017,10 +1057,10 @@ function dosRender(){
   } else {
     document.getElementById('dos-tb').innerHTML=rows.map(function(r){
       var markCard=r.cardLocked || !(r.cardOwedBeforeLock>0)
-        ? '<button class="sa-btn sa-btn-g" disabled title="'+(r.cardLocked?'Card locked':'No card owed')+'">'+(r.cardLocked?'Card paid':'Card')+'</button>'
+        ? '<button class="sa-btn sa-btn-g" disabled title="'+(r.cardLocked?'Card stream locked':'No card owed')+'">'+(r.cardLocked?'Card paid':'No card')+'</button>'
         : '<button class="sa-btn sa-btn-p" onclick="dosMarkCardPaid(\''+esc(r.driverId)+'\')">Mark Card</button>';
       var markTm=r.tmLocked || !(r.tmOwedBeforeLock>0)
-        ? '<button class="sa-btn sa-btn-g" disabled title="'+(r.tmLocked?'TM locked':'No TM owed')+'">'+(r.tmLocked?'TM paid':'TM')+'</button>'
+        ? '<button class="sa-btn sa-btn-g" disabled title="'+(r.tmLocked?'TM stream locked':'No TM owed')+'">'+(r.tmLocked?'TM paid':'No TM')+'</button>'
         : '<button class="sa-btn sa-btn-p" onclick="dosMarkTmPaid(\''+esc(r.driverId)+'\')">Mark TM</button>';
       var bank=r.accountNumber
         ? '<span class="bank" title="'+esc((r.bankName||'')+' / '+(r.accountName||''))+'">'+esc(r.accountNumber)+'</span>'
@@ -1028,18 +1068,19 @@ function dosRender(){
       var t=r.tmDetail;
       var tmMain=t.trips?dosFormatPayWithCount(r.tmLocked?t.paid:t.owed, t.trips):'$0.00';
       var tmSub=t.trips?('Sub '+money(t.subsidy)+' \u00b7 Hoist '+money(t.hoist)):'';
+      function lockedNote(before){ return ' <span class="dos-sub" style="color:#2E7D32">('+money(before)+' locked)</span>'; }
       return '<tr>'+
-        '<td><b>'+esc(r.driverName)+'</b><div class="dos-sub">'+esc(r.driverId)+'</div></td>'+
+        '<td class="sticky-driver"><b>'+esc(r.driverName)+'</b><div class="dos-sub">'+esc(r.driverId)+'</div></td>'+
         '<td>'+dosFmtDur(r.workMinutes)+'<div class="dos-sub">'+dosFmtDur(r.breakMinutes)+' brk</div></td>'+
         '<td>Done '+r.outcomes.completed+' \u00b7 Canc '+r.outcomes.cancelled+' \u00b7 Rej '+r.outcomes.rejected+' \u00b7 NS '+r.outcomes.no_show+'<div class="dos-sub">Tot '+r.outcomes.total+'</div></td>'+
-        '<td>'+(r.sources.dispatch||0)+'</td>'+
-        '<td>'+(r.sources.passenger_app||0)+'</td>'+
-        '<td>'+(r.sources.website||0)+'</td>'+
-        '<td>'+(r.sources.food||0)+'</td>'+
-        '<td>'+(r.sources.freight||0)+'</td>'+
-        '<td>'+(r.sources.hail||0)+'</td>'+
-        '<td>'+(r.sources.other||0)+'</td>'+
-        '<td>'+(r.sources.unknown||0)+'</td>'+
+        '<td class="num">'+(r.sources.dispatch||0)+'</td>'+
+        '<td class="num">'+(r.sources.passenger_app||0)+'</td>'+
+        '<td class="num">'+(r.sources.website||0)+'</td>'+
+        '<td class="num">'+(r.sources.food||0)+'</td>'+
+        '<td class="num">'+(r.sources.freight||0)+'</td>'+
+        '<td class="num">'+(r.sources.hail||0)+'</td>'+
+        '<td class="num">'+(r.sources.other||0)+'</td>'+
+        '<td class="num">'+(r.sources.unknown||0)+'</td>'+
         '<td>'+esc(r.vehicles.join(', ')||'\u2014')+'</td>'+
         '<td class="money">'+dosFormatPayWithCount(r.cashHeld, r.pay.cash.count)+'</td>'+
         '<td class="money">'+dosFormatPayWithCount(r.cardLocked?0:r.pay.card.owed, r.pay.card.count)+'</td>'+
@@ -1047,9 +1088,9 @@ function dosRender(){
         '<td class="money">'+tmMain+(tmSub?'<div class="dos-sub">'+tmSub+'</div>':'')+'</td>'+
         '<td class="money">'+dosFormatPayWithCount(r.pay.account.gross, r.pay.account.count)+'</td>'+
         '<td class="money">'+dosFormatPayWithCount(r.tmLocked?0:r.pay.hoist.owed, r.pay.hoist.count)+'</td>'+
-        '<td class="money owed">'+money(r.cardOwed)+(r.cardLocked?' <span class="dos-sub" style="color:#2E7D32">('+money(r.cardOwedBeforeLock)+')</span>':'')+'</td>'+
-        '<td class="money owed">'+money(r.tmOwed)+(r.tmLocked?' <span class="dos-sub" style="color:#2E7D32">('+money(r.tmOwedBeforeLock)+')</span>':'')+'</td>'+
-        '<td class="money owed">'+money(r.owedTotal)+'</td>'+
+        '<td class="money owed col-owed">'+money(r.cardOwed)+(r.cardLocked?lockedNote(r.cardOwedBeforeLock):'')+'</td>'+
+        '<td class="money owed col-owed">'+money(r.tmOwed)+(r.tmLocked?lockedNote(r.tmOwedBeforeLock):'')+'</td>'+
+        '<td class="money owed col-owed">'+money(r.owedTotal)+'</td>'+
         '<td><span class="pill '+r.status+'">'+dosStatusLabel(r)+'</span></td>'+
         '<td>'+bank+'</td>'+
         '<td style="white-space:nowrap"><button class="sa-btn sa-btn-g" onclick="dosOpenDetail(\''+esc(r.driverId)+'\')">Detail</button> '+markCard+' '+markTm+'</td>'+

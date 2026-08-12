@@ -151,6 +151,12 @@ app.use((req, res, next) => {
         if (e2) { next(); return; }
         const ext = path.extname(filePath).toLowerCase();
         res.setHeader('Content-Type', mimeTypes[ext] || 'application/octet-stream');
+        // HTML/ASPX panels change often — never let browsers keep a stale Driver Ops page.
+        if (ext === '.aspx' || ext === '.html') {
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
+        }
         res.end(data);
       });
       return;
@@ -163,6 +169,9 @@ app.use((req, res, next) => {
       fs.readFile(pick, (e2, data) => {
         if (e2) { next(); return; }
         res.setHeader('Content-Type', 'text/html');
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
         res.end(data);
       });
     } else {
@@ -170,6 +179,11 @@ app.use((req, res, next) => {
         if (e2) { next(); return; }
         const ext = path.extname(filePath).toLowerCase();
         res.setHeader('Content-Type', mimeTypes[ext] || 'application/octet-stream');
+        if (ext === '.aspx' || ext === '.html') {
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
+        }
         res.end(data);
       });
     }
