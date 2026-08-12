@@ -3,7 +3,7 @@
 <head id="Head1"><meta charset="utf-8"/><title>Driver Ops &amp; Payments &mdash; BookaWaka Admin</title>
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate"/>
 <meta http-equiv="Pragma" content="no-cache"/>
-<meta name="dos-build" content="track-c-v2-layout"/>
+<meta name="dos-build" content="track-c-v3-tm-subsidy"/>
 <link rel="icon" href="assets/img/bw-logo.png"/>
 <script src="assets/js/jquery.min.js"></script>
 <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet"/>
@@ -109,7 +109,7 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
 
 <div id="page_content"><div id="page_content_inner">
 <div class="sa-wrap">
-  <h2 style="font-size:18px;font-weight:700;margin-bottom:4px">Driver Ops &amp; Payment Summary <span class="build-stamp" id="dos-build-stamp">Track C · Card/TM split</span></h2>
+  <h2 style="font-size:18px;font-weight:700;margin-bottom:4px">Driver Ops &amp; Payment Summary <span class="build-stamp" id="dos-build-stamp">Track C · TM subsidy owed</span></h2>
   <p style="font-size:13px;color:#888;margin-bottom:14px">Company-scoped view of what each company owes its drivers. Same rules as the owner panel.</p>
 
   <div class="hint">
@@ -609,9 +609,55 @@ function dosCompanyOwesDriver(fareNum, paymentMethod, cardSettings){
     var owed=Math.max(0, gross-commission);
     return {bucket:bucket, gross:gross, owed:owed, commission:commission};
   }
+  // TM PaymentType alone still returns full fare — dosJobPaymentLines settles subsidy (+ hoist).
   return {bucket:bucket, gross:gross, owed:gross, commission:0};
 }
-/** Split a job into pay lines. TM economics force main bucket to tm when fare is company-settled. */
+/** Meter TM subsidy + display %. Prefer tmSubsidyFare; else combined−hoist; else fare−hoist−pax. */
+function dosTmSubsidyParts(job){
+  var fare=parseFloat(job.TotalFare||job.totalFare||job.tmTotalFare||job.Fare||job.fare||job.RideCost||job.EstimatedFare||0)||0;
+  var hoistAmt=parseFloat(job.tmSubsidyHoist||job.hoistFare||job.HoistFare||job.hoistAmount||0)||0;
+  var subsidy=0;
+  if(job.tmSubsidyFare!=null&&job.tmSubsidyFare!==''){
+    subsidy=parseFloat(job.tmSubsidyFare)||0;
+  } else {
+    var combined=parseFloat(job.tmSubsidy||job.tmCouncilPays||job.councilPays||0)||0;
+    if(combined>0){
+      subsidy=hoistAmt>0?Math.max(0, combined-hoistAmt):combined;
+    } else {
+      var hasPax=(job.tmPassengerPays!=null&&job.tmPassengerPays!=='')||
+        (job.passengerPays!=null&&job.passengerPays!=='')||
+        (job.patientPays!=null&&job.patientPays!=='');
+      if(hasPax){
+        var pax0=parseFloat(job.tmPassengerPays||job.passengerPays||job.patientPays||0)||0;
+        subsidy=Math.max(0, fare-hoistAmt-pax0);
+      }
+    }
+  }
+  subsidy=Math.round(Math.max(0, subsidy)*100)/100;
+  var pax=parseFloat(job.tmPassengerPays||job.passengerPays||job.patientPays||0)||0;
+  var meterBase=Math.max(0, fare-hoistAmt);
+  var councilPct=parseFloat(job.tmSubsidyPercent||job.subsidyPercent||job.councilPercent||job.tmPercent||'');
+  if(!isFinite(councilPct)||councilPct<=0) councilPct=null;
+  var passengerPct=parseFloat(job.tmPassengerPercent||job.passengerPercent||'');
+  if(!isFinite(passengerPct)||passengerPct<=0) passengerPct=null;
+  if(councilPct==null&&meterBase>0.009&&subsidy>0) councilPct=Math.round((subsidy/meterBase)*1000)/10;
+  if(passengerPct==null&&meterBase>0.009&&pax>0) passengerPct=Math.round((pax/meterBase)*1000)/10;
+  else if(passengerPct==null&&councilPct!=null) passengerPct=Math.round((100-councilPct)*10)/10;
+  return {
+    fare:Math.round(fare*100)/100,
+    subsidy:subsidy,
+    hoistAmt:Math.round(Math.max(0, hoistAmt)*100)/100,
+    passengerPays:Math.round(Math.max(0, pax)*100)/100,
+    meterBase:Math.round(meterBase*100)/100,
+    councilPct:councilPct,
+    passengerPct:passengerPct
+  };
+}
+/**
+ * Split a job into pay lines.
+ * TM: cash/EFTPOS/Account remainder stays $0-owed; subsidy still enters tm.owed.
+ * PaymentType===TM never owes full fare — subsidy only. Hoist is separate.
+ */
 function dosJobPaymentLines(job, cardSettings){
   cardSettings=cardSettings||{};
   var fare=parseFloat(job.TotalFare||job.totalFare||job.Fare||job.fare||job.RideCost||job.EstimatedFare||0);
@@ -620,10 +666,17 @@ function dosJobPaymentLines(job, cardSettings){
   var hoistUses=parseInt(job.hoistUses||job.HoistUses||job.hoistCount||job.tmHoistCount||0,10)||0;
   var lines=[];
   var main=dosCompanyOwesDriver(fare, pm, cardSettings);
-  if(dosIsTmJob(job) && main.bucket!=='cash' && main.bucket!=='eftpos' && main.bucket!=='account'){
-    main={bucket:'tm', gross:main.gross, owed:main.gross, commission:0};
+  if(dosIsTmJob(job)){
+    if(main.bucket==='cash'||main.bucket==='eftpos'||main.bucket==='account'){
+      lines.push({kind:'main', bucket:main.bucket, gross:main.gross, owed:0, commission:0});
+    }
+    var parts=dosTmSubsidyParts(job);
+    if(parts.subsidy>0){
+      lines.push({kind:'tm_subsidy', bucket:'tm', gross:parts.subsidy, owed:parts.subsidy, commission:0});
+    }
+  } else {
+    lines.push({kind:'main', bucket:main.bucket, gross:main.gross, owed:main.owed, commission:main.commission});
   }
-  lines.push({kind:'main', bucket:main.bucket, gross:main.gross, owed:main.owed, commission:main.commission});
   if(hoistAmt>0||hoistUses>0){
     var hGross=hoistAmt>0?hoistAmt:0;
     lines.push({kind:'hoist', bucket:'hoist', gross:hGross, owed:hGross, commission:0, uses:hoistUses});
@@ -705,7 +758,7 @@ function dosEmptyPayTotals(){
 }
 function dosEmptyOutcomeTotals(){ return {completed:0,cancelled:0,rejected:0,no_show:0,other:0,total:0}; }
 function dosEmptySourceTotals(){ return {dispatch:0,passenger_app:0,website:0,food:0,freight:0,hail:0,other:0,unknown:0}; }
-function dosEmptyTmDetail(){ return {trips:0,fare:0,subsidy:0,hoist:0,hoistUses:0,passengerPays:0,owed:0,paid:0,councilPct:null}; }
+function dosEmptyTmDetail(){ return {trips:0,fare:0,subsidy:0,hoist:0,hoistUses:0,passengerPays:0,owed:0,paid:0,councilPct:null,passengerPct:null}; }
 function dosJobTs(j){
   return dosParseTs(j.completedAt||j.CompletedAt||j.endTime||j.EndTime||j.finishTime||
     j.timestamp||j.Timestamp||j.createdAt||j.CreatedAt||j.jobDate||j.JobDate||j.dateTime||j.DateTime);
@@ -734,6 +787,7 @@ function dosBuildDriverSummaryRow(opts){
   var tmDetail=dosEmptyTmDetail();
   var vehicles={};
   var pctSamples=[];
+  var paxPctSamples=[];
   jobs.forEach(function(job){
     var outcome=dosNormalizeJobOutcome(job.jobstatus||job.JobStatus||job.status||job.Status||'');
     outcomes[outcome]=(outcomes[outcome]||0)+1; outcomes.total++;
@@ -745,17 +799,12 @@ function dosBuildDriverSummaryRow(opts){
     var tmJob=dosIsTmJob(job);
     if(tmJob){
       tmDetail.trips+=1;
-      var fare=parseFloat(job.TotalFare||job.totalFare||job.Fare||job.fare||0)||0;
-      var hoistAmt=parseFloat(job.tmSubsidyHoist||job.hoistFare||job.HoistFare||job.hoistAmount||0)||0;
-      var subsidy=(job.tmSubsidyFare!=null&&job.tmSubsidyFare!=='')?(parseFloat(job.tmSubsidyFare)||0)
-        :(parseFloat(job.tmSubsidy||job.tmCouncilPays||job.councilPays||0)||0);
-      if(subsidy>0 && hoistAmt>0 && !(job.tmSubsidyFare!=null&&job.tmSubsidyFare!=='')) subsidy=Math.max(0, subsidy-hoistAmt);
-      var pax=parseFloat(job.tmPassengerPays||job.passengerPays||job.patientPays||0)||0;
-      tmDetail.fare+=fare; tmDetail.subsidy+=subsidy; tmDetail.hoist+=hoistAmt; tmDetail.passengerPays+=pax;
+      var parts=dosTmSubsidyParts(job);
+      tmDetail.fare+=parts.fare; tmDetail.subsidy+=parts.subsidy; tmDetail.hoist+=parts.hoistAmt; tmDetail.passengerPays+=parts.passengerPays;
       var uses=parseInt(job.hoistUses||job.HoistUses||job.hoistCount||job.tmHoistCount||0,10)||0;
       tmDetail.hoistUses+=uses;
-      var pct=parseFloat(job.tmSubsidyPercent||job.subsidyPercent||job.councilPercent||job.tmPercent||'');
-      if(isFinite(pct)&&pct>0) pctSamples.push(pct);
+      if(parts.councilPct!=null) pctSamples.push(parts.councilPct);
+      if(parts.passengerPct!=null) paxPctSamples.push(parts.passengerPct);
     }
     dosJobPaymentLines(job, cardSettings).forEach(function(line){
       var b=line.bucket;
@@ -765,6 +814,8 @@ function dosBuildDriverSummaryRow(opts){
     });
   });
   if(pctSamples.length){ tmDetail.councilPct=Math.round((pctSamples.reduce(function(a,b){return a+b;},0)/pctSamples.length)*10)/10; }
+  if(paxPctSamples.length){ tmDetail.passengerPct=Math.round((paxPctSamples.reduce(function(a,b){return a+b;},0)/paxPctSamples.length)*10)/10; }
+  else if(tmDetail.councilPct!=null){ tmDetail.passengerPct=Math.round((100-tmDetail.councilPct)*10)/10; }
   tmDetail.owed=Math.round((pay.tm.owed+pay.hoist.owed)*100)/100;
   tmDetail.fare=Math.round(tmDetail.fare*100)/100;
   tmDetail.subsidy=Math.round(tmDetail.subsidy*100)/100;
@@ -1067,7 +1118,10 @@ function dosRender(){
         : '<span class="dos-zero">\u2014</span>';
       var t=r.tmDetail;
       var tmMain=t.trips?dosFormatPayWithCount(r.tmLocked?t.paid:t.owed, t.trips):'$0.00';
-      var tmSub=t.trips?('Sub '+money(t.subsidy)+' \u00b7 Hoist '+money(t.hoist)):'';
+      var tmPctBits=[];
+      if(t.councilPct!=null) tmPctBits.push('Council '+t.councilPct+'%');
+      if(t.passengerPct!=null) tmPctBits.push('Pax '+t.passengerPct+'%');
+      var tmSub=t.trips?('Sub '+money(t.subsidy)+' \u00b7 Hoist '+money(t.hoist)+(tmPctBits.length?' \u00b7 '+tmPctBits.join(' / '):'')+(t.passengerPays?' \u00b7 Pax '+money(t.passengerPays):'')):'';
       function lockedNote(before){ return ' <span class="dos-sub" style="color:#2E7D32">('+money(before)+' locked)</span>'; }
       return '<tr>'+
         '<td class="sticky-driver"><b>'+esc(r.driverName)+'</b><div class="dos-sub">'+esc(r.driverId)+'</div></td>'+
@@ -1123,8 +1177,9 @@ function dosOpenDetail(driverId){
   html+='<div class="sa-kv" style="border-top:1px solid #eee;padding-top:10px;margin-top:4px">'+
     '<div><div class="k">TM trips</div><div class="val">'+t.trips+'</div></div>'+
     '<div><div class="k">TM fare</div><div class="val">'+money(t.fare)+'</div></div>'+
-    '<div><div class="k">TM subsidy</div><div class="val">'+money(t.subsidy)+'</div></div>'+
+    '<div><div class="k">TM subsidy</div><div class="val">'+money(t.subsidy)+(t.councilPct!=null?' ('+t.councilPct+'%)':'')+'</div></div>'+
     '<div><div class="k">TM hoist</div><div class="val">'+money(t.hoist)+(t.hoistUses?' \u00d7'+t.hoistUses:'')+'</div></div>'+
+    '<div><div class="k">Pax pays</div><div class="val">'+money(t.passengerPays||0)+(t.passengerPct!=null?' ('+t.passengerPct+'%)':'')+'</div></div>'+
     '<div><div class="k">TM owed</div><div class="val" style="color:#E65100">'+money(t.owed)+'</div></div>'+
     '<div><div class="k">TM paid</div><div class="val" style="color:#2E7D32">'+money(t.paid)+'</div></div>'+
   '</div>';
@@ -1133,12 +1188,13 @@ function dosOpenDetail(driverId){
   list.forEach(function(j){
     var fare=parseFloat(j.TotalFare||j.totalFare||j.Fare||j.fare||0);
     var pm=j.PaymentType||j.paymentType||j.PaymentMethod||'';
-    var main=dosJobPaymentLines(j, _dosCs)[0];
+    var lines=dosJobPaymentLines(j, _dosCs);
+    var lineOwed=lines.reduce(function(a,l){return a+(l.owed||0);},0);
     var ts=dosJobTs(j);
     var isCompleted=dosNormalizeJobOutcome(j.jobstatus||j.status)==='completed';
     html+='<tr><td>'+(ts?new Date(ts).toLocaleString('en-NZ'):'\u2014')+'</td>'+
       '<td>'+esc(j.bookingId||'')+'</td><td>'+esc(pm||'\u2014')+'</td>'+
-      '<td class="money">'+money(fare)+'</td><td class="money">'+(isCompleted?money(main.owed):'\u2014')+'</td>'+
+      '<td class="money">'+money(fare)+'</td><td class="money">'+(isCompleted?money(lineOwed):'\u2014')+'</td>'+
       '<td>'+esc(j.jobstatus||j.status||'')+'</td><td>'+esc(dosNormalizeJobSource(j))+'</td></tr>';
   });
   html+='</tbody></table>';
