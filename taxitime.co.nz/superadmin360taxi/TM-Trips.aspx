@@ -284,6 +284,31 @@ function calcTMSubsidy(meterFare, councilId) {
   return Math.min(raw, cap);
 }
 
+/** Prefer tmTripCategory; else map driver source (hail/dispatch/…) — same as council trip detail. */
+function resolveTripCategoryLabel(j) {
+  var explicit = String(j.tmTripCategory || j.tripCategory || '').trim();
+  if (explicit) return explicit;
+  if (j.manuallyAddedByCompany === true || j.manuallyAddedByCompany === 'true') {
+    return 'Manually added by company';
+  }
+  var raw = String(j.source || j.bookingSource || j.BookingSource || j.Source || j.via || '').toLowerCase().trim();
+  if (!raw) return '';
+  if (raw.indexOf('manual_owner') >= 0 || raw.indexOf('manual owner') >= 0) return 'Manually added by company';
+  if (raw.indexOf('hail') >= 0 || raw.indexOf('driverapp') >= 0 || raw.indexOf('driver_app') >= 0 ||
+      raw.indexOf('driver-app') >= 0 || raw.indexOf('street') >= 0 || raw === 'queue' || raw.indexOf('driverqueue') >= 0) {
+    return 'Hail';
+  }
+  if (raw.indexOf('dispatch') >= 0 || raw.indexOf('console') >= 0) return 'Dispatch';
+  if (raw.indexOf('web') >= 0) return 'Website';
+  if (raw.indexOf('passenger') >= 0 || raw.indexOf('rider') >= 0 || raw.indexOf('pax') >= 0 || raw.indexOf('app') >= 0) {
+    return 'Passenger app';
+  }
+  if (raw.indexOf('food') >= 0) return 'Food';
+  if (raw.indexOf('freight') >= 0 || raw.indexOf('parcel') >= 0) return 'Freight';
+  if (raw === 'driver_complete') return '';
+  return raw.replace(/_/g, ' ');
+}
+
 function cleanDriverName(raw) {
   if (!raw) return '';
   raw = String(raw).trim();
@@ -405,7 +430,9 @@ function mapTMTrip(j, cid, rawKey) {
     waitingCharge: waitingCharge,
     distance: distance,
     duration: j.durationLabel || j.duration || '',
-    tmTripCategory: j.tmTripCategory || '',
+    tmTripCategory: resolveTripCategoryLabel(j),
+    manuallyAddedByCompany: !!(j.manuallyAddedByCompany === true || j.manuallyAddedByCompany === 'true' ||
+      String(j.source || '').toLowerCase().indexOf('manual_owner') >= 0),
     tmHoistCount: tmHoistCount,
     tmHoists: Array.isArray(j.tmHoists) ? j.tmHoists : [],
     tmPassengerCount: allCardNums.length || 1,
@@ -581,6 +608,7 @@ function viewTT(id) {
     row2('Driver', (t.driverName || '\u2014')) + row2('Vehicle', (t.vehicleId || '\u2014') + (t.vehicleHoistEquipped ? ' <span class="bx bx-b" style="font-size:10px">Hoist</span>' : '')) +
     row2('Voucher #', (t.allCardNums && t.allCardNums.length > 1 ? t.allCardNums.join(', ') : (t.cardNumber || '\u2014'))) + row2('Passenger', (t.passengerName || '\u2014')) +
     row2('Council', (cnames[t.councilId] || t.councilId || '\u2014')) + row2('Trip Category', (t.tmTripCategory || '\u2014')) +
+    (t.manuallyAddedByCompany ? '<div style="grid-column:1/-1;margin-top:6px;padding:8px 10px;border-radius:6px;background:#E3F2FD;border-left:4px solid #1565C0;font-size:12px;color:#0D47A1"><strong>Manually added by company</strong></div>' : '') +
     row2('Pickup', (t.pickup || '\u2014')) + row2('Dropoff', (t.dropoff || '\u2014')) +
     row2('Start', _tzFmtDT(t.startTime)) + row2('End', _tzFmtDT(t.endTime)) +
     row2('Distance', (t.distance ? t.distance + ' km' : '\u2014')) + row2('Duration', (t.duration || '\u2014')) +

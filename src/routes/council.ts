@@ -1753,7 +1753,7 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
             const uses = hoistUsesOf(t);
             return `<tr class="cp-row-click" data-idx="${idx}" onclick="openCpDetail(${idx})">
 ${cb}
-<td style="font-family:monospace;font-size:12px;white-space:nowrap">${esc(d.id || t._rawKey || '—')}</td>
+<td style="font-family:monospace;font-size:12px;white-space:nowrap">${esc(d.id || t._rawKey || '—')}${d.manuallyAddedByCompany ? '<div style="margin-top:2px"><span style="display:inline-block;font-size:10px;font-weight:700;padding:1px 6px;border-radius:8px;background:#E3F2FD;color:#1565C0">Manual</span></div>' : ''}</td>
 <td>${esc(d.dateTime || '—')}</td>
 <td style="font-size:12px;color:#555">${esc(d.companyName)}</td>
 <td>${esc(d.passengerName)}</td>
@@ -2851,6 +2851,7 @@ function tripDetailModalHtml(d: TmTripDetail, stOrTrip?: any): string {
   ${row('Payment Method', esc(d.paymentMethod))}
   ${row('Passengers (TM)', String(d.passengerCount))}
 </div>
+${d.manuallyAddedByCompany ? `<div style="margin:0 0 12px;padding:8px 12px;border-radius:6px;background:#E3F2FD;border-left:4px solid #1565C0;font-size:13px;color:#0D47A1"><strong>Manually added by company</strong></div>` : ''}
 ${revisionBlock}
 <div id="cp-trip-map-wrap">
   <div id="cp-trip-map-status" style="display:none"></div>
@@ -3256,8 +3257,14 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
                       idx != null
                         ? `<button type="button" class="cp-btn-sm" onclick="openCpDetail(${idx})">Details</button>`
                         : '—';
+                    const manual =
+                      (idx != null && batchTripDetails[idx]?.manuallyAddedByCompany) ||
+                      t.manuallyAddedByCompany === true ||
+                      String(t.source || '')
+                        .toLowerCase()
+                        .includes('manual_owner');
                     return `<tr>
-<td style="font-family:monospace;font-size:12px">${esc(rawKey || '—')}</td>
+<td style="font-family:monospace;font-size:12px">${esc(rawKey || '—')}${manual ? ' <span style="font-size:10px;font-weight:700;padding:1px 6px;border-radius:8px;background:#E3F2FD;color:#1565C0">Manual</span>' : ''}</td>
 <td>${statusBadge(st || '—')}</td>
 <td style="text-align:right">$${Number(sub || 0).toFixed(2)}</td>
 <td>${detailBtn}</td>

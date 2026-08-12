@@ -62,6 +62,8 @@ export type AnomalyTripLike = {
   completedAt?: string | number;
   flagReasons?: string[];
   anomalyDetail?: string;
+  source?: string;
+  manuallyAddedByCompany?: boolean | string;
   pickupLat?: number | string;
   pickupLng?: number | string;
   pickupLon?: number | string;
@@ -539,7 +541,15 @@ export function detectTripAnomalies(
     );
   }
 
-  if (isImplausibleShortTrip(trip)) {
+  // Manual owner entries have no driver GPS/route — skip implausible short / sentinel GPS rule.
+  // Fare-vs-reference and card rules still apply below.
+  const isManualOwner =
+    trip.manuallyAddedByCompany === true ||
+    trip.manuallyAddedByCompany === 'true' ||
+    String(trip.source || '')
+      .toLowerCase()
+      .includes('manual_owner');
+  if (!isManualOwner && isImplausibleShortTrip(trip)) {
     reasons.push(ANOMALY_IMPLAUSIBLE_SHORT);
     const dur = durationMinOf(trip);
     const dist = recordedDistanceKm(trip);

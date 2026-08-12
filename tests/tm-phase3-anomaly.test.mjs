@@ -174,7 +174,13 @@ function detectTripAnomalies(trip, opts = {}) {
     (dropS && isSentinel(dropS.lat, dropS.lng)) ||
     (pickS && isSentinel(pickS.lat, pickS.lng));
   if (durRaw != null && dur < SHORT_MIN) {
-    if (invalidCoords || (dist != null && dist < SHORT_KM)) {
+    const isManual =
+      trip.manuallyAddedByCompany === true ||
+      trip.manuallyAddedByCompany === 'true' ||
+      String(trip.source || '')
+        .toLowerCase()
+        .includes('manual_owner');
+    if (!isManual && (invalidCoords || (dist != null && dist < SHORT_KM))) {
       reasons.push('implausible_short_trip');
       details.push('short');
     }
@@ -358,6 +364,31 @@ test('implausible_short_trip does not flag normal distance trips', () => {
     fare: 18,
   });
   assert.equal(hit.reasons.includes('implausible_short_trip'), false);
+});
+
+test('implausible_short_trip skipped for manual_owner (no GPS); fare mismatch still flags', () => {
+  const shortManual = detectTripAnomalies({
+    source: 'manual_owner',
+    manuallyAddedByCompany: true,
+    distanceKm: 0.01,
+    durationMin: 1,
+    fare: 20,
+    dropLat: 0,
+    dropLng: 0,
+  });
+  assert.equal(shortManual.reasons.includes('implausible_short_trip'), false);
+
+  const fareHit = detectTripAnomalies(
+    {
+      source: 'manual_owner',
+      manuallyAddedByCompany: true,
+      distanceKm: 10,
+      durationMin: 20,
+      fare: 100,
+    },
+    { refTariff: { base: 3, perKm: 2, perMin: 0.5, stopFee: 0 } },
+  );
+  assert.ok(fareHit.reasons.includes('fare_mismatch'));
 });
 
 test('same_card_reuse_3min', () => {
@@ -661,6 +692,8 @@ test('tmAnomaly source exports claim helper and rules', () => {
   assert.match(anomalySrc, /IMPLAUSIBLE_SHORT_MAX_KM/);
   assert.match(anomalySrc, /cardsByNumber/);
   assert.match(anomalySrc, /cardUsageOrdinal/);
+  assert.match(anomalySrc, /manuallyAddedByCompany/);
+  assert.match(anomalySrc, /!isManualOwner && isImplausibleShortTrip/);
 });
 
 test('council portal loads tmCards into anomaly scan', () => {

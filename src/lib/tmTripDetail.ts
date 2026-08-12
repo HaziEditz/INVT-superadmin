@@ -148,6 +148,57 @@ export function resolveCardholderName(job: Record<string, any>): string {
   );
 }
 
+/**
+ * Map job source / hail / dispatch / website / passenger app into a display
+ * Trip Category. Drivers write `source` (e.g. hail), not `tmTripCategory`, so
+ * the council modal was always blank when only tmTripCategory was read.
+ */
+export function resolveTripCategoryLabel(t: Record<string, any> | null | undefined): string {
+  if (!t || typeof t !== 'object') return '—';
+  const explicit = str(t.tmTripCategory || t.tripCategory);
+  if (explicit && explicit !== '—') return explicit;
+  if (t.manuallyAddedByCompany === true || t.manuallyAddedByCompany === 'true') {
+    return 'Manually added by company';
+  }
+  const raw = String(
+    t.source || t.bookingSource || t.BookingSource || t.Source || t.via || t.Via || '',
+  )
+    .toLowerCase()
+    .trim();
+  if (!raw) return '—';
+  if (raw === 'manual_owner' || raw.includes('manual_owner') || raw.includes('manual owner')) {
+    return 'Manually added by company';
+  }
+  if (
+    raw.includes('hail') ||
+    raw.includes('driverapp') ||
+    raw.includes('driver_app') ||
+    raw.includes('driver-app') ||
+    raw.includes('driver created') ||
+    raw.includes('street') ||
+    raw === 'queue' ||
+    raw.includes('driverqueue')
+  ) {
+    return 'Hail';
+  }
+  if (raw.includes('dispatch') || raw.includes('console')) return 'Dispatch';
+  if (raw.includes('web') || raw.includes('website')) return 'Website';
+  if (raw.includes('passenger') || raw.includes('rider') || raw.includes('pax') || raw.includes('app')) {
+    return 'Passenger app';
+  }
+  if (raw.includes('food')) return 'Food';
+  if (raw.includes('freight') || raw.includes('parcel')) return 'Freight';
+  if (raw === 'driver_complete') return '—';
+  return raw.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+export function isManuallyAddedByCompany(t: Record<string, any> | null | undefined): boolean {
+  if (!t || typeof t !== 'object') return false;
+  if (t.manuallyAddedByCompany === true || t.manuallyAddedByCompany === 'true') return true;
+  const raw = String(t.source || t.bookingSource || '').toLowerCase();
+  return raw === 'manual_owner' || raw.includes('manual_owner');
+}
+
 export type TmTripDetail = {
   id: string;
   cid: string;
@@ -158,6 +209,8 @@ export type TmTripDetail = {
   voucherNo: string;
   allCards: string;
   tripCategory: string;
+  /** Owner-panel manual entry — surface “Manually added by company” in UI. */
+  manuallyAddedByCompany: boolean;
   dateTime: string;
   endTime: string;
   /** Raw values for edit forms (ISO or epoch) — avoid round-tripping display strings. */
@@ -280,7 +333,8 @@ export function buildTmTripDetail(
     passengerName: resolveCardholderName(t) || '—',
     voucherNo: str(t.tmVoucherNo || t.tmCardNumber || cardNums[0] || '—'),
     allCards: cardNums.join(', ') || str(t.tmVoucherNo || t.tmCardNumber) || '—',
-    tripCategory: str(t.tmTripCategory || '—'),
+    tripCategory: resolveTripCategoryLabel(t),
+    manuallyAddedByCompany: isManuallyAddedByCompany(t),
     dateTime: formatTmDateTime(t.startedAt_ISO || t.startedAt || t.completedAt_ISO || t.completedAt) || '—',
     endTime: formatTmDateTime(t.completedAt_ISO || t.completedAt) || '—',
     startedAtRaw: str(t.startedAt_ISO || t.startedAt || ''),

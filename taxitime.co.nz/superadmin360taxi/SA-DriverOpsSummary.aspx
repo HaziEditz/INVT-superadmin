@@ -1131,10 +1131,8 @@ function dosRender(){
         : '<span class="dos-zero">\u2014</span>';
       var t=r.tmDetail;
       var tmMain=t.trips?dosFormatPayWithCount(r.tmLocked?t.paid:t.owed, t.trips):'$0.00';
-      var tmPctBits=[];
-      if(t.councilPct!=null) tmPctBits.push('Council eff. '+t.councilPct+'%');
-      if(t.passengerPct!=null) tmPctBits.push('Pax eff. '+t.passengerPct+'%');
-      var tmSub=t.trips?('Sub '+money(t.subsidy)+' \u00b7 Hoist '+money(t.hoist)+(tmPctBits.length?' \u00b7 '+tmPctBits.join(' / '):'')+(t.passengerPays?' \u00b7 Pax '+money(t.passengerPays):'')):'';
+      var councilTot=Math.round(((t.subsidy||0)+(t.hoist||0))*100)/100;
+      var tmSub=t.trips?('Meter '+money(t.fare)+' \u00b7 Sub '+money(t.subsidy)+' \u00b7 Hoist '+money(t.hoist)+' \u00b7 Council '+money(councilTot)+' \u00b7 Pax '+money(t.passengerPays||0)):'';
       function lockedNote(before){ return ' <span class="dos-sub" style="color:#2E7D32">('+money(before)+' locked)</span>'; }
       return '<tr>'+
         '<td class="sticky-driver"><b>'+esc(r.driverName)+'</b><div class="dos-sub">'+esc(r.driverId)+'</div></td>'+
@@ -1189,10 +1187,11 @@ function dosOpenDetail(driverId){
   '</div>';
   html+='<div class="sa-kv" style="border-top:1px solid #eee;padding-top:10px;margin-top:4px">'+
     '<div><div class="k">TM trips</div><div class="val">'+t.trips+'</div></div>'+
-    '<div><div class="k">TM fare</div><div class="val">'+money(t.fare)+'</div></div>'+
-    '<div><div class="k">TM subsidy</div><div class="val">'+money(t.subsidy)+(t.councilPct!=null?' (eff. '+t.councilPct+'%)':'')+'</div></div>'+
-    '<div><div class="k">TM hoist</div><div class="val">'+money(t.hoist)+(t.hoistUses?' \u00d7'+t.hoistUses:'')+'</div></div>'+
-    '<div><div class="k">Pax pays</div><div class="val">'+money(t.passengerPays||0)+(t.passengerPct!=null?' (eff. '+t.passengerPct+'%)':'')+'</div></div>'+
+    '<div><div class="k">Meter Fare</div><div class="val">'+money(t.fare)+'</div></div>'+
+    '<div><div class="k">Line 1 — Meter subsidy</div><div class="val" style="color:#2E7D32">'+money(t.subsidy)+(t.councilPct!=null?' (eff. '+t.councilPct+'%)':'')+'</div></div>'+
+    '<div><div class="k">Line 2 — Hoist (council)</div><div class="val" style="color:#1565C0">'+money(t.hoist)+(t.hoistUses?' \u00d7'+t.hoistUses:'')+'</div></div>'+
+    '<div><div class="k">Council total (meter + hoist)</div><div class="val" style="color:#2E7D32;font-weight:700">'+money(Math.round(((t.subsidy||0)+(t.hoist||0))*100)/100)+'</div></div>'+
+    '<div><div class="k">Passenger Share / Pays</div><div class="val">'+money(t.passengerPays||0)+(t.passengerPct!=null?' (eff. '+t.passengerPct+'%)':'')+'</div></div>'+
     '<div><div class="k">TM owed</div><div class="val" style="color:#E65100">'+money(t.owed)+'</div></div>'+
     '<div><div class="k">TM paid</div><div class="val" style="color:#2E7D32">'+money(t.paid)+'</div></div>'+
   '</div>';
