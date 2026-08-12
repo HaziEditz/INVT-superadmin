@@ -96,7 +96,7 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
   <p style="font-size:13px;color:#888;margin-bottom:14px">Company-scoped view of what each company owes its drivers. Same rules as the owner panel.</p>
 
   <div class="hint">
-    <b>Paid / unpaid:</b> Cash = held by driver (not owed). Card / EFTPOS / TM / Account / Hoist = company owes driver share until Mark Paid.
+    <b>Paid / unpaid:</b> Cash = held by driver (not owed). EFTPOS = Verifone in-vehicle, settled to company bank outside BookaWaka (tracked, not owed). Card / TM / Account / Hoist = company owes driver share until Mark Paid.
     Mark Paid locks that driver&rsquo;s period. Bank details are reference-only for manual transfer.<br/>
     <b>Jobs legend:</b> Done = completed &middot; Canc = cancelled &middot; Rej = rejected &middot; <b>NS = No Show</b> &middot; Tot = total.<br/>
     <b>Sources:</b> Disp = dispatch console &middot; App = passenger app &middot; Web = website &middot; Food = food delivery &middot; Frt = freight &middot; Hail = driver app / street hail / queue &middot; Other = recognised but unmapped &middot; Unk = missing source field.
@@ -555,8 +555,9 @@ function dosCompanyOwesDriver(fareNum, paymentMethod, cardSettings){
   var gross=Math.max(0, parseFloat(fareNum)||0);
   var bucket=dosClassifyPaymentMethod(paymentMethod);
   if(gross<=0) return {bucket:bucket, gross:0, owed:0, commission:0};
-  if(bucket==='cash') return {bucket:bucket, gross:gross, owed:0, commission:0};
-  if(bucket==='card'||bucket==='eftpos'){
+  // Cash + EFTPOS: settled outside Mark Paid (driver cash / Verifone → company bank). Track gross only.
+  if(bucket==='cash'||bucket==='eftpos') return {bucket:bucket, gross:gross, owed:0, commission:0};
+  if(bucket==='card'){
     var compPct=parseFloat(cardSettings.companyPercent)||0;
     var drvPct=parseFloat(cardSettings.driverPercent)||0;
     var commission=(gross*compPct)/100+(gross*drvPct)/100;
@@ -574,7 +575,7 @@ function dosJobPaymentLines(job, cardSettings){
   var hoistUses=parseInt(job.hoistUses||job.HoistUses||job.hoistCount||job.tmHoistCount||0,10)||0;
   var lines=[];
   var main=dosCompanyOwesDriver(fare, pm, cardSettings);
-  if(dosIsTmJob(job) && main.bucket!=='cash'){
+  if(dosIsTmJob(job) && main.bucket!=='cash' && main.bucket!=='eftpos'){
     main={bucket:'tm', gross:main.gross, owed:main.gross, commission:0};
   }
   lines.push({kind:'main', bucket:main.bucket, gross:main.gross, owed:main.owed, commission:main.commission});
@@ -711,7 +712,7 @@ function dosBuildDriverSummaryRow(opts){
   tmDetail.subsidy=Math.round(tmDetail.subsidy*100)/100;
   tmDetail.hoist=Math.round(tmDetail.hoist*100)/100;
   tmDetail.passengerPays=Math.round(tmDetail.passengerPays*100)/100;
-  var owedTotal=pay.card.owed+pay.eftpos.owed+pay.tm.owed+pay.hoist.owed+pay.account.owed+pay.other.owed;
+  var owedTotal=pay.card.owed+pay.tm.owed+pay.hoist.owed+pay.account.owed+pay.other.owed;
   var locked=!!(settlement&&(settlement.locked||settlement.status==='paid'));
   var status=locked?'paid':'open';
   if(locked){ tmDetail.paid=tmDetail.owed; tmDetail.owed=0; }
@@ -981,7 +982,7 @@ function dosRender(){
         '<td>'+esc(r.vehicles.join(', ')||'\u2014')+'</td>'+
         '<td class="money">'+dosFormatPayWithCount(r.cashHeld, r.pay.cash.count)+'</td>'+
         '<td class="money">'+dosFormatPayWithCount(r.pay.card.owed, r.pay.card.count)+'</td>'+
-        '<td class="money">'+dosFormatPayWithCount(r.pay.eftpos.owed, r.pay.eftpos.count)+'</td>'+
+        '<td class="money">'+dosFormatPayWithCount(r.pay.eftpos.gross, r.pay.eftpos.count)+'</td>'+
         '<td class="money">'+tmMain+(tmSub?'<div class="dos-sub">'+tmSub+'</div>':'')+'</td>'+
         '<td class="money">'+dosFormatPayWithCount(r.pay.account.owed, r.pay.account.count)+'</td>'+
         '<td class="money">'+dosFormatPayWithCount(r.pay.hoist.owed, r.pay.hoist.count)+'</td>'+
@@ -1070,7 +1071,7 @@ function dosExportCsv(){
   var headers=['Company','Driver','DriverId','Period','Hours','BreakMin',
     'Done','Cancelled','Rejected','NoShow','JobsTotal',
     'Disp','App','Web','Food','Frt','Hail','Other','Unknown','Vehicles',
-    'CashHeld','CashCount','CardOwed','CardCount','EftposOwed','EftposCount',
+    'CashHeld','CashCount','CardOwed','CardCount','EftposGross','EftposCount',
     'TmTrips','TmFare','TmSubsidy','TmHoist','TmHoistUses','TmPassengerPays','TmOwed','TmPaid',
     'AccountOwed','AccountCount','HoistOwed','HoistCount',
     'OwedTotal','Status','BankName','AccountName','AccountNumber'];
@@ -1085,7 +1086,7 @@ function dosExportCsv(){
       r.sources.other||0, r.sources.unknown||0,
       r.vehicles.join(' '),
       r.cashHeld.toFixed(2), r.pay.cash.count, r.pay.card.owed.toFixed(2), r.pay.card.count,
-      r.pay.eftpos.owed.toFixed(2), r.pay.eftpos.count,
+      r.pay.eftpos.gross.toFixed(2), r.pay.eftpos.count,
       r.tmDetail.trips, r.tmDetail.fare.toFixed(2), r.tmDetail.subsidy.toFixed(2), r.tmDetail.hoist.toFixed(2),
       r.tmDetail.hoistUses, r.tmDetail.passengerPays.toFixed(2), r.tmDetail.owed.toFixed(2), r.tmDetail.paid.toFixed(2),
       r.pay.account.owed.toFixed(2), r.pay.account.count, r.pay.hoist.owed.toFixed(2), r.pay.hoist.count,
