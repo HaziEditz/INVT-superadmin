@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head id="Head1"><meta charset="utf-8"/><title>Driver Ops &amp; Payments &mdash; BookaWaka Admin</title>
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate"/>
@@ -109,15 +109,15 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
 
 <div id="page_content"><div id="page_content_inner">
 <div class="sa-wrap">
-  <h2 style="font-size:18px;font-weight:700;margin-bottom:4px">Driver Ops &amp; Payment Summary <span class="build-stamp" id="dos-build-stamp">Track C · eff. TM %</span></h2>
+  <h2 style="font-size:18px;font-weight:700;margin-bottom:4px">Driver Ops &amp; Payment Summary <span class="build-stamp" id="dos-build-stamp">Track C Â· eff. TM %</span></h2>
   <p style="font-size:13px;color:#888;margin-bottom:14px">Company-scoped view of what each company owes its drivers. Same rules as the owner panel.</p>
 
   <div class="hint">
-    <b>Paid / unpaid (BookaWaka):</b> Card and TM/Hoist are <b>independent</b> Mark Paid streams — lock Card for a period without locking TM (and vice versa).
-    <b>Tracked, not BW-owed:</b> Cash · EFTPOS (Verifone) · Account/ACC (company settles with own clients — see Account / ACC Settlements) — shown as total × count.
+    <b>Paid / unpaid (BookaWaka):</b> Card and TM/Hoist are <b>independent</b> Mark Paid streams â€” lock Card for a period without locking TM (and vice versa).
+    <b>Tracked, not BW-owed:</b> Cash Â· EFTPOS (Verifone) Â· Account/ACC (company settles with own clients â€” see Account / ACC Settlements) â€” shown as total Ã— count.
     Bank details are reference-only for manual transfer.<br/>
     <b>Jobs legend:</b> Done = completed &middot; Canc = cancelled &middot; Rej = rejected &middot; <b>NS = No Show</b> &middot; Tot = total.<br/>
-    <b>Sources:</b> Disp = dispatch console &middot; App = passenger app &middot; Web = website &middot; Food = food delivery &middot; Frt = freight &middot; Hail = driver app / street hail / queue &middot; Other = recognised but unmapped &middot; Unk = missing source field.
+    <b>Sources:</b> Disp = dispatch console &middot; App = passenger app &middot; Web = website &middot; Food = food delivery &middot; Frt = freight &middot; Hail = driver app / street hail / queue &middot; Man = manually added by company &middot; Other = recognised but unmapped &middot; Unk = missing source field.
   </div>
 
   <div class="sa-card">
@@ -169,7 +169,7 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
             <th class="sticky-driver" rowspan="2">Driver</th>
             <th rowspan="2">Hours</th>
             <th rowspan="2">Jobs</th>
-            <th class="g-src" colspan="8">Sources</th>
+            <th class="g-src" colspan="9">Sources</th>
             <th rowspan="2">Vehicles</th>
             <th class="g-pay" colspan="6">Payments</th>
             <th class="g-owed" colspan="3">Unpaid</th>
@@ -184,6 +184,7 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
             <th class="num" title="Food delivery">Food</th>
             <th class="num" title="Freight">Frt</th>
             <th class="num" title="Driver app / hail / queue">Hail</th>
+            <th class="num" title="Manually added by company">Man</th>
             <th class="num" title="Recognised but unmapped">Oth</th>
             <th class="num" title="Missing source">Unk</th>
             <th class="money-h">Cash</th>
@@ -197,7 +198,7 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
             <th class="money-h">Total</th>
           </tr>
         </thead>
-        <tbody id="dos-tb"><tr><td colspan="24" class="empty">Choose a company to load.</td></tr></tbody>
+        <tbody id="dos-tb"><tr><td colspan="25" class="empty">Choose a company to load.</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -242,10 +243,10 @@ function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,
 function money(n){ n=Math.round((parseFloat(n)||0)*100)/100; return '$'+n.toFixed(2); }
 
 /* ============================================================================
- * Shift Reports logic — ported from INVT-admin/lib/shiftReportFlatten.js.
+ * Shift Reports logic â€” ported from INVT-admin/lib/shiftReportFlatten.js.
  * workedMinutes preferred over wall-clock, progressive End-Shift snapshots
  * collapsed to max-not-sum, driver identity resolved to canonical D00x ids.
- * This is what fixes the "0.0h" bug — the old wall-clock clip is gone.
+ * This is what fixes the "0.0h" bug â€” the old wall-clock clip is gone.
  * ========================================================================== */
 var DOS_MAX_SESSION_MIN = 18 * 60; // stale/ghost session cap
 
@@ -313,7 +314,7 @@ function dosPreferCanonId(v, fallbackKey, existingCanon){
   return String(fallbackKey||'');
 }
 
-/** Build alias→canonical-driver-id map (D00x preferred) + display names. */
+/** Build aliasâ†’canonical-driver-id map (D00x preferred) + display names. */
 function dosBuildDriverCanon(driversRoot, driversCid, companyId){
   var canon={}, names={}, valid={};
   function setCanon(alias, canonId, name){
@@ -365,7 +366,7 @@ function dosResolveDriverId(rawId, canonMap, companyId){
   return id;
 }
 
-/** Prefer app-authored workedMinutes; workedMinutes:0 is meaningful — never fall back to wall clock for it. */
+/** Prefer app-authored workedMinutes; workedMinutes:0 is meaningful â€” never fall back to wall clock for it. */
 function dosSessionDurationMin(s, startTs, endTs){
   if(s && s.workedMinutes!=null && s.workedMinutes!==''){
     var wm=parseFloat(s.workedMinutes);
@@ -399,7 +400,7 @@ function dosExtractBreakMin(s){
   return Math.max(0, Math.round(breakMin));
 }
 
-/** Progressive End-Shift snapshots share a window & cumulative workedMinutes — take max, never sum. */
+/** Progressive End-Shift snapshots share a window & cumulative workedMinutes â€” take max, never sum. */
 function dosCollapseProgressiveSessions(sessions){
   var groups={};
   (sessions||[]).forEach(function(s){
@@ -521,7 +522,7 @@ function dosFlattenShiftLogNodes(logsArr, opts){
   return byDriver;
 }
 
-/** Driver Ops hours — same flatten + workedMinutes + progressive collapse as Shift Reports. */
+/** Driver Ops hours â€” same flatten + workedMinutes + progressive collapse as Shift Reports. */
 function dosAggregateDriverShiftMinutes(opts){
   opts=opts||{};
   var companyId=opts.companyId!=null?String(opts.companyId):'';
@@ -567,7 +568,7 @@ function dosFmtDur(minutes){
 }
 
 /* ============================================================================
- * Pay / job / source classification — ported from
+ * Pay / job / source classification â€” ported from
  * INVT-admin/lib/driverOpsSummary.js.
  * ========================================================================== */
 function dosClassifyPaymentMethod(pm){
@@ -600,7 +601,7 @@ function dosCompanyOwesDriver(fareNum, paymentMethod, cardSettings){
   var gross=Math.max(0, parseFloat(fareNum)||0);
   var bucket=dosClassifyPaymentMethod(paymentMethod);
   if(gross<=0) return {bucket:bucket, gross:0, owed:0, commission:0};
-  // Cash / EFTPOS / Account(ACC): visible gross×count only — not BookaWaka Mark Paid.
+  // Cash / EFTPOS / Account(ACC): visible grossÃ—count only â€” not BookaWaka Mark Paid.
   if(bucket==='cash'||bucket==='eftpos'||bucket==='account') return {bucket:bucket, gross:gross, owed:0, commission:0};
   if(bucket==='card'){
     var compPct=parseFloat(cardSettings.companyPercent)||0;
@@ -609,10 +610,10 @@ function dosCompanyOwesDriver(fareNum, paymentMethod, cardSettings){
     var owed=Math.max(0, gross-commission);
     return {bucket:bucket, gross:gross, owed:owed, commission:commission};
   }
-  // TM PaymentType alone still returns full fare — dosJobPaymentLines settles subsidy (+ hoist).
+  // TM PaymentType alone still returns full fare â€” dosJobPaymentLines settles subsidy (+ hoist).
   return {bucket:bucket, gross:gross, owed:gross, commission:0};
 }
-/** Meter TM subsidy + display %. Prefer tmSubsidyFare; else combined−hoist; else fare−hoist−pax. */
+/** Meter TM subsidy + display %. Prefer tmSubsidyFare; else combinedâˆ’hoist; else fareâˆ’hoistâˆ’pax. */
 function dosTmSubsidyParts(job){
   var fare=parseFloat(job.TotalFare||job.totalFare||job.tmTotalFare||job.Fare||job.fare||job.RideCost||job.EstimatedFare||0)||0;
   var hoistAmt=parseFloat(job.tmSubsidyHoist||job.hoistFare||job.HoistFare||job.hoistAmount||0)||0;
@@ -656,7 +657,7 @@ function dosTmSubsidyParts(job){
 /**
  * Split a job into pay lines.
  * TM: cash/EFTPOS/Account remainder stays $0-owed; subsidy still enters tm.owed.
- * PaymentType===TM never owes full fare — subsidy only. Hoist is separate.
+ * PaymentType===TM never owes full fare â€” subsidy only. Hoist is separate.
  */
 function dosJobPaymentLines(job, cardSettings){
   cardSettings=cardSettings||{};
@@ -695,6 +696,9 @@ function dosNormalizeJobOutcome(status){
   return 'other';
 }
 function dosNormalizeJobSource(job){
+  if(job && (job.manuallyAddedByCompany===true || job.manuallyAddedByCompany==='true' ||
+      String(job.source||job.bookingSource||'').toLowerCase().indexOf('manual_owner')>=0 ||
+      String(job.source||'').toLowerCase().indexOf('manual owner')>=0)) return 'manual';
   var raw=String(job.source||job.bookingSource||job.BookingSource||job.Source||job.via||job.Via||'').toLowerCase();
   var svc=String(job.serviceType||job.ServiceType||job.bookingType||job.Bookingtype||'').toLowerCase();
   if(svc.indexOf('food')>=0||raw.indexOf('food')>=0) return 'food';
@@ -707,7 +711,7 @@ function dosNormalizeJobSource(job){
   if(raw.indexOf('app')>=0) return 'passenger_app';
   return raw?'other':'unknown';
 }
-/** "$12.50 ×3" — count always shown when > 0. */
+/** "$12.50 Ã—3" â€” count always shown when > 0. */
 function dosFormatPayWithCount(owedOrGross, count){
   var n=Math.round((parseFloat(owedOrGross)||0)*100)/100;
   var c=parseInt(count,10)||0;
@@ -759,7 +763,7 @@ function dosEmptyPayTotals(){
     tm:{gross:0,owed:0,count:0}, hoist:{gross:0,owed:0,count:0,uses:0}, account:{gross:0,owed:0,count:0}, other:{gross:0,owed:0,count:0}};
 }
 function dosEmptyOutcomeTotals(){ return {completed:0,cancelled:0,rejected:0,no_show:0,other:0,total:0}; }
-function dosEmptySourceTotals(){ return {dispatch:0,passenger_app:0,website:0,food:0,freight:0,hail:0,other:0,unknown:0}; }
+function dosEmptySourceTotals(){ return {dispatch:0,passenger_app:0,website:0,food:0,freight:0,hail:0,manual:0,other:0,unknown:0}; }
 function dosEmptyTmDetail(){ return {trips:0,fare:0,subsidy:0,hoist:0,hoistUses:0,passengerPays:0,owed:0,paid:0,councilPct:null,passengerPct:null}; }
 function dosJobTs(j){
   return dosParseTs(j.completedAt||j.CompletedAt||j.endTime||j.EndTime||j.finishTime||
@@ -922,14 +926,14 @@ function dosIngestDriversMeta(dataRoot, dataCid, cid){
 function dosLoad(){
   var cid=document.getElementById('dos-company').value;
   if(!cid){
-    document.getElementById('dos-tb').innerHTML='<tr><td colspan="24" class="empty">Choose a company to load.</td></tr>';
+    document.getElementById('dos-tb').innerHTML='<tr><td colspan="25" class="empty">Choose a company to load.</td></tr>';
     document.getElementById('dos-stats').style.display='none';
     document.getElementById('dos-title').textContent='Select a company';
     return;
   }
   _dosPeriod=dosCurrentPeriod();
   document.getElementById('dos-title').textContent=(allCompanies[cid]&&allCompanies[cid].name||cid)+' \u2014 '+_dosPeriod.label;
-  document.getElementById('dos-tb').innerHTML='<tr><td colspan="24" class="empty">Loading\u2026</td></tr>';
+  document.getElementById('dos-tb').innerHTML='<tr><td colspan="25" class="empty">Loading\u2026</td></tr>';
 
   Promise.all([
     _fbGet('companies/'+cid+'/cardSettings').catch(function(){return {};}),
@@ -1015,7 +1019,7 @@ function dosLoad(){
     addNested(res[3]); addFlat(res[4]); addFlat(res[5]);
     if(res[6]) addFlat(res[6]);
 
-    // Resolve every job's driverId to the same canonical id used for shift hours —
+    // Resolve every job's driverId to the same canonical id used for shift hours â€”
     // this is the identity fix that lines jobs up with the correct driver row.
     var allJobs=[];
     Object.keys(merged).forEach(function(bid){
@@ -1026,7 +1030,7 @@ function dosLoad(){
         var rawDid=String(copy.driverId||copy.DriverId||did||'').trim();
         if(!rawDid||rawDid===bid||rawDid===String(copy.bookingId||'')) return;
         var canonDid=dosResolveDriverId(rawDid, canon, cid);
-        if(!canonDid) return; // rejected company/phantom ids (e.g. "0") — do not fall back
+        if(!canonDid) return; // rejected company/phantom ids (e.g. "0") â€” do not fall back
         copy.driverId=canonDid;
         var ts=dosJobTs(copy);
         if(ts>=_dosPeriod.fromMs && ts<=_dosPeriod.toMs) allJobs.push(copy);
@@ -1078,7 +1082,7 @@ function dosLoad(){
 
     dosRender();
   }).catch(function(e){
-    document.getElementById('dos-tb').innerHTML='<tr><td colspan="24" class="empty">Error: '+esc(e&&e.message||e)+'</td></tr>';
+    document.getElementById('dos-tb').innerHTML='<tr><td colspan="25" class="empty">Error: '+esc(e&&e.message||e)+'</td></tr>';
   });
 }
 
@@ -1117,7 +1121,7 @@ function dosRender(){
     '<div class="stat"><div class="v">'+dosFmtDur(workMin)+'</div><div class="l">Hours worked</div></div>';
 
   if(!rows.length){
-    document.getElementById('dos-tb').innerHTML='<tr><td colspan="24" class="empty">No driver activity in this period.</td></tr>';
+    document.getElementById('dos-tb').innerHTML='<tr><td colspan="25" class="empty">No driver activity in this period.</td></tr>';
   } else {
     document.getElementById('dos-tb').innerHTML=rows.map(function(r){
       var markCard=r.cardLocked || !(r.cardOwedBeforeLock>0)
@@ -1144,6 +1148,7 @@ function dosRender(){
         '<td class="num">'+(r.sources.food||0)+'</td>'+
         '<td class="num">'+(r.sources.freight||0)+'</td>'+
         '<td class="num">'+(r.sources.hail||0)+'</td>'+
+        '<td class="num">'+(r.sources.manual||0)+'</td>'+
         '<td class="num">'+(r.sources.other||0)+'</td>'+
         '<td class="num">'+(r.sources.unknown||0)+'</td>'+
         '<td>'+esc(r.vehicles.join(', ')||'\u2014')+'</td>'+
@@ -1173,13 +1178,16 @@ function dosOpenDetail(driverId){
   if(!r) return;
   document.getElementById('dos-detail-title').textContent=r.driverName+' \u2014 '+(_dosPeriod&&_dosPeriod.label||'');
   var t=r.tmDetail;
-  var srcBits=Object.keys(r.sources).filter(function(k){return r.sources[k];}).map(function(k){return k.replace(/_/g,' ')+': '+r.sources[k];}).join(' \u00b7 ');
+  var srcBits=Object.keys(r.sources).filter(function(k){return r.sources[k];}).map(function(k){
+    var label=k==='manual'?'manual':k==='passenger_app'?'passenger app':k.replace(/_/g,' ');
+    return label+': '+r.sources[k];
+  }).join(' \u00b7 ');
   var html='<div class="sa-kv">'+
     '<div><div class="k">Hours / breaks</div><div class="val">'+dosFmtDur(r.workMinutes)+' / '+dosFmtDur(r.breakMinutes)+'</div></div>'+
     '<div><div class="k">Company owes</div><div class="val" style="color:#E65100">'+money(r.owedTotal)+'</div></div>'+
     '<div><div class="k">Card / TM owed</div><div class="val">'+money(r.cardOwed)+' / '+money(r.tmOwed)+'</div></div>'+
     '<div><div class="k">Cash held</div><div class="val">'+money(r.cashHeld)+'</div></div>'+
-    '<div><div class="k">Status</div><div class="val">'+dosStatusLabel(r)+(r.cardLocked?' · Card locked':'')+(r.tmLocked?' · TM locked':'')+'</div></div>'+
+    '<div><div class="k">Status</div><div class="val">'+dosStatusLabel(r)+(r.cardLocked?' Â· Card locked':'')+(r.tmLocked?' Â· TM locked':'')+'</div></div>'+
     '<div><div class="k">Jobs</div><div class="val">Done '+r.outcomes.completed+' \u00b7 Canc '+r.outcomes.cancelled+' \u00b7 Rej '+r.outcomes.rejected+' \u00b7 NS '+r.outcomes.no_show+' \u00b7 Tot '+r.outcomes.total+'</div></div>'+
     '<div><div class="k">Vehicles</div><div class="val">'+esc(r.vehicles.join(', ')||'\u2014')+'</div></div>'+
     '<div style="grid-column:1 / -1"><div class="k">Sources</div><div class="val">'+esc(srcBits||'\u2014')+'</div></div>'+
@@ -1188,8 +1196,8 @@ function dosOpenDetail(driverId){
   html+='<div class="sa-kv" style="border-top:1px solid #eee;padding-top:10px;margin-top:4px">'+
     '<div><div class="k">TM trips</div><div class="val">'+t.trips+'</div></div>'+
     '<div><div class="k">Meter Fare</div><div class="val">'+money(t.fare)+'</div></div>'+
-    '<div><div class="k">Line 1 — Meter subsidy</div><div class="val" style="color:#2E7D32">'+money(t.subsidy)+(t.councilPct!=null?' (eff. '+t.councilPct+'%)':'')+'</div></div>'+
-    '<div><div class="k">Line 2 — Hoist (council)</div><div class="val" style="color:#1565C0">'+money(t.hoist)+(t.hoistUses?' \u00d7'+t.hoistUses:'')+'</div></div>'+
+    '<div><div class="k">Line 1 â€” Meter subsidy</div><div class="val" style="color:#2E7D32">'+money(t.subsidy)+(t.councilPct!=null?' (eff. '+t.councilPct+'%)':'')+'</div></div>'+
+    '<div><div class="k">Line 2 â€” Hoist (council)</div><div class="val" style="color:#1565C0">'+money(t.hoist)+(t.hoistUses?' \u00d7'+t.hoistUses:'')+'</div></div>'+
     '<div><div class="k">Council total (meter + hoist)</div><div class="val" style="color:#2E7D32;font-weight:700">'+money(Math.round(((t.subsidy||0)+(t.hoist||0))*100)/100)+'</div></div>'+
     '<div><div class="k">Passenger Share / Pays</div><div class="val">'+money(t.passengerPays||0)+(t.passengerPct!=null?' (eff. '+t.passengerPct+'%)':'')+'</div></div>'+
     '<div><div class="k">TM owed</div><div class="val" style="color:#E65100">'+money(t.owed)+'</div></div>'+
@@ -1257,7 +1265,7 @@ function dosExportCsv(){
   var cid=document.getElementById('dos-company').value;
   var headers=['Company','Driver','DriverId','Period','Hours','BreakMin',
     'Done','Cancelled','Rejected','NoShow','JobsTotal',
-    'Disp','App','Web','Food','Frt','Hail','Other','Unknown','Vehicles',
+    'Disp','App','Web','Food','Frt','Hail','Man','Other','Unknown','Vehicles',
     'CashHeld','CashCount','CardOwed','CardCount','EftposGross','EftposCount',
     'TmTrips','TmFare','TmSubsidy','TmHoist','TmHoistUses','TmPassengerPays','TmOwed','TmPaid',
     'AccountGross','AccountCount','HoistOwed','HoistCount',
@@ -1270,7 +1278,7 @@ function dosExportCsv(){
       (r.workMinutes/60).toFixed(1), r.breakMinutes,
       r.outcomes.completed, r.outcomes.cancelled, r.outcomes.rejected, r.outcomes.no_show, r.outcomes.total,
       r.sources.dispatch||0, r.sources.passenger_app||0, r.sources.website||0, r.sources.food||0, r.sources.freight||0, r.sources.hail||0,
-      r.sources.other||0, r.sources.unknown||0,
+      r.sources.manual||0, r.sources.other||0, r.sources.unknown||0,
       r.vehicles.join(' '),
       r.cashHeld.toFixed(2), r.pay.cash.count, r.pay.card.owed.toFixed(2), r.pay.card.count,
       r.pay.eftpos.gross.toFixed(2), r.pay.eftpos.count,
