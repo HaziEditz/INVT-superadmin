@@ -40,7 +40,7 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
 .tbl tr:hover td{background:#F1F8F7}
 .money{font-weight:700;font-variant-numeric:tabular-nums}
 .owed{color:#E65100}.pill{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px}
-.pill.open{background:#FFF3E0;color:#E65100}.pill.paid{background:#E8F5E9;color:#2E7D32}
+.pill.open{background:#FFF3E0;color:#E65100}.pill.paid{background:#E8F5E9;color:#2E7D32}.pill.partial{background:#E3F2FD;color:#1565C0}
 .empty{text-align:center;padding:40px;color:#aaa}
 .bank{font-family:monospace;font-size:11px;color:#546e7a}
 .dos-sub{font-size:10px;color:#90a4ae;margin-top:2px}
@@ -84,7 +84,7 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
       <li><a href="SA-Drivers.aspx">All Drivers</a></li>
       <li><a href="SA-ShiftLogs.aspx">Shift Logs</a></li>
       <li><a href="SA-DriverOpsSummary.aspx" style="font-weight:700;color:#00695C">&#9658; Driver Ops &amp; Payments</a></li>
-      <li><a href="SA-AccountDriverSettlements.aspx">Account / ACC Settlements</a></li>
+      <li><a href="SA-AccountDriverSettlements.aspx">Account / ACC Driver Pay</a></li>
       <li><a href="SA-MasterReport.aspx">Platform Overview</a></li>
       <li><a href="Home.aspx">More&hellip;</a></li>
     </ul></li>
@@ -97,9 +97,9 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
   <p style="font-size:13px;color:#888;margin-bottom:14px">Company-scoped view of what each company owes its drivers. Same rules as the owner panel.</p>
 
   <div class="hint">
-    <b>Paid / unpaid (BookaWaka):</b> Card / TM / Hoist = company owes until Mark Paid.
-    <b>Tracked, not BW-owed:</b> Cash · EFTPOS (Verifone) · Account/ACC (company settles with own clients) — shown as total × count.
-    Mark Paid locks that driver&rsquo;s period. Bank details are reference-only for manual transfer.<br/>
+    <b>Paid / unpaid (BookaWaka):</b> Card and TM/Hoist are <b>independent</b> Mark Paid streams — lock Card for a period without locking TM (and vice versa).
+    <b>Tracked, not BW-owed:</b> Cash · EFTPOS (Verifone) · Account/ACC (company settles with own clients — see Account / ACC Settlements) — shown as total × count.
+    Bank details are reference-only for manual transfer.<br/>
     <b>Jobs legend:</b> Done = completed &middot; Canc = cancelled &middot; Rej = rejected &middot; <b>NS = No Show</b> &middot; Tot = total.<br/>
     <b>Sources:</b> Disp = dispatch console &middot; App = passenger app &middot; Web = website &middot; Food = food delivery &middot; Frt = freight &middot; Hail = driver app / street hail / queue &middot; Other = recognised but unmapped &middot; Unk = missing source field.
   </div>
@@ -137,8 +137,11 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
         <label>Status</label>
         <select id="dos-status" onchange="dosRender()">
           <option value="">All</option>
-          <option value="open">Unpaid</option>
-          <option value="paid">Paid</option>
+          <option value="card_open">Card unpaid</option>
+          <option value="tm_open">TM unpaid</option>
+          <option value="open">Any unpaid</option>
+          <option value="partial">Partial</option>
+          <option value="paid">Fully paid</option>
         </select>
       </div>
     </div>
@@ -152,9 +155,9 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
           <th title="Recognised source not in Disp/App/Web/Food/Frt/Hail">Other</th>
           <th title="Missing source / bookingSource field">Unk</th>
           <th>Vehicles</th><th>Cash held</th><th>Card</th><th>EFTPOS</th><th>TM</th><th>Account</th><th>Hoist</th>
-          <th>Company owes</th><th>Status</th><th>Bank</th><th></th>
+          <th>Card owes</th><th>TM owes</th><th>Total unpaid</th><th>Status</th><th>Bank</th><th></th>
         </tr></thead>
-        <tbody id="dos-tb"><tr><td colspan="22" class="empty">Choose a company to load.</td></tr></tbody>
+        <tbody id="dos-tb"><tr><td colspan="24" class="empty">Choose a company to load.</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -668,10 +671,23 @@ function dosJobTs(j){
     j.timestamp||j.Timestamp||j.createdAt||j.CreatedAt||j.jobDate||j.JobDate||j.dateTime||j.DateTime);
 }
 
-/** Build one driver summary row from jobs + shift minutes + settlement. */
+/** Build one driver summary row from jobs + shift minutes + Card/TM settlements (Track C). */
+function dosIsSettlementLocked(s){ return !!(s&&(s.locked||s.status==='paid')); }
+function dosResolveStreamLocks(opts){
+  opts=opts||{};
+  var legacyLocked=dosIsSettlementLocked(opts.legacySettlement||opts.settlement);
+  return {
+    cardLocked: legacyLocked || dosIsSettlementLocked(opts.cardSettlement),
+    tmLocked: legacyLocked || dosIsSettlementLocked(opts.tmSettlement),
+    legacyLocked: legacyLocked
+  };
+}
 function dosBuildDriverSummaryRow(opts){
   opts=opts||{};
-  var jobs=opts.jobs||[], cardSettings=opts.cardSettings||{}, settlement=opts.settlement||null;
+  var jobs=opts.jobs||[], cardSettings=opts.cardSettings||{};
+  var settlement=opts.settlement||null;
+  var cardSettlement=opts.cardSettlement||null;
+  var tmSettlement=opts.tmSettlement||null;
   var pay=dosEmptyPayTotals();
   var outcomes=dosEmptyOutcomeTotals();
   var sources=dosEmptySourceTotals();
@@ -714,17 +730,28 @@ function dosBuildDriverSummaryRow(opts){
   tmDetail.subsidy=Math.round(tmDetail.subsidy*100)/100;
   tmDetail.hoist=Math.round(tmDetail.hoist*100)/100;
   tmDetail.passengerPays=Math.round(tmDetail.passengerPays*100)/100;
-  var owedTotal=pay.card.owed+pay.tm.owed+pay.hoist.owed+pay.other.owed;
-  var locked=!!(settlement&&(settlement.locked||settlement.status==='paid'));
-  var status=locked?'paid':'open';
-  if(locked){ tmDetail.paid=tmDetail.owed; tmDetail.owed=0; }
+  var cardOwedBeforeLock=Math.round((pay.card.owed+pay.other.owed)*100)/100;
+  var tmOwedBeforeLock=Math.round((pay.tm.owed+pay.hoist.owed)*100)/100;
+  var owedBeforeLock=Math.round((cardOwedBeforeLock+tmOwedBeforeLock)*100)/100;
+  var locks=dosResolveStreamLocks({cardSettlement:cardSettlement,tmSettlement:tmSettlement,legacySettlement:settlement});
+  var cardLocked=locks.cardLocked, tmLocked=locks.tmLocked;
+  var locked=cardLocked&&tmLocked;
+  var status='open';
+  if(locked) status='paid';
+  else if(cardLocked||tmLocked) status='partial';
+  if(tmLocked){ tmDetail.paid=tmDetail.owed; tmDetail.owed=0; }
+  var cardOwed=cardLocked?0:cardOwedBeforeLock;
+  var tmOwed=tmLocked?0:tmOwedBeforeLock;
   return {
     driverId:String(opts.driverId||''), driverName:String(opts.driverName||opts.driverId||'Driver'),
     workMinutes:Math.max(0, opts.workMinutes|0), breakMinutes:Math.max(0, opts.breakMinutes|0),
     outcomes:outcomes, sources:sources, tmDetail:tmDetail, vehicles:Object.keys(vehicles).sort(),
     pay:pay, cashHeld:pay.cash.gross,
-    owedTotal:locked?0:Math.round(owedTotal*100)/100, owedBeforeLock:Math.round(owedTotal*100)/100,
-    status:status, locked:locked, settlement:settlement,
+    cardOwed:cardOwed, tmOwed:tmOwed,
+    cardOwedBeforeLock:cardOwedBeforeLock, tmOwedBeforeLock:tmOwedBeforeLock,
+    owedTotal:Math.round((cardOwed+tmOwed)*100)/100, owedBeforeLock:owedBeforeLock,
+    status:status, locked:locked, cardLocked:cardLocked, tmLocked:tmLocked,
+    cardSettlement:cardSettlement, tmSettlement:tmSettlement, settlement:settlement,
     bankName:(opts.bankName||''), accountName:(opts.accountName||''), accountNumber:(opts.accountNumber||''),
     jobs:jobs
   };
@@ -803,14 +830,14 @@ function dosIngestDriversMeta(dataRoot, dataCid, cid){
 function dosLoad(){
   var cid=document.getElementById('dos-company').value;
   if(!cid){
-    document.getElementById('dos-tb').innerHTML='<tr><td colspan="22" class="empty">Choose a company to load.</td></tr>';
+    document.getElementById('dos-tb').innerHTML='<tr><td colspan="24" class="empty">Choose a company to load.</td></tr>';
     document.getElementById('dos-stats').style.display='none';
     document.getElementById('dos-title').textContent='Select a company';
     return;
   }
   _dosPeriod=dosCurrentPeriod();
   document.getElementById('dos-title').textContent=(allCompanies[cid]&&allCompanies[cid].name||cid)+' \u2014 '+_dosPeriod.label;
-  document.getElementById('dos-tb').innerHTML='<tr><td colspan="22" class="empty">Loading\u2026</td></tr>';
+  document.getElementById('dos-tb').innerHTML='<tr><td colspan="24" class="empty">Loading\u2026</td></tr>';
 
   Promise.all([
     _fbGet('companies/'+cid+'/cardSettings').catch(function(){return {};}),
@@ -823,11 +850,15 @@ function dosLoad(){
     _fbGet('shiftLogs/'+cid).catch(function(){return null;}),
     _fbGet('attendance/'+cid).catch(function(){return null;}),
     _fbGet('driverSessions/'+cid).catch(function(){return null;}),
-    _fbGet('driverSettlements/'+cid+'/'+_dosPeriod.key).catch(function(){return null;})
+    _fbGet('driverSettlements/'+cid+'/'+_dosPeriod.key).catch(function(){return null;}),
+    _fbGet('cardDriverSettlements/'+cid+'/'+_dosPeriod.key).catch(function(){return null;}),
+    _fbGet('tmDriverSettlements/'+cid+'/'+_dosPeriod.key).catch(function(){return null;})
   ]).then(function(res){
     _dosCs=res[0]||{};
     var driversRoot=res[1], driversCid=res[2];
-    var settlements=res[10]||{};
+    var legacySettlements=res[10]||{};
+    var cardSettlements=res[11]||{};
+    var tmSettlements=res[12]||{};
 
     var shiftAgg=dosAggregateDriverShiftMinutes({
       companyId:cid, fromMs:_dosPeriod.fromMs, toMs:_dosPeriod.toMs,
@@ -918,14 +949,19 @@ function dosLoad(){
     });
     _dosDisp=Object.keys(dispMap).map(function(k){return dispMap[k];}).sort(function(a,b){return b.total-a.total;});
 
+    function pickSettle(map, did, meta){
+      return (map&&map[did])||(meta&&meta.pushKey&&map&&map[meta.pushKey])||null;
+    }
     _dosRows=Object.keys(byDriver).map(function(did){
       var meta=driversMeta[did]||{};
       var sm=shiftAgg.byDriver[did]||{workMinutes:0,breakMinutes:0};
-      var settle=settlements[did]||(meta.pushKey&&settlements[meta.pushKey])||null;
       return dosBuildDriverSummaryRow({
         driverId:did, driverName:meta.name||names[did]||did,
         jobs:byDriver[did], workMinutes:sm.workMinutes, breakMinutes:sm.breakMinutes,
-        cardSettings:_dosCs, settlement:settle,
+        cardSettings:_dosCs,
+        settlement:pickSettle(legacySettlements, did, meta),
+        cardSettlement:pickSettle(cardSettlements, did, meta),
+        tmSettlement:pickSettle(tmSettlements, did, meta),
         bankName:meta.bankName, accountName:meta.accountName, accountNumber:meta.accountNumber
       });
     }).filter(function(r){
@@ -938,36 +974,59 @@ function dosLoad(){
 
     dosRender();
   }).catch(function(e){
-    document.getElementById('dos-tb').innerHTML='<tr><td colspan="22" class="empty">Error: '+esc(e&&e.message||e)+'</td></tr>';
+    document.getElementById('dos-tb').innerHTML='<tr><td colspan="24" class="empty">Error: '+esc(e&&e.message||e)+'</td></tr>';
   });
 }
 
+function dosStatusLabel(r){
+  if(r.status==='paid') return 'Paid';
+  if(r.status==='partial') return 'Partial';
+  return 'Unpaid';
+}
+function dosMatchesStatusFilter(r, sf){
+  if(!sf) return true;
+  if(sf==='card_open') return !r.cardLocked && r.cardOwedBeforeLock>0;
+  if(sf==='tm_open') return !r.tmLocked && r.tmOwedBeforeLock>0;
+  if(sf==='open') return r.owedTotal>0;
+  if(sf==='partial') return r.status==='partial';
+  if(sf==='paid') return r.status==='paid';
+  return r.status===sf;
+}
 function dosRender(){
   var sf=document.getElementById('dos-status').value;
-  var rows=_dosRows.filter(function(r){ return !sf||r.status===sf; }).slice().sort(function(a,b){ return b.owedTotal-a.owedTotal; });
-  var unpaid=0,cash=0,jobs=0,paidN=0,workMin=0;
-  rows.forEach(function(r){ unpaid+=r.owedTotal; cash+=r.cashHeld; jobs+=r.outcomes.total; workMin+=r.workMinutes||0; if(r.status==='paid') paidN++; });
+  var rows=_dosRows.filter(function(r){ return dosMatchesStatusFilter(r, sf); }).slice().sort(function(a,b){ return b.owedTotal-a.owedTotal; });
+  var unpaid=0,cardUnpaid=0,tmUnpaid=0,cash=0,jobs=0,paidN=0,workMin=0;
+  rows.forEach(function(r){
+    unpaid+=r.owedTotal; cardUnpaid+=r.cardOwed; tmUnpaid+=r.tmOwed;
+    cash+=r.cashHeld; jobs+=r.outcomes.total; workMin+=r.workMinutes||0;
+    if(r.status==='paid') paidN++;
+  });
   document.getElementById('dos-stats').style.display='grid';
   document.getElementById('dos-stats').innerHTML=
     '<div class="stat"><div class="v">'+rows.length+'</div><div class="l">Drivers</div></div>'+
+    '<div class="stat"><div class="v owed">'+money(cardUnpaid)+'</div><div class="l">Card unpaid</div></div>'+
+    '<div class="stat"><div class="v owed">'+money(tmUnpaid)+'</div><div class="l">TM unpaid</div></div>'+
     '<div class="stat"><div class="v owed">'+money(unpaid)+'</div><div class="l">Total unpaid</div></div>'+
     '<div class="stat"><div class="v">'+money(cash)+'</div><div class="l">Cash held</div></div>'+
-    '<div class="stat"><div class="v">'+paidN+'</div><div class="l">Paid / locked</div></div>'+
+    '<div class="stat"><div class="v">'+paidN+'</div><div class="l">Fully paid</div></div>'+
     '<div class="stat"><div class="v">'+jobs+'</div><div class="l">Jobs</div></div>'+
     '<div class="stat"><div class="v">'+dosFmtDur(workMin)+'</div><div class="l">Hours worked</div></div>';
 
   if(!rows.length){
-    document.getElementById('dos-tb').innerHTML='<tr><td colspan="22" class="empty">No driver activity in this period.</td></tr>';
+    document.getElementById('dos-tb').innerHTML='<tr><td colspan="24" class="empty">No driver activity in this period.</td></tr>';
   } else {
     document.getElementById('dos-tb').innerHTML=rows.map(function(r){
-      var mark=r.locked
-        ? '<button class="sa-btn sa-btn-g" disabled>Paid</button>'
-        : '<button class="sa-btn sa-btn-p" onclick="dosMarkPaid(\''+esc(r.driverId)+'\')">Mark Paid</button>';
+      var markCard=r.cardLocked || !(r.cardOwedBeforeLock>0)
+        ? '<button class="sa-btn sa-btn-g" disabled title="'+(r.cardLocked?'Card locked':'No card owed')+'">'+(r.cardLocked?'Card paid':'Card')+'</button>'
+        : '<button class="sa-btn sa-btn-p" onclick="dosMarkCardPaid(\''+esc(r.driverId)+'\')">Mark Card</button>';
+      var markTm=r.tmLocked || !(r.tmOwedBeforeLock>0)
+        ? '<button class="sa-btn sa-btn-g" disabled title="'+(r.tmLocked?'TM locked':'No TM owed')+'">'+(r.tmLocked?'TM paid':'TM')+'</button>'
+        : '<button class="sa-btn sa-btn-p" onclick="dosMarkTmPaid(\''+esc(r.driverId)+'\')">Mark TM</button>';
       var bank=r.accountNumber
         ? '<span class="bank" title="'+esc((r.bankName||'')+' / '+(r.accountName||''))+'">'+esc(r.accountNumber)+'</span>'
         : '<span class="dos-zero">\u2014</span>';
       var t=r.tmDetail;
-      var tmMain=t.trips?dosFormatPayWithCount(r.locked?t.paid:t.owed, t.trips):'$0.00';
+      var tmMain=t.trips?dosFormatPayWithCount(r.tmLocked?t.paid:t.owed, t.trips):'$0.00';
       var tmSub=t.trips?('Sub '+money(t.subsidy)+' \u00b7 Hoist '+money(t.hoist)):'';
       return '<tr>'+
         '<td><b>'+esc(r.driverName)+'</b><div class="dos-sub">'+esc(r.driverId)+'</div></td>'+
@@ -983,15 +1042,17 @@ function dosRender(){
         '<td>'+(r.sources.unknown||0)+'</td>'+
         '<td>'+esc(r.vehicles.join(', ')||'\u2014')+'</td>'+
         '<td class="money">'+dosFormatPayWithCount(r.cashHeld, r.pay.cash.count)+'</td>'+
-        '<td class="money">'+dosFormatPayWithCount(r.pay.card.owed, r.pay.card.count)+'</td>'+
+        '<td class="money">'+dosFormatPayWithCount(r.cardLocked?0:r.pay.card.owed, r.pay.card.count)+'</td>'+
         '<td class="money">'+dosFormatPayWithCount(r.pay.eftpos.gross, r.pay.eftpos.count)+'</td>'+
         '<td class="money">'+tmMain+(tmSub?'<div class="dos-sub">'+tmSub+'</div>':'')+'</td>'+
         '<td class="money">'+dosFormatPayWithCount(r.pay.account.gross, r.pay.account.count)+'</td>'+
-        '<td class="money">'+dosFormatPayWithCount(r.pay.hoist.owed, r.pay.hoist.count)+'</td>'+
-        '<td class="money owed">'+money(r.owedTotal)+(r.locked?' <span class="dos-sub" style="color:#2E7D32">('+money(r.owedBeforeLock)+' locked)</span>':'')+'</td>'+
-        '<td><span class="pill '+r.status+'">'+(r.status==='paid'?'Paid':'Unpaid')+'</span></td>'+
+        '<td class="money">'+dosFormatPayWithCount(r.tmLocked?0:r.pay.hoist.owed, r.pay.hoist.count)+'</td>'+
+        '<td class="money owed">'+money(r.cardOwed)+(r.cardLocked?' <span class="dos-sub" style="color:#2E7D32">('+money(r.cardOwedBeforeLock)+')</span>':'')+'</td>'+
+        '<td class="money owed">'+money(r.tmOwed)+(r.tmLocked?' <span class="dos-sub" style="color:#2E7D32">('+money(r.tmOwedBeforeLock)+')</span>':'')+'</td>'+
+        '<td class="money owed">'+money(r.owedTotal)+'</td>'+
+        '<td><span class="pill '+r.status+'">'+dosStatusLabel(r)+'</span></td>'+
         '<td>'+bank+'</td>'+
-        '<td style="white-space:nowrap"><button class="sa-btn sa-btn-g" onclick="dosOpenDetail(\''+esc(r.driverId)+'\')">Detail</button> '+mark+'</td>'+
+        '<td style="white-space:nowrap"><button class="sa-btn sa-btn-g" onclick="dosOpenDetail(\''+esc(r.driverId)+'\')">Detail</button> '+markCard+' '+markTm+'</td>'+
       '</tr>';
     }).join('');
   }
@@ -1010,8 +1071,9 @@ function dosOpenDetail(driverId){
   var html='<div class="sa-kv">'+
     '<div><div class="k">Hours / breaks</div><div class="val">'+dosFmtDur(r.workMinutes)+' / '+dosFmtDur(r.breakMinutes)+'</div></div>'+
     '<div><div class="k">Company owes</div><div class="val" style="color:#E65100">'+money(r.owedTotal)+'</div></div>'+
+    '<div><div class="k">Card / TM owed</div><div class="val">'+money(r.cardOwed)+' / '+money(r.tmOwed)+'</div></div>'+
     '<div><div class="k">Cash held</div><div class="val">'+money(r.cashHeld)+'</div></div>'+
-    '<div><div class="k">Status</div><div class="val">'+(r.locked?'Paid &amp; locked':'Open / unpaid')+'</div></div>'+
+    '<div><div class="k">Status</div><div class="val">'+dosStatusLabel(r)+(r.cardLocked?' · Card locked':'')+(r.tmLocked?' · TM locked':'')+'</div></div>'+
     '<div><div class="k">Jobs</div><div class="val">Done '+r.outcomes.completed+' \u00b7 Canc '+r.outcomes.cancelled+' \u00b7 Rej '+r.outcomes.rejected+' \u00b7 NS '+r.outcomes.no_show+' \u00b7 Tot '+r.outcomes.total+'</div></div>'+
     '<div><div class="k">Vehicles</div><div class="val">'+esc(r.vehicles.join(', ')||'\u2014')+'</div></div>'+
     '<div style="grid-column:1 / -1"><div class="k">Sources</div><div class="val">'+esc(srcBits||'\u2014')+'</div></div>'+
@@ -1045,30 +1107,44 @@ function dosOpenDetail(driverId){
 }
 function dosCloseDetail(){ document.getElementById('dos-detail-ov').classList.remove('show'); }
 
-function dosMarkPaid(driverId){
+function dosMarkStreamPaid(driverId, kind){
   var cid=document.getElementById('dos-company').value;
   var r=_dosRows.find(function(x){return x.driverId===driverId;});
-  if(!r||!cid||r.locked) return;
-  if(!confirm('Mark '+r.driverName+' paid for '+_dosPeriod.label+'?\nAmount: '+money(r.owedBeforeLock)+'\nThis locks the period.')) return;
+  if(!r||!cid) return;
+  var isCard=kind==='card';
+  if(isCard){ if(r.cardLocked||!(r.cardOwedBeforeLock>0)) return; }
+  else { if(r.tmLocked||!(r.tmOwedBeforeLock>0)) return; }
+  var amt=isCard?r.cardOwedBeforeLock:r.tmOwedBeforeLock;
+  var label=isCard?'Card':'TM/Hoist';
+  if(!confirm('Mark '+r.driverName+' '+label+' paid for '+_dosPeriod.label+'?\nAmount: '+money(amt)+'\nLocks '+label+' only (independent of the other stream).')) return;
+  var root=isCard?'cardDriverSettlements':'tmDriverSettlements';
   var payload={
-    status:'paid', locked:true, amountPaid:r.owedBeforeLock,
+    status:'paid', locked:true, amountPaid:amt, kind:isCard?'card':'tm',
     periodKey:_dosPeriod.key, periodLabel:_dosPeriod.label,
     fromMs:_dosPeriod.fromMs, toMs:_dosPeriod.toMs,
     driverId:driverId, driverName:r.driverName,
-    cashHeld:r.cashHeld, pay:r.pay, tmDetail:r.tmDetail, sources:r.sources,
+    pay:r.pay, tmDetail:r.tmDetail, sources:r.sources,
     paidAt:Date.now(), paidBy:'superadmin'
   };
-  _fbPost('driverSettlements/'+cid+'/'+_dosPeriod.key+'/'+driverId,'PUT',payload).then(function(){
-    r.tmDetail.paid=r.tmDetail.owed;
-    r.tmDetail.owed=0;
-    r.locked=true; r.status='paid'; r.owedTotal=0;
+  _fbPost(root+'/'+cid+'/'+_dosPeriod.key+'/'+driverId,'PUT',payload).then(function(){
+    if(isCard){
+      r.cardSettlement=payload; r.cardLocked=true; r.cardOwed=0;
+    } else {
+      r.tmSettlement=payload; r.tmLocked=true; r.tmOwed=0;
+      r.tmDetail.paid=r.tmDetail.owed; r.tmDetail.owed=0;
+    }
+    r.owedTotal=Math.round(((r.cardOwed||0)+(r.tmOwed||0))*100)/100;
+    r.locked=!!(r.cardLocked&&r.tmLocked);
+    r.status=r.locked?'paid':((r.cardLocked||r.tmLocked)?'partial':'open');
     dosRender();
   }).catch(function(e){ alert('Mark paid failed: '+(e&&e.message||e)); });
 }
+function dosMarkCardPaid(driverId){ dosMarkStreamPaid(driverId, 'card'); }
+function dosMarkTmPaid(driverId){ dosMarkStreamPaid(driverId, 'tm'); }
 
 function dosExportCsv(){
   var sf=document.getElementById('dos-status').value;
-  var rows=_dosRows.filter(function(r){ return !sf||r.status===sf; });
+  var rows=_dosRows.filter(function(r){ return dosMatchesStatusFilter(r, sf); });
   var cid=document.getElementById('dos-company').value;
   var headers=['Company','Driver','DriverId','Period','Hours','BreakMin',
     'Done','Cancelled','Rejected','NoShow','JobsTotal',
@@ -1076,7 +1152,7 @@ function dosExportCsv(){
     'CashHeld','CashCount','CardOwed','CardCount','EftposGross','EftposCount',
     'TmTrips','TmFare','TmSubsidy','TmHoist','TmHoistUses','TmPassengerPays','TmOwed','TmPaid',
     'AccountGross','AccountCount','HoistOwed','HoistCount',
-    'OwedTotal','Status','BankName','AccountName','AccountNumber'];
+    'CardStreamOwed','TmStreamOwed','OwedTotal','CardStatus','TmStatus','Status','BankName','AccountName','AccountNumber'];
   var lines=[headers.join(',')];
   rows.forEach(function(r){
     function q(v){ v=String(v==null?'':v); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
@@ -1092,7 +1168,8 @@ function dosExportCsv(){
       r.tmDetail.trips, r.tmDetail.fare.toFixed(2), r.tmDetail.subsidy.toFixed(2), r.tmDetail.hoist.toFixed(2),
       r.tmDetail.hoistUses, r.tmDetail.passengerPays.toFixed(2), r.tmDetail.owed.toFixed(2), r.tmDetail.paid.toFixed(2),
       r.pay.account.gross.toFixed(2), r.pay.account.count, r.pay.hoist.owed.toFixed(2), r.pay.hoist.count,
-      r.owedTotal.toFixed(2), r.status, r.bankName, r.accountName, r.accountNumber
+      r.cardOwed.toFixed(2), r.tmOwed.toFixed(2), r.owedTotal.toFixed(2),
+      r.cardLocked?'paid':'open', r.tmLocked?'paid':'open', r.status, r.bankName, r.accountName, r.accountNumber
     ].map(q).join(','));
   });
   var a=document.createElement('a');
