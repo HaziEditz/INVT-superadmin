@@ -51,7 +51,7 @@ import {
   tripDurationMinOf,
   formatDurationTotal,
 } from '../lib/tmUnifiedTrips';
-import { formatNzDate, tzDayEnd, tzDayStart } from '../lib/tzDayBounds';
+import { formatNzDate, formatNzDateTime, tzDayEnd, tzDayStart } from '../lib/tzDayBounds';
 import {
   buildTripEvent,
   newEventKey,
@@ -450,7 +450,7 @@ function tripHistoryHtml(stOrTrip: any): string {
   }
   const items = events
     .map((e) => {
-      const when = e.at ? new Date(e.at).toLocaleString('en-NZ') : '—';
+      const when = e.at ? formatNzDateTime(e.at) : '—';
       const by = e.by ? ` · ${esc(String(e.by))}` : '';
       const label = formatEventLabel(e);
       return `<div class="cp-timeline-item">

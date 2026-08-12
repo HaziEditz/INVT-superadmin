@@ -50,3 +50,11 @@ export function formatNzDate(ts: number | string | null | undefined): string {
   if (!Number.isFinite(n) || n <= 0) return '—';
   return new Date(n).toLocaleDateString('en-NZ', { timeZone: 'Pacific/Auckland' });
 }
+
+/** en-NZ date+time in Pacific/Auckland (trip History log, etc.). */
+export function formatNzDateTime(ts: number | string | null | undefined): string {
+  if (ts == null || ts === '') return '—';
+  const n = typeof ts === 'number' ? ts : Date.parse(String(ts));
+  if (!Number.isFinite(n) || n <= 0) return '—';
+  return new Date(n).toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland' });
+}

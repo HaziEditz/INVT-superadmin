@@ -6,7 +6,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { tzDayEnd, tzDayStart, formatNzDate } from '../src/lib/tzDayBounds.ts';
+import { tzDayEnd, tzDayStart, formatNzDate, formatNzDateTime } from '../src/lib/tzDayBounds.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const unifiedSrc = readFileSync(join(root, 'src/lib/tmUnifiedTrips.ts'), 'utf8');
@@ -317,6 +317,21 @@ test('NZ early-morning trip (prev UTC day) included on actual NZ date filter', (
   assert.equal(onNzAug12.length, 0);
   assert.equal(formatNzDate(tripMs), '13/08/2026');
   assert.equal(formatNzDate(1786542135756), '13/08/2026'); // batch submittedAt
+  assert.match(formatNzDateTime(1786542075684), /13\/08\/2026/); // History submitted
+  assert.match(formatNzDateTime(1786542135061), /13\/08\/2026/); // History auto-approved
+  assert.doesNotMatch(formatNzDateTime(1786542075684), /^12\/08\/2026/);
+  // Bare en-NZ (no Auckland) on a UTC+12 host can still land on 13/08; the bug is
+  // UTC/west-of-NZ hosts showing 12/08 — force-check Auckland wall-clock date parts.
+  const aucklandParts = new Intl.DateTimeFormat('en-NZ', {
+    timeZone: 'Pacific/Auckland',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).formatToParts(new Date(1786542075684));
+  const day = aucklandParts.find((p) => p.type === 'day')?.value;
+  const month = aucklandParts.find((p) => p.type === 'month')?.value;
+  const year = aucklandParts.find((p) => p.type === 'year')?.value;
+  assert.equal(`${day}/${month}/${year}`, '13/08/2026');
 });
 
 test('source uses NZ day bounds + Auckland date display (not bare Date.parse local)', () => {
@@ -324,8 +339,15 @@ test('source uses NZ day bounds + Auckland date display (not bare Date.parse loc
   assert.match(unifiedSrc, /tzDayEnd/);
   assert.doesNotMatch(unifiedSrc, /Date\.parse\(String\(opts\.from\) \+ 'T00:00:00'\)/);
   assert.match(councilSrc, /formatNzDate/);
+  assert.match(councilSrc, /formatNzDateTime/);
   assert.match(councilSrc, /tzDayStart/);
   assert.match(councilSrc, /Pacific\/Auckland/);
+  assert.match(councilSrc, /function tripHistoryHtml/);
+  assert.match(councilSrc, /formatNzDateTime\(e\.at\)/);
+  assert.doesNotMatch(
+    councilSrc.slice(councilSrc.indexOf('function tripHistoryHtml'), councilSrc.indexOf('function companyFilterOptionsHtml')),
+    /toLocaleString\('en-NZ'\)/,
+  );
   const batches = readFileSync(
     join(root, 'taxitime.co.nz/superadmin360taxi/TM-Batches.aspx'),
     'utf8',
