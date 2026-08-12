@@ -225,13 +225,24 @@ function isClaimEligibleStatus(status) {
 function tripWasEverFlagged(trip) {
   const flaggedAt = trip?.flaggedAt;
   if (flaggedAt != null && flaggedAt !== '' && Number(flaggedAt) !== 0) return true;
+  const rejectedAt = trip?.rejectedAt;
+  if (rejectedAt != null && rejectedAt !== '' && Number(rejectedAt) !== 0) return true;
   const events = trip?.events;
   if (events && typeof events === 'object') {
     for (const ev of Object.values(events)) {
       if (!ev || typeof ev !== 'object') continue;
       const type = String(ev.type || '').trim().toLowerCase();
       const to = String(ev.toStatus || '').trim().toLowerCase();
-      if (type === 'flagged' || to === 'flagged') return true;
+      if (
+        type === 'flagged' ||
+        to === 'flagged' ||
+        type === 'rejected' ||
+        to === 'rejected' ||
+        type === 'returned' ||
+        to === 'revision_needed'
+      ) {
+        return true;
+      }
     }
   }
   return false;
@@ -574,6 +585,23 @@ test('shouldAutoApproveCleanTrip: previously flagged then cleared still requires
       events: {
         e1: { type: 'flagged', toStatus: 'flagged', at: 1 },
       },
+    }),
+    false,
+  );
+  // Council reject/return also blocks forever auto-approve
+  assert.equal(
+    shouldAutoApproveCleanTrip({
+      status: 'submitted',
+      flagReasons: [],
+      events: { e1: { type: 'rejected', toStatus: 'revision_needed', at: 2 } },
+    }),
+    false,
+  );
+  assert.equal(
+    shouldAutoApproveCleanTrip({
+      status: 'submitted',
+      flagReasons: [],
+      rejectedAt: 1786542135061,
     }),
     false,
   );

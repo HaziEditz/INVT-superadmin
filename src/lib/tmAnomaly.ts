@@ -408,17 +408,20 @@ export function isClaimEligibleStatus(status: string | null | undefined): boolea
 }
 
 /**
- * True if this trip was ever anomaly-flagged (even if later cleared / resubmitted).
- * Uses flaggedAt and event log — does not change detection rules.
+ * True if this trip was ever anomaly-flagged or council-rejected/returned
+ * (even if later cleared / resubmitted). Uses flaggedAt/rejectedAt and event log.
  */
 export function tripWasEverFlagged(
   trip: AnomalyTripLike & {
     flaggedAt?: unknown;
+    rejectedAt?: unknown;
     events?: Record<string, unknown> | null;
   },
 ): boolean {
   const flaggedAt = trip?.flaggedAt;
   if (flaggedAt != null && flaggedAt !== '' && Number(flaggedAt) !== 0) return true;
+  const rejectedAt = trip?.rejectedAt;
+  if (rejectedAt != null && rejectedAt !== '' && Number(rejectedAt) !== 0) return true;
   const events = trip?.events;
   if (events && typeof events === 'object') {
     for (const ev of Object.values(events)) {
@@ -430,7 +433,16 @@ export function tripWasEverFlagged(
       const to = String(row.toStatus || '')
         .trim()
         .toLowerCase();
-      if (type === 'flagged' || to === 'flagged') return true;
+      if (
+        type === 'flagged' ||
+        to === 'flagged' ||
+        type === 'rejected' ||
+        to === 'rejected' ||
+        type === 'returned' ||
+        to === 'revision_needed'
+      ) {
+        return true;
+      }
     }
   }
   return false;

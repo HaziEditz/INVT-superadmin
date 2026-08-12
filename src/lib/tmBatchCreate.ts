@@ -374,6 +374,57 @@ export function mergeApprovedTripIntoBatch(
 }
 
 /**
+ * Remove one trip from a claim batch trips[] and refresh stored counts/totals.
+ * Preserves batch status (submitted/approved/…). Returns found=false if not listed.
+ */
+export function planRemoveTripFromBatch(
+  batch: Record<string, unknown> | null | undefined,
+  cid: string,
+  rawKey: string,
+  opts?: { removedSubsidy?: number | null },
+): {
+  found: boolean;
+  trips: BatchTripRef[];
+  tripCount: number;
+  totalSubsidy: number;
+  payload: Record<string, unknown>;
+} {
+  const companyCid = String(cid || '').trim();
+  const key = String(rawKey || '').trim();
+  const ex = batch && typeof batch === 'object' ? batch : {};
+  const trips = normalizeBatchTripRefs((ex as { trips?: unknown }).trips, companyCid);
+  const next = trips.filter((t) => !(t.cid === companyCid && t.rawKey === key));
+  const found = next.length < trips.length;
+  let totalSubsidy =
+    parseFloat(
+      String(
+        (ex as { totalSubsidy?: unknown }).totalSubsidy != null
+          ? (ex as { totalSubsidy?: unknown }).totalSubsidy
+          : (ex as { claimAmount?: unknown }).claimAmount || 0,
+      ),
+    ) || 0;
+  if (found && opts?.removedSubsidy != null && Number.isFinite(Number(opts.removedSubsidy))) {
+    totalSubsidy = Math.max(0, +(totalSubsidy - Number(opts.removedSubsidy)).toFixed(2));
+  } else if (found && next.length === 0) {
+    totalSubsidy = 0;
+  }
+  totalSubsidy = +totalSubsidy.toFixed(2);
+  return {
+    found,
+    trips: next,
+    tripCount: next.length,
+    totalSubsidy,
+    payload: {
+      trips: next,
+      tripCount: next.length,
+      totalTrips: next.length,
+      totalSubsidy,
+      claimAmount: totalSubsidy,
+    },
+  };
+}
+
+/**
  * Approve → batch upsert with addendum spill when the primary month batch is locked.
  * Reads all company month keys under tmBatches/{council}/{cid}.
  */

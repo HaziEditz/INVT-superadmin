@@ -13,13 +13,24 @@ const appSrc = readFileSync(join(root, 'src/app.ts'), 'utf8');
 function tripWasEverFlagged(trip) {
   const flaggedAt = trip?.flaggedAt;
   if (flaggedAt != null && flaggedAt !== '' && Number(flaggedAt) !== 0) return true;
+  const rejectedAt = trip?.rejectedAt;
+  if (rejectedAt != null && rejectedAt !== '' && Number(rejectedAt) !== 0) return true;
   const events = trip?.events;
   if (events && typeof events === 'object') {
     for (const ev of Object.values(events)) {
       if (!ev || typeof ev !== 'object') continue;
       const type = String(ev.type || '').trim().toLowerCase();
       const to = String(ev.toStatus || '').trim().toLowerCase();
-      if (type === 'flagged' || to === 'flagged') return true;
+      if (
+        type === 'flagged' ||
+        to === 'flagged' ||
+        type === 'rejected' ||
+        to === 'rejected' ||
+        type === 'returned' ||
+        to === 'revision_needed'
+      ) {
+        return true;
+      }
     }
   }
   return false;

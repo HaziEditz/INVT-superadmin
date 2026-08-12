@@ -75,6 +75,7 @@ import {
   planCouncilBatchCreates,
   shouldWriteBatchCreate,
   planApprovedTripBatchUpsert,
+  planRemoveTripFromBatch,
   computeDisplayBatchTotals,
   listOrphanApprovedTrips,
   subsidyOfTrip,
@@ -123,6 +124,42 @@ function upsertApprovedTripIntoMonthBatch(
         () => cb(),
       );
     });
+  });
+}
+
+/**
+ * After council rejects a trip, remove it from its claim batch (if any) and clear
+ * batchId/batchYm on the trip so it cannot stay claimable on that batch.
+ */
+function afterRejectRemoveFromBatch(
+  councilId: string,
+  tripCid: string,
+  tripRawKey: string,
+  statusExtras: Record<string, unknown> | null | undefined,
+  removedSubsidy: number,
+  cb: () => void,
+): void {
+  const st = statusExtras && typeof statusExtras === 'object' ? statusExtras : {};
+  const batchId = String(st.batchId || '').trim();
+  const batchYm = String(st.batchYm || '').trim();
+  const pathSuffix = batchId.includes('/')
+    ? batchId
+    : batchYm
+      ? tripCid + '/' + batchYm
+      : '';
+  const clearTripBatch = (next: () => void) => {
+    fbWrite('DELETE', 'tmTripStatus/' + tripCid + '/' + tripRawKey + '/batchId', null, () => {
+      fbWrite('DELETE', 'tmTripStatus/' + tripCid + '/' + tripRawKey + '/batchYm', null, () => next());
+    });
+  };
+  if (!councilId || !pathSuffix) return clearTripBatch(cb);
+  const batchPath = 'tmBatches/' + councilId + '/' + pathSuffix;
+  fbRead(batchPath, (_e: any, batch: any) => {
+    const plan = planRemoveTripFromBatch(batch, tripCid, tripRawKey, {
+      removedSubsidy,
+    });
+    if (!plan.found) return clearTripBatch(cb);
+    fbWrite('PATCH', batchPath, plan.payload, () => clearTripBatch(cb));
   });
 }
 
@@ -919,6 +956,7 @@ router.get('/api/council-tz-check', (req, res) => {
     auckland: formatNzDateTime(at),
     dateOnly: formatNzDate(at),
     batchesUi: 'advanced-repair-collapsed',
+    rejectFlow: 'per-trip-details-v1',
   });
 });
 
@@ -950,6 +988,7 @@ const COUNCIL_RETURN_TO_ALLOWED = new Set([
   'archived',
   'reports',
   'trips',
+  'batches',
   'all',
   'approved',
   'paid',
@@ -967,12 +1006,25 @@ function normalizeCouncilReturnTo(raw: string | undefined, fallback = 'pending')
   return fallback;
 }
 
-/** Post-action redirects always land on unified Trips with a status filter. */
+/** Post-action redirects: Trips (status filter) or Claim Batches. */
 function councilReturnPath(
   returnTo: string,
   te: string,
-  filters?: { q?: string; company?: string; from?: string; to?: string } | null,
+  filters?: { q?: string; company?: string; from?: string; to?: string; tab?: string } | null,
 ): string {
+  const rt = String(returnTo || '').trim().toLowerCase();
+  if (rt === 'batches') {
+    const parts = [`t=${te}`];
+    const tab = String(filters?.tab || 'submitted').trim() || 'submitted';
+    parts.push('tab=' + encodeURIComponent(tab));
+    if (filters) {
+      for (const k of ['company', 'from', 'to'] as const) {
+        const v = String(filters[k] || '').trim();
+        if (v) parts.push(k + '=' + encodeURIComponent(v));
+      }
+    }
+    return '/council-portal/batches?' + parts.join('&');
+  }
   const status = legacyReturnToStatus(returnTo);
   const parts = [`t=${te}`, `status=${encodeURIComponent(status)}`];
   if (filters) {
@@ -1022,9 +1074,18 @@ router.post('/api/council-approve', (req, res) => {
   const returnTo = normalizeCouncilReturnTo(req.body.returnTo, 'pending');
   const flagReason = String(req.body.flagReason || '').trim();
   const note = String(req.body.note || req.body.revisionNote || '').trim();
+  const batchTab = String(req.body.tab || req.body.batchTab || 'submitted').trim();
+  const filterCompany = String(req.body.company || '').trim();
+  const filterFrom = String(req.body.from || '').trim();
+  const filterTo = String(req.body.to || '').trim();
   const sess = cpGetSession(token);
   const te = encodeURIComponent(token);
-  const base = councilReturnPath(returnTo, te);
+  const base = councilReturnPath(returnTo, te, {
+    tab: batchTab,
+    company: filterCompany,
+    from: filterFrom,
+    to: filterTo,
+  });
   if (!sess || !tripCid || !tripRawKey || !['approve', 'reject', 'return'].includes(action)) {
     return res.redirect(base + '&msg=Invalid+request&mt=err');
   }
@@ -1049,16 +1110,20 @@ router.post('/api/council-approve', (req, res) => {
       msg = 'Trip approved successfully.';
       eventType = 'approved';
     } else if (action === 'reject') {
+      // Reject → revision_needed so owner can fix/resubmit; event type rejected
+      // still blocks forever-auto-approve via tripWasEverFlagged.
       const reason = flagReason || 'other';
       patch = {
-        status: 'rejected',
+        status: 'revision_needed',
         rejectedAt: now,
         rejectedBy: who,
+        sentBackAt: now,
+        sentBackBy: who,
         flagReasons: [reason],
         rejectNote: note,
         revisionNote: note,
       };
-      msg = 'Trip rejected / red-flagged.';
+      msg = 'Trip rejected and returned for revision (removed from claim batch).';
       eventType = 'rejected';
     } else {
       patch = {
@@ -1085,8 +1150,31 @@ router.post('/api/council-approve', (req, res) => {
       appendTripEvent(tripCid, tripRawKey, ev, () => {
         const finish = () =>
           res.redirect(base + '&msg=' + encodeURIComponent(msg) + '&mt=ok');
-        if (action !== 'approve') return finish();
-        afterCouncilApproveAddToBatch(sess.councilId, tripCid, tripRawKey, who, st, finish);
+        if (action === 'approve') {
+          return afterCouncilApproveAddToBatch(sess.councilId, tripCid, tripRawKey, who, st, finish);
+        }
+        if (action === 'reject' || action === 'return') {
+          // Load job economics so we can subtract subsidy from the batch total.
+          return fbRead('completedJobs/' + tripCid + '/' + tripRawKey, (_ej: any, job: any) => {
+            const tripLike: CouncilTripLike = {
+              ...(job && typeof job === 'object' ? job : {}),
+              ...st,
+              _cid: tripCid,
+              _rawKey: tripRawKey,
+              ...normalizeTmTripEconomics(job && typeof job === 'object' ? job : {}),
+            };
+            const removedSub = subsidyOfTrip(tripLike);
+            afterRejectRemoveFromBatch(
+              sess.councilId,
+              tripCid,
+              tripRawKey,
+              st,
+              removedSub,
+              finish,
+            );
+          });
+        }
+        return finish();
       });
     });
   });
@@ -2127,7 +2215,9 @@ function buildActionForms(d){
     h += '</div>';
     return h;
   }
-  if(_ACTIONABLE[d.status]){
+  var canApprove = !!_ACTIONABLE[d.status];
+  var canReject = canApprove || d.status==='approved';
+  if(canApprove){
     h += '<form method="POST" action="/api/council-approve">';
     h += '<input type="hidden" name="_token" value="'+_escAttr(_cpToken)+'"/>';
     h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
@@ -2135,12 +2225,20 @@ function buildActionForms(d){
     h += '<input type="hidden" name="action" value="approve"/>';
     h += '<input type="hidden" name="returnTo" value="'+_escAttr(_cpReturnTo)+'"/>';
     h += '<button type="submit" class="cp-btn cp-btn-g">&#10003; Approve</button></form>';
+  }
+  if(canReject){
     h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFCDD2;border-radius:6px;background:#FFEBEE" onsubmit="return !!this.note.value.trim()||(alert(&#39;Reject note required&#39;),false)">';
     h += '<input type="hidden" name="_token" value="'+_escAttr(_cpToken)+'"/>';
     h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
     h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
     h += '<input type="hidden" name="action" value="reject"/>';
     h += '<input type="hidden" name="returnTo" value="'+_escAttr(_cpReturnTo)+'"/>';
+    if(_cpReturnTo==='batches'){
+      h += '<input type="hidden" name="tab" value="'+_escAttr(typeof _cpTab==='string'?_cpTab:'submitted')+'"/>';
+      h += '<input type="hidden" name="from" value="'+_escAttr(typeof _cpFrom==='string'?_cpFrom:'')+'"/>';
+      h += '<input type="hidden" name="to" value="'+_escAttr(typeof _cpTo==='string'?_cpTo:'')+'"/>';
+      h += '<input type="hidden" name="company" value="'+_escAttr(typeof _cpCompany==='string'?_cpCompany:'')+'"/>';
+    }
     h += '<select name="flagReason" class="cp-input" style="width:auto">';
     h += '<option value="fare_mismatch">fare_mismatch</option>';
     h += '<option value="waiting_charged">waiting_charged</option>';
@@ -2151,7 +2249,9 @@ function buildActionForms(d){
     h += '<option value="implausible_short_trip">implausible_short_trip</option>';
     h += '<option value="other">other</option></select>';
     h += '<input name="note" class="cp-input" placeholder="Reject note (required)" style="min-width:160px" required/>';
-    h += '<button type="submit" class="cp-btn cp-btn-r">&#10007; Reject / Red-flag</button></form>';
+    h += '<button type="submit" class="cp-btn cp-btn-r">&#10007; Reject (return for fix)</button></form>';
+  }
+  if(canApprove){
     h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFE082;border-radius:6px;background:#FFF8E1" onsubmit="return !!this.note.value.trim()||(alert(&#39;Revision note required&#39;),false)">';
     h += '<input type="hidden" name="_token" value="'+_escAttr(_cpToken)+'"/>';
     h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
@@ -3042,7 +3142,6 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
   ${batchFilterHiddens}
   <label style="font-size:12px;color:#555;font-weight:600"><input type="checkbox" id="cp-batch-check-all" onchange="cpBatchToggleAll(this.checked)"/> Select all matching</label>
   <button type="submit" class="cp-btn cp-btn-g" onclick="document.getElementById('cp-batch-bulk-action').value='approve'">&#10003; Approve selected</button>
-  <button type="submit" class="cp-btn cp-btn-r" onclick="document.getElementById('cp-batch-bulk-action').value='reject'">&#10007; Reject selected</button>
 </form>
 <form method="POST" action="/api/council-batch-bulk-action" style="display:inline" onsubmit="return confirm('Approve all ${allMatchN} Submitted batch(es) matching filters?')">
   <input type="hidden" name="_token" value="${esc(token)}"/>
@@ -3080,6 +3179,9 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
 <div id="cp-batch-sel-summary" style="margin:8px 16px 0;font-size:12.5px;color:#555;min-height:1.2em"></div>`;
           }
         }
+        const batchTripDetails: TmTripDetail[] = [];
+        const batchTripBodies: string[] = [];
+        const batchTripDetailIndex = new Map<string, number>();
         const rows = filtered
           .map((b) => {
             const subDt = b.submittedAt ? formatNzDate(b.submittedAt) : '—';
@@ -3111,17 +3213,7 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
   <input type="hidden" name="company" value="${esc(filterCompany)}"/>
   <button type="submit" class="cp-btn cp-btn-g" style="margin-right:4px">&#10003; Approve All</button>
 </form>
-<form method="POST" action="/api/council-batch-action" style="display:inline" onsubmit="return confirm('Reject this batch?')">
-  <input type="hidden" name="_token" value="${esc(token)}"/>
-  <input type="hidden" name="cid" value="${esc(b._cid)}"/>
-  <input type="hidden" name="ym" value="${esc(b._ym)}"/>
-  <input type="hidden" name="action" value="reject"/>
-  <input type="hidden" name="tab" value="${esc(tab)}"/>
-  <input type="hidden" name="from" value="${esc(filterFrom)}"/>
-  <input type="hidden" name="to" value="${esc(filterTo)}"/>
-  <input type="hidden" name="company" value="${esc(filterCompany)}"/>
-  <button type="submit" class="cp-btn cp-btn-r">&#10007; Reject</button>
-</form>`
+<span style="font-size:11px;color:#888">Reject trips via Details below</span>`
                 : b.status === 'approved'
                   ? `
 <button type="button" class="cp-btn cp-btn-g" onclick="cpOpenMarkPaid('${esc(b._cid)}','${esc(b._ym)}',${Number(b._displaySubsidy || 0)})">&#128181; Mark Paid</button>`
@@ -3142,6 +3234,37 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
                   )
                   .join('')
               : `<tr><td colspan="4" style="color:#aaa;font-style:italic">No hoist usage in this batch</td></tr>`;
+            const batchTripRows = resolveBatchTripIds(b, b._cid);
+            const tripListRows = batchTripRows.length
+              ? batchTripRows
+                  .map((t: any) => {
+                    const cid = String(t._cid || b._cid || '');
+                    const rawKey = String(t._rawKey || t.rawKey || '');
+                    const mapKey = cid + '/' + rawKey;
+                    let idx = batchTripDetailIndex.get(mapKey);
+                    if (idx == null && cid && rawKey) {
+                      const src = tripByKey[mapKey] || t;
+                      const d = buildTmTripDetail(src, { refTariff: null });
+                      idx = batchTripDetails.length;
+                      batchTripDetailIndex.set(mapKey, idx);
+                      batchTripDetails.push(d);
+                      batchTripBodies.push(tripDetailModalHtml(d) + tripHistoryHtml(src));
+                    }
+                    const st = String((t && t.status) || '').toLowerCase();
+                    const sub = subsidyOfTrip(t);
+                    const detailBtn =
+                      idx != null
+                        ? `<button type="button" class="cp-btn-sm" onclick="openCpDetail(${idx})">Details</button>`
+                        : '—';
+                    return `<tr>
+<td style="font-family:monospace;font-size:12px">${esc(rawKey || '—')}</td>
+<td>${statusBadge(st || '—')}</td>
+<td style="text-align:right">$${Number(sub || 0).toFixed(2)}</td>
+<td>${detailBtn}</td>
+</tr>`;
+                  })
+                  .join('')
+              : `<tr><td colspan="4" style="color:#aaa;font-style:italic">No trips linked on this batch</td></tr>`;
             return `<tr>
 <td><input type="checkbox" class="cp-batch-cb" name="batch" value="${esc(batchKey)}"${cbFormAttr}
   data-cid="${esc(b._cid)}" data-cname="${esc(b._cname)}" data-ym="${esc(b._ym)}"
@@ -3161,7 +3284,14 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
 </tr>
 <tr>
 <td colspan="12" style="padding:6px 12px 12px;background:#FAFAFA">
-<details>
+<details open>
+<summary style="cursor:pointer;font-size:12.5px;font-weight:600;color:#1B5E20">Trips in this batch — review Details to reject one trip</summary>
+<table class="cp-tbl" style="margin-top:8px;max-width:720px">
+<thead><tr><th>Booking ID</th><th>Status</th><th style="text-align:right">Claim (%/cap)</th><th></th></tr></thead>
+<tbody>${tripListRows}</tbody>
+</table>
+</details>
+<details style="margin-top:8px">
 <summary style="cursor:pointer;font-size:12.5px;font-weight:600;color:#33691E">Hoist by day — $${hoistTotal.toFixed(2)} · ${hoistUses} uses</summary>
 <table class="cp-tbl" style="margin-top:8px;max-width:520px">
 <thead><tr><th>Date</th><th style="text-align:right">Trips w/ hoist</th><th style="text-align:right">Uses</th><th style="text-align:right">Hoist $</th></tr></thead>
@@ -3172,7 +3302,7 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
 </tr>`;
           })
           .join('');
-        const body = `
+        let body = `
 <h2 style="font-size:18px;font-weight:700;color:#1B5E20;margin-bottom:16px">Claim Batches</h2>
 ${noticeHtml}
 ${claimNotice}
@@ -3418,6 +3548,20 @@ function cpSubmitMarkPaid(){
   });
 }
 </script>`;
+        const batchTripsJson = JSON.stringify(batchTripDetails).replace(/</g, '\\u003c');
+        const batchBodiesJson = JSON.stringify(batchTripBodies).replace(/</g, '\\u003c');
+        body += `
+${cpTripDetailOverlayHtml()}
+${CP_TRIP_ACTION_SCRIPT}
+${CP_TRIP_MAP_SCRIPT}
+<script>
+var _cpTrips = ${batchTripsJson};
+var _cpBodies = ${batchBodiesJson};
+var _cpToken = ${JSON.stringify(token)};
+var _cpReturnTo = 'batches';
+</script>
+${cpTripDetailBehaviorScript(false)}
+<!-- batch-reject-flow:per-trip-details-v1 -->`;
         res.send(portalPage('Claim Batches', renderNav(sess, token, 'batches'), body));
       }
     });
@@ -3596,13 +3740,17 @@ router.post('/api/council-batch-action', (req, res) => {
   };
 
   if (action === 'approve' || action === 'reject') {
-    const patch =
-      action === 'approve'
-        ? { status: 'approved', approvedAt: Date.now(), approvedBy: who }
-        : { status: 'rejected', rejectedAt: Date.now(), rejectedBy: who };
+    if (action === 'reject') {
+      return redirect(
+        'Batch-level Reject removed — open Trips in this batch → Details → Reject with a required note.',
+        'err',
+        tab,
+      );
+    }
+    const patch = { status: 'approved', approvedAt: Date.now(), approvedBy: who };
     return fbWrite('PATCH', path, patch, (err: any) => {
       if (err) return redirect('Update failed', 'err');
-      redirect(action === 'approve' ? 'Batch approved.' : 'Batch rejected.', 'ok', action === 'approve' ? 'approved' : tab);
+      redirect('Batch approved.', 'ok', 'approved');
     });
   }
 
@@ -3670,6 +3818,12 @@ router.post('/api/council-batch-bulk-action', (req, res) => {
     );
   if (!sess || !['approve', 'reject', 'paid'].includes(action)) {
     return redirect('Invalid request', 'err');
+  }
+  if (action === 'reject') {
+    return redirect(
+      'Batch-level Reject removed — open Trips in this batch → Details → Reject with a required note.',
+      'err',
+    );
   }
   const selected = parseBatchKeysFromBody(req.body);
   const who = sess.name || sess.councilId;
