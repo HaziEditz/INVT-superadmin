@@ -959,47 +959,59 @@ function dosLoad(){
     var driversMeta=dosIngestDriversMeta(driversRoot, driversCid, cid);
 
     var merged={};
+    function dosJobBookingId(job, fallbackKey){
+      var id=String((job&&(job.bookingId||job.BookingId||job.jobId||job.JobId||job.BookingID||job.id))||'').trim();
+      if(id) return id;
+      return String(fallbackKey||'').trim();
+    }
+    function ensure(bid, did){
+      if(!merged[bid]) merged[bid]={};
+      if(!merged[bid][did]) merged[bid][did]={};
+      return merged[bid][did];
+    }
     function addNested(data){
       if(!data||typeof data!=='object') return;
-      Object.keys(data).forEach(function(bid){
-        if(!merged[bid]) merged[bid]={};
-        var drivers=data[bid];
-        if(drivers&&typeof drivers==='object') Object.assign(merged[bid], drivers);
+      Object.keys(data).forEach(function(key){
+        var drivers=data[key];
+        if(!drivers||typeof drivers!=='object') return;
+        Object.keys(drivers).forEach(function(did){
+          var job=drivers[did]; if(!job||typeof job!=='object') return;
+          var bid=dosJobBookingId(job, key);
+          var d=String(job.driverId||job.DriverId||job.driverid||did||'').trim();
+          if(!bid||!d) return;
+          Object.assign(ensure(bid, d), job);
+          if(!ensure(bid,d).bookingId&&!ensure(bid,d).BookingId) ensure(bid,d).bookingId=bid;
+        });
       });
     }
     function addFlat(data){
       if(!data||typeof data!=='object') return;
-      Object.keys(data).forEach(function(bid){
-        var job=data[bid]; if(!job||typeof job!=='object') return;
+      Object.keys(data).forEach(function(key){
+        var job=data[key]; if(!job||typeof job!=='object') return;
+        var vals=Object.values(job);
+        var isFlat=vals.length>0&&vals.every(function(v){return v===null||typeof v!=='object';});
+        var looksJob=job.totalFare!=null||job.TotalFare!=null||job.fare!=null||job.driverId||job.DriverId||
+          job.paymentType||job.PaymentType||job.isTotalMobility||job.completedAt!=null;
+        if(!isFlat&&!looksJob){
+          Object.keys(job).forEach(function(did){
+            var inner=job[did]; if(!inner||typeof inner!=='object') return;
+            var bid=dosJobBookingId(inner, key);
+            var d=String(inner.driverId||inner.DriverId||did||'').trim();
+            if(!bid||!d) return;
+            Object.assign(ensure(bid, d), inner);
+            if(!ensure(bid,d).bookingId) ensure(bid,d).bookingId=bid;
+          });
+          return;
+        }
+        var bid=dosJobBookingId(job, key);
         var did=String(job.driverId||job.DriverId||job.driverid||'').trim();
-        if(!did) return;
-        if(!merged[bid]) merged[bid]={};
-        if(!merged[bid][did]) merged[bid][did]={};
-        Object.assign(merged[bid][did], job);
+        if(!bid||!did) return;
+        Object.assign(ensure(bid, did), job);
+        if(!ensure(bid,did).bookingId&&!ensure(bid,did).BookingId) ensure(bid,did).bookingId=bid;
       });
     }
     addNested(res[3]); addFlat(res[4]); addFlat(res[5]);
-    if(res[6]&&typeof res[6]==='object'){
-      Object.keys(res[6]).forEach(function(bid){
-        var job=res[6][bid]; if(!job||typeof job!=='object') return;
-        if(!merged[bid]) merged[bid]={};
-        var vals=Object.values(job);
-        var isFlat=vals.length>0&&vals.every(function(v){return v===null||typeof v!=='object';});
-        if(isFlat){
-          var did=String(job.driverId||job.DriverId||'').trim();
-          if(!did) return;
-          if(!merged[bid][did]) merged[bid][did]={};
-          Object.assign(merged[bid][did], job);
-        } else {
-          Object.keys(job).forEach(function(did){
-            var j=job[did]; if(!j||typeof j!=='object') return;
-            if(!did||did===bid) return;
-            if(!merged[bid][did]) merged[bid][did]={};
-            Object.assign(merged[bid][did], j);
-          });
-        }
-      });
-    }
+    if(res[6]) addFlat(res[6]);
 
     // Resolve every job's driverId to the same canonical id used for shift hours —
     // this is the identity fix that lines jobs up with the correct driver row.
@@ -1008,7 +1020,7 @@ function dosLoad(){
       Object.keys(merged[bid]||{}).forEach(function(did){
         var j=merged[bid][did]; if(!j||typeof j!=='object') return;
         var copy=Object.assign({}, j);
-        copy.bookingId=copy.bookingId||bid;
+        copy.bookingId=copy.bookingId||copy.BookingId||bid;
         var rawDid=String(copy.driverId||copy.DriverId||did||'').trim();
         if(!rawDid||rawDid===bid||rawDid===String(copy.bookingId||'')) return;
         var canonDid=dosResolveDriverId(rawDid, canon, cid);

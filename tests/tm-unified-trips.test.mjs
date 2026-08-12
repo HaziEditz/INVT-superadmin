@@ -6,6 +6,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tzDayEnd, tzDayStart, formatNzDate } from '../src/lib/tzDayBounds.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const unifiedSrc = readFileSync(join(root, 'src/lib/tmUnifiedTrips.ts'), 'utf8');
@@ -84,12 +85,12 @@ function filterTripsUnified(trips, opts = {}) {
   const q = String(opts.q || '').trim();
   if (q) rows = rows.filter((t) => tripMatchesSearch(t, q));
   if (opts.from) {
-    const fromMs = Date.parse(String(opts.from) + 'T00:00:00');
-    if (Number.isFinite(fromMs)) rows = rows.filter((t) => tripActivityMs(t) >= fromMs);
+    const fromMs = tzDayStart(String(opts.from).trim(), 'Pacific/Auckland');
+    if (fromMs) rows = rows.filter((t) => tripActivityMs(t) >= fromMs);
   }
   if (opts.to) {
-    const toMs = Date.parse(String(opts.to) + 'T23:59:59');
-    if (Number.isFinite(toMs)) rows = rows.filter((t) => tripActivityMs(t) <= toMs);
+    const toMs = tzDayEnd(String(opts.to).trim(), 'Pacific/Auckland');
+    if (toMs) rows = rows.filter((t) => tripActivityMs(t) <= toMs);
   }
   rows.sort((a, b) => tripActivityMs(b) - tripActivityMs(a));
   return rows;
@@ -282,6 +283,54 @@ test('filterTripsUnified filters by status, company, q, dates', () => {
   });
   assert.equal(byDate.length, 1);
   assert.equal(byDate[0].tmVoucherNo, 'V2');
+});
+
+test('NZ early-morning trip (prev UTC day) included on actual NZ date filter', () => {
+  // Tonight's pattern: completed 2026-08-12T13:32:33Z = 13 Aug 1:32am NZ
+  const tripMs = Date.parse('2026-08-12T13:32:33.197Z');
+  const trips = [
+    {
+      _cid: '860869',
+      status: 'approved',
+      tmVoucherNo: '8692608131',
+      completedAt: tripMs,
+      startedAt_ISO: '2026-08-12T13:30:00.000Z',
+    },
+  ];
+  const utcAug13From = Date.UTC(2026, 7, 13, 0, 0, 0);
+  assert.ok(tripMs < utcAug13From, 'trip is before UTC Aug 13 midnight');
+  const nzFrom = tzDayStart('2026-08-13');
+  const nzTo = tzDayEnd('2026-08-13');
+  assert.ok(tripMs >= nzFrom && tripMs <= nzTo, 'trip inside NZ Aug 13 day');
+  const hit = filterTripsUnified(trips, {
+    status: 'all',
+    from: '2026-08-13',
+    to: '2026-08-13',
+  });
+  assert.equal(hit.length, 1);
+  assert.equal(hit[0].tmVoucherNo, '8692608131');
+  const onNzAug12 = filterTripsUnified(trips, {
+    status: 'all',
+    from: '2026-08-12',
+    to: '2026-08-12',
+  });
+  assert.equal(onNzAug12.length, 0);
+  assert.equal(formatNzDate(tripMs), '13/08/2026');
+  assert.equal(formatNzDate(1786542135756), '13/08/2026'); // batch submittedAt
+});
+
+test('source uses NZ day bounds + Auckland date display (not bare Date.parse local)', () => {
+  assert.match(unifiedSrc, /tzDayStart/);
+  assert.match(unifiedSrc, /tzDayEnd/);
+  assert.doesNotMatch(unifiedSrc, /Date\.parse\(String\(opts\.from\) \+ 'T00:00:00'\)/);
+  assert.match(councilSrc, /formatNzDate/);
+  assert.match(councilSrc, /tzDayStart/);
+  assert.match(councilSrc, /Pacific\/Auckland/);
+  const batches = readFileSync(
+    join(root, 'taxitime.co.nz/superadmin360taxi/TM-Batches.aspx'),
+    'utf8',
+  );
+  assert.match(batches, /timeZone:'Pacific\/Auckland'/);
 });
 
 test('aggregateTripUsage and countTripsByUnifiedStatus', () => {

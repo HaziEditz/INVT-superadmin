@@ -356,7 +356,7 @@ var approveMode = '';   // 'approve' or 'revision'
 /* ── helpers ───────────────────────────────────── */
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function fmt(n){ return '$'+(+n||0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,','); }
-function fmtDate(ts){ return ts?new Date(ts).toLocaleDateString('en-NZ',{day:'numeric',month:'short',year:'numeric'}):'—'; }
+function fmtDate(ts){ return ts?new Date(ts).toLocaleDateString('en-NZ',{day:'numeric',month:'short',year:'numeric',timeZone:'Pacific/Auckland'}):'—'; }
 function fmtMonth(m){
   var p=m.split('-');
   return new Date(+p[0],+p[1]-1,1).toLocaleDateString('en-NZ',{month:'long',year:'numeric'});

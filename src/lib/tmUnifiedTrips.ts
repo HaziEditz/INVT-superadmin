@@ -4,6 +4,7 @@
 import { isArchivedStatus } from './tmArchive';
 import { tripActivityMs } from './tmTripSort';
 import { tripMatchesSearch, type SearchableTrip } from './tmTripSearch';
+import { tzDayEnd, tzDayStart } from './tzDayBounds';
 
 export type UnifiedTripStatusFilter =
   | 'all'
@@ -120,12 +121,12 @@ export function filterTripsUnified<T extends SearchableTrip & { status?: string;
   const q = String(opts.q || '').trim();
   if (q) rows = rows.filter((t) => tripMatchesSearch(t, q));
   if (opts.from) {
-    const fromMs = Date.parse(String(opts.from) + 'T00:00:00');
-    if (Number.isFinite(fromMs)) rows = rows.filter((t) => tripActivityMs(t as any) >= fromMs);
+    const fromMs = tzDayStart(String(opts.from).trim(), 'Pacific/Auckland');
+    if (fromMs) rows = rows.filter((t) => tripActivityMs(t as any) >= fromMs);
   }
   if (opts.to) {
-    const toMs = Date.parse(String(opts.to) + 'T23:59:59');
-    if (Number.isFinite(toMs)) rows = rows.filter((t) => tripActivityMs(t as any) <= toMs);
+    const toMs = tzDayEnd(String(opts.to).trim(), 'Pacific/Auckland');
+    if (toMs) rows = rows.filter((t) => tripActivityMs(t as any) <= toMs);
   }
   rows.sort((a, b) => tripActivityMs(b as any) - tripActivityMs(a as any));
   return rows;

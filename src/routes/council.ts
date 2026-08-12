@@ -51,6 +51,7 @@ import {
   tripDurationMinOf,
   formatDurationTotal,
 } from '../lib/tmUnifiedTrips';
+import { formatNzDate, tzDayEnd, tzDayStart } from '../lib/tzDayBounds';
 import {
   buildTripEvent,
   newEventKey,
@@ -2683,12 +2684,12 @@ function filterTripsForReports(
   }
   if (opts.companyId) rows = rows.filter((t) => String(t._cid) === opts.companyId);
   if (opts.from) {
-    const fromMs = Date.parse(opts.from + 'T00:00:00');
-    if (Number.isFinite(fromMs)) rows = rows.filter((t) => tripStartedMs(t) >= fromMs);
+    const fromMs = tzDayStart(String(opts.from).trim(), 'Pacific/Auckland');
+    if (fromMs) rows = rows.filter((t) => tripStartedMs(t) >= fromMs);
   }
   if (opts.to) {
-    const toMs = Date.parse(opts.to + 'T23:59:59');
-    if (Number.isFinite(toMs)) rows = rows.filter((t) => tripStartedMs(t) <= toMs);
+    const toMs = tzDayEnd(String(opts.to).trim(), 'Pacific/Auckland');
+    if (toMs) rows = rows.filter((t) => tripStartedMs(t) <= toMs);
   }
   rows.sort(compareTripsNewestFirst);
   return rows;
@@ -3010,7 +3011,7 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
       ? `<a href="/council-portal/batches?t=${te}" class="cp-btn" style="background:#eee;color:#333">Clear</a>`
       : ''
   }
-  <p style="flex-basis:100%;font-size:11.5px;color:#888;margin:0">From/To filter by claim month (YYYY-MM). Company matches Trips tab. Flagged = rejected, needs revision, or paid without proof.</p>
+  <p style="flex-basis:100%;font-size:11.5px;color:#888;margin:0">From/To use the claim <strong>month</strong> only (YYYY-MM from the date you pick) — batches are month-keyed, so a single day still returns the whole month. Company matches Trips tab. Flagged = rejected, needs revision, or paid without proof.</p>
 </form>`;
         const batchFilterHiddens =
           `<input type="hidden" name="tab" value="${esc(tab)}"/>` +
@@ -3068,9 +3069,9 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
         }
         const rows = filtered
           .map((b) => {
-            const subDt = b.submittedAt ? new Date(b.submittedAt).toLocaleDateString('en-NZ') : '—';
-            const appDt = b.approvedAt ? new Date(b.approvedAt).toLocaleDateString('en-NZ') : '—';
-            const paidDt = b.paidAt ? new Date(b.paidAt).toLocaleDateString('en-NZ') : '—';
+            const subDt = b.submittedAt ? formatNzDate(b.submittedAt) : '—';
+            const appDt = b.approvedAt ? formatNzDate(b.approvedAt) : '—';
+            const paidDt = b.paidAt ? formatNzDate(b.paidAt) : '—';
             const proofCell = (() => {
               if (b.status !== 'paid') return '—';
               if (hasPaymentProof(b)) {
