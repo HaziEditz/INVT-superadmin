@@ -2096,6 +2096,40 @@ function cpFetchDrivingRoute(puLL, duLL){
     return latlngs && latlngs.length >= 2 ? latlngs : null;
   });
 }
+function cpDrawGpsTrail(latlngs, gen){
+  if(gen != null && gen !== _cpMapGen) return;
+  var el = document.getElementById('cp-trip-map');
+  if(!el || typeof L==='undefined') return;
+  if(!Array.isArray(latlngs) || latlngs.length < 2) return false;
+  cpDestroyTripMap();
+  if(gen != null && gen !== _cpMapGen) return false;
+  var center = latlngs[Math.floor(latlngs.length/2)] || latlngs[0];
+  _cpMap = L.map(el).setView(center, 14);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '&copy; OpenStreetMap'
+  }).addTo(_cpMap);
+  L.marker(latlngs[0]).addTo(_cpMap).bindPopup('Pickup (GPS)');
+  L.marker(latlngs[latlngs.length-1]).addTo(_cpMap).bindPopup('Dropoff (GPS)');
+  L.polyline(latlngs, {color:'#1B5E20', weight:5, opacity:0.92}).addTo(_cpMap);
+  _cpMap.fitBounds(latlngs, {padding:[24,24]});
+  setTimeout(function(){ if(_cpMap && (gen == null || gen === _cpMapGen)) _cpMap.invalidateSize(); }, 120);
+  cpMapStatus('Driver GPS trail');
+  return true;
+}
+function cpNormalizeGpsRoute(d){
+  var raw = d && d.gpsRoute;
+  if(!Array.isArray(raw) || raw.length < 2) return null;
+  var out = [];
+  for(var i=0;i<raw.length;i++){
+    var p = raw[i];
+    if(!p) continue;
+    var lat = Number(p.lat), lng = Number(p.lng);
+    if(!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    if(lat === 0 && lng === 0) continue;
+    out.push([lat, lng]);
+  }
+  return out.length >= 2 ? out : null;
+}
 function cpDrawTripMap(puLL, duLL, gen){
   if(gen != null && gen !== _cpMapGen) return;
   var el = document.getElementById('cp-trip-map');
@@ -2136,7 +2170,7 @@ function cpDrawTripMap(puLL, duLL, gen){
       if(!_cpMap) return;
       if(latlngs){
         L.polyline(latlngs, {color:'#1B5E20', weight:5, opacity:0.92}).addTo(_cpMap);
-        cpMapStatus('');
+        cpMapStatus('Estimated road route (no GPS trail on job)');
         finishBounds(latlngs);
       } else {
         // Fallback: straight line if OSRM fails / times out / CORS
@@ -2156,6 +2190,12 @@ function initCpTripMap(d, gen){
   cpMapStatus('');
   var el = document.getElementById('cp-trip-map');
   if(!el || typeof L==='undefined') return;
+  // Prefer driver's logged GPS trail (same source as dispatch Closed Job map).
+  var trail = cpNormalizeGpsRoute(d);
+  if(trail){
+    cpDrawGpsTrail(trail, gen);
+    return;
+  }
   var plat = Number(d.pickupLat), plng = Number(d.pickupLng);
   var dlat = Number(d.dropLat), dlng = Number(d.dropLng);
   var hasPu = Number.isFinite(plat) && Number.isFinite(plng) && plat !== 0 && plng !== 0;

@@ -131,6 +131,63 @@ function extractCoords(job: Record<string, any>): {
   };
 }
 
+export type JobGpsPoint = { lat: number; lng: number; at?: number };
+
+/**
+ * Driver GPS trail for map display only (same source as dispatch Closed Job map).
+ * Prefers gpsRoute array; falls back to app delta polyline (routePolyline).
+ * Does not affect fare / subsidy / claim math.
+ */
+export function parseJobGpsRoute(job: Record<string, any> | null | undefined): JobGpsPoint[] {
+  if (!job || typeof job !== 'object') return [];
+  const route = job.gpsRoute ?? job.GpsRoute;
+  if (Array.isArray(route) && route.length) {
+    const points: JobGpsPoint[] = [];
+    for (const p of route) {
+      if (!p || typeof p !== 'object') continue;
+      const lat = num((p as any).lat);
+      const lng = num((p as any).lng);
+      if (!lat && !lng) continue;
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      if (lat === 0 && lng === 0) continue;
+      const atRaw = (p as any).at != null ? Number((p as any).at) : undefined;
+      points.push({
+        lat,
+        lng,
+        at: atRaw != null && Number.isFinite(atRaw) ? atRaw : undefined,
+      });
+    }
+    if (points.length >= 2) return points;
+  }
+
+  const poly = String(job.routePolyline ?? job.route_polyline ?? '').trim();
+  if (!poly || !poly.includes(';')) return [];
+  // Driver-app encode: cumulative delta of latE5,lngE5 joined by ';'.
+  const out: JobGpsPoint[] = [];
+  let latE5 = 0;
+  let lngE5 = 0;
+  for (const part of poly.split(';')) {
+    const bits = part.split(',');
+    if (bits.length < 2) continue;
+    const dLat = Number(bits[0]);
+    const dLng = Number(bits[1]);
+    if (!Number.isFinite(dLat) || !Number.isFinite(dLng)) continue;
+    latE5 += dLat;
+    lngE5 += dLng;
+    out.push({ lat: latE5 / 1e5, lng: lngE5 / 1e5 });
+  }
+  return out.length >= 2 ? out : [];
+}
+
+/** True when stored pickup/drop latlng are missing or 0,0 sentinels. */
+export function jobCoordsMissing(job: Record<string, any> | null | undefined): boolean {
+  if (!job || typeof job !== 'object') return true;
+  const c = extractCoords(job);
+  const hasPu = Number.isFinite(c.pickupLat) && Number.isFinite(c.pickupLng) && c.pickupLat !== 0 && c.pickupLng !== 0;
+  const hasDu = Number.isFinite(c.dropLat) && Number.isFinite(c.dropLng) && c.dropLat !== 0 && c.dropLng !== 0;
+  return !hasPu || !hasDu;
+}
+
 /** Cardholder name from TM card entry — preferred passenger display. */
 export function resolveCardholderName(job: Record<string, any>): string {
   const passengers = Array.isArray(job.tmPassengers) ? job.tmPassengers : [];
@@ -243,6 +300,8 @@ export type TmTripDetail = {
   /** Present when owner/council Save & Resubmit stamped a recheck. */
   resubmittedAt: number | null;
   restoredAt: number | null;
+  /** Driver GPS trail for map (display-only). */
+  gpsRoute: JobGpsPoint[];
 };
 
 export type RefTariff = {
@@ -379,6 +438,7 @@ export function buildTmTripDetail(
       t.restoredAt != null && t.restoredAt !== '' && Number.isFinite(Number(t.restoredAt))
         ? Number(t.restoredAt)
         : null,
+    gpsRoute: parseJobGpsRoute(t),
   };
 }
 
