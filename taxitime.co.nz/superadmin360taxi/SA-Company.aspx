@@ -14,7 +14,7 @@
 <script src="https://www.gstatic.com/firebasejs/7.24.0/firebase-app.js"></script>
 <script src="https://www.gstatic.com/firebasejs/7.24.0/firebase-auth.js"></script>
 <script src="https://www.gstatic.com/firebasejs/7.24.0/firebase-database.js"></script>
-<script>firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDomain:"bookawaka2026-564e1.firebaseapp.com",databaseURL:"https://bookawaka2026-564e1-default-rtdb.firebaseio.com",projectId:"bookawaka2026-564e1",storageBucket:"bookawaka2026-564e1.firebasestorage.app"});</script>
+<script>firebase.initializeApp({apiKey:"AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",authDomain:"taxilatest.firebaseapp.com",databaseURL:"https://taxilatest.firebaseio.com",projectId:"taxilatest",storageBucket:"taxilatest.appspot.com"});</script>
 <style>
 .sa-wrap{padding:20px}
 .sa-card{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.12);margin-bottom:20px;overflow:hidden}
@@ -107,9 +107,6 @@
       <li><a href="TM-Trips.aspx">All Trips</a></li>
       <li><a href="TM-Flagged.aspx">Flagged Trips</a></li>
       <li><a href="TM-Batches.aspx">Claim Batches</a></li>
-      <li><a href="TM-Platform-Fees.aspx">Platform Fees</a></li>
-      <li><a href="TM-Clean-Scan.aspx">Clean-trip Scan</a></li>
-      <li><a href="TM-Settlement.aspx">Settlement</a></li>
       <li><a href="TM-Reports.aspx">Monthly Reports</a></li>
       <li><a href="TM-Settings.aspx">TM Settings (Advanced)</a></li>
       <li><a href="/council-portal" target="_blank">Council Portal &#8599;</a></li>
@@ -324,18 +321,18 @@
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;max-width:720px">
       <div>
         <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:5px">Council Subsidy %</label>
-        <input id="tm-subsidy-pct" type="number" min="0" max="100" step="1" placeholder="65" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:6px;font-size:14px;box-sizing:border-box"/>
-        <div style="font-size:11px;color:#9e9e9e;margin-top:4px">e.g. 65 = council pays 65% of fare (capped)</div>
+        <input id="tm-subsidy-pct" type="number" min="1" max="100" step="1" placeholder="required" required style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:6px;font-size:14px;box-sizing:border-box"/>
+        <div style="font-size:11px;color:#9e9e9e;margin-top:4px">Required — blank does not save a guessed % (e.g. 65)</div>
       </div>
       <div>
         <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:5px">Council Cap Amount ($)</label>
-        <input id="tm-cap-amount" type="number" min="0" step="0.01" placeholder="37.40" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:6px;font-size:14px;box-sizing:border-box"/>
-        <div style="font-size:11px;color:#9e9e9e;margin-top:4px">Maximum council pays per trip</div>
+        <input id="tm-cap-amount" type="number" min="0" step="0.01" placeholder="required" required style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:6px;font-size:14px;box-sizing:border-box"/>
+        <div style="font-size:11px;color:#9e9e9e;margin-top:4px">Required — 0 = uncapped %. Blank will not overwrite with $37.40</div>
       </div>
       <div>
         <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:5px">Hoist Cost Per Unit ($)</label>
-        <input id="tm-hoist-cost" type="number" min="0" step="0.01" placeholder="11.50" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:6px;font-size:14px;box-sizing:border-box"/>
-        <div style="font-size:11px;color:#9e9e9e;margin-top:4px">WAV / wheelchair van hoist charge (council pays)</div>
+        <input id="tm-hoist-cost" type="number" min="0" step="0.01" placeholder="required" required style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:6px;font-size:14px;box-sizing:border-box"/>
+        <div style="font-size:11px;color:#9e9e9e;margin-top:4px">Required — blank will not overwrite with $11.50</div>
       </div>
       <div>
         <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:5px">BookaWaka council fee / trip ($)</label>
@@ -1169,9 +1166,13 @@ function loadTmConfig(){
     var hoist = document.getElementById('tm-hoist-cost');
     var feeC = document.getElementById('tm-fee-council');
     var feeCo = document.getElementById('tm-fee-company');
-    if(pct) pct.value = data.councilSubsidyPercent != null ? data.councilSubsidyPercent : (data.councilPercent != null ? data.councilPercent : 65);
-    if(cap) cap.value = data.councilCapAmount != null ? data.councilCapAmount : (data.capAmount != null ? data.capAmount : 37.40);
-    if(hoist) hoist.value = data.hoistCostPerUnit != null ? data.hoistCostPerUnit : (data.hoistUnitCost != null ? data.hoistUnitCost : 11.50);
+    // Never fill guessed 65 / 37.40 / 11.50 — blank means unset until council sync or explicit entry.
+    var pctVal = data.councilSubsidyPercent != null ? data.councilSubsidyPercent : data.councilPercent;
+    var capVal = data.councilCapAmount != null ? data.councilCapAmount : data.capAmount;
+    var hoistVal = data.hoistCostPerUnit != null ? data.hoistCostPerUnit : data.hoistUnitCost;
+    if(pct) pct.value = pctVal != null && pctVal !== '' ? pctVal : '';
+    if(cap) cap.value = capVal != null && capVal !== '' ? capVal : '';
+    if(hoist) hoist.value = hoistVal != null && hoistVal !== '' ? hoistVal : '';
     if(feeC) feeC.value = data.councilFeePerTrip != null ? data.councilFeePerTrip : '';
     if(feeCo) feeCo.value = data.companyFeePerTrip != null ? data.companyFeePerTrip : '';
     var src = document.getElementById('tm-config-source');
@@ -1198,9 +1199,16 @@ function saveTmConfig(){
   var feeCEl = document.getElementById('tm-fee-council');
   var feeCoEl = document.getElementById('tm-fee-company');
   var msg = document.getElementById('tm-config-msg');
-  var pct = parseFloat(pctEl && pctEl.value) || 65;
-  var cap = parseFloat(capEl && capEl.value) || 37.40;
-  var hoist = parseFloat(hoistEl && hoistEl.value) || 11.50;
+  var parsed = (window.parseSaCompanyTmConfigFields
+    ? window.parseSaCompanyTmConfigFields(pctEl && pctEl.value, capEl && capEl.value, hoistEl && hoistEl.value)
+    : { ok: false, error: 'TM config validator unavailable — refresh the page.' });
+  if (!parsed.ok) {
+    if (msg) msg.innerHTML = '<span style="color:#c00">' + esc(parsed.error || 'Invalid TM config') + '</span>';
+    return;
+  }
+  var pct = parsed.pct;
+  var cap = parsed.cap;
+  var hoist = parsed.hoist;
   var payload = {
     councilSubsidyPercent: pct,
     councilCapAmount: cap,

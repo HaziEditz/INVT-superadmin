@@ -15,11 +15,11 @@
 <script src="https://www.gstatic.com/firebasejs/7.24.0/firebase-database.js"></script>
 <script>
 var config = {
-  apiKey: "AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",
-  authDomain: "bookawaka2026-564e1.firebaseapp.com",
-  databaseURL: "https://bookawaka2026-564e1-default-rtdb.firebaseio.com",
-  projectId: "bookawaka2026-564e1",
-  storageBucket: "bookawaka2026-564e1.firebasestorage.app"
+  apiKey: "AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",
+  authDomain: "taxilatest.firebaseapp.com",
+  databaseURL: "https://taxilatest.firebaseio.com",
+  projectId: "taxilatest",
+  storageBucket: "taxilatest.appspot.com"
 };
 firebase.initializeApp(config);
 </script>
@@ -385,13 +385,23 @@ function saveFL(doApprove) {
   if (wait > 0) { flMsg('Waiting charge must be 0 for TM trips.', false); return; }
   var t = flData[id] || {};
   var councilCfg = flCouncils[t.councilId] || {};
-  var pct = (councilCfg.subsidyPercent || 75) / 100;
-  var cap = councilCfg.capAmount || 37.50;
+  var rates = window.resolveCouncilTmRates ? window.resolveCouncilTmRates(councilCfg) : { ready: false };
+  if (!rates.ready) {
+    flMsg('Council TM config missing (subsidy %). Cannot recalculate — refuse guessed 75%/$37.50. Fix council Config first.', false);
+    return;
+  }
+  var pct = rates.pct / 100;
+  var cap = rates.uncapped ? Infinity : rates.cap;
   var hoistUsed = document.getElementById('fl-hoist').value === 'true';
   var hoistCnt = parseInt(document.getElementById('fl-hcnt').value) || 0;
-  var hoistRate = councilCfg.hoistRatePerUse || 0;
+  var hoistRate = rates.hoistRate || 0;
+  if (hoistUsed && hoistCnt > 0 && !(hoistRate > 0)) {
+    flMsg('Hoist uses set but council hoist rate is missing — refuse $5/use guess. Set hoist rate in Council Config.', false);
+    return;
+  }
   var hoistTotal = hoistUsed ? hoistRate * hoistCnt : 0;
-  var tmSubFare = Math.min(fare * pct, cap);
+  var rawSub = fare * pct;
+  var tmSubFare = rates.uncapped ? rawSub : Math.min(rawSub, cap);
   // Phase 2A.1 / NZ TM: hoist always 100% council-paid; not in meter split
   var tmSubHoist = hoistTotal;
   var totalCouncil = tmSubFare + tmSubHoist;

@@ -1007,12 +1007,13 @@ function loadTmStats(){
     var allStatus  = res[2];
     var allBatches = res[3];
 
-    // Helper: calculate TM subsidy from council config
+    // Helper: calculate TM subsidy from live council config — never invent 75% / $99999.
     function calcSub(fare, councilId){
       var c = councils[councilId] || {};
-      var pct = parseFloat(c.subsidyPercent || 75);
-      var cap = parseFloat(c.capAmount || 99999);
-      return Math.min(fare * pct / 100, cap);
+      var r = window.calcTmMeterSubsidyFromCouncil
+        ? window.calcTmMeterSubsidyFromCouncil(fare, c)
+        : { ok: false, amount: null };
+      return r.ok ? r.amount : null;
     }
 
     // company_approved count (trips awaiting SA review)
@@ -1068,23 +1069,34 @@ function loadTmStats(){
             // Per NZ TM rules confirmed by passenger app dev — single-cap under-claims on group rides
             var tmPaxList = Array.isArray(j.tmPassengers) ? j.tmPassengers : [];
             var sub;
+            var subConfigMissing = false;
             if (tmPaxList.length > 1) {
               var farePerCard = fare / tmPaxList.length;
               sub = tmPaxList.reduce(function(total, pax) {
                 var paxCard = cards[pax.cardNumber||''] || {};
                 var paxCouncil = pax.councilId || paxCard.councilId || councilId;
-                return total + calcSub(farePerCard, paxCouncil);
+                var part = calcSub(farePerCard, paxCouncil);
+                if (part == null) { subConfigMissing = true; return total; }
+                return total + part;
               }, 0);
+              if (subConfigMissing) sub = null;
             } else {
               var storedSub = parseFloat(j.tmCouncilAmount||j.tmSubsidy||j.tmSubsidyFare||0);
-              sub = (storedSub > 0 && storedSub < fare) ? storedSub : calcSub(fare, councilId);
+              if (storedSub > 0) {
+                sub = storedSub;
+              } else {
+                sub = calcSub(fare, councilId);
+                if (sub == null) subConfigMissing = true;
+              }
             }
-            // Hoist fee is council-covered (confirmed by passenger app dev)
-            // tmHoistFeeTotal is a new field; for historical records reconstruct from tmHoistCount × $5.00/lift
-            var hoistFee = parseFloat(j.tmHoistFeeTotal || j.hoistTotal || j.hoistFee || 0);
-            if (!hoistFee && j.tmHoistCount) hoistFee = +(j.tmHoistCount) * 5;
+            // Prefer stored hoist $; never invent count × $5.
+            var hoistRes = window.resolveHoistAmount
+              ? window.resolveHoistAmount(j, councils[councilId] || {})
+              : { amount: parseFloat(j.tmHoistFeeTotal || j.hoistTotal || j.hoistFee || 0) || 0, configMissing: false };
+            var hoistFee = hoistRes.amount || 0;
             tmTrips++;
-            tmClaim += sub + hoistFee;
+            if (sub != null) tmClaim += sub + hoistFee;
+            // If subsidy config missing and no stored amount, count the trip but do not invent claim $.
           });
           done++;
           if(done===allCids.length){

@@ -166,6 +166,77 @@ window.companyTmConfigFromCouncil = function(councilId, council) {
   };
 };
 
+/**
+ * Live council rates with NO guessed 65/75/$5/$37.50 defaults (driver-app style).
+ * Keep in sync with lib/tmRateResolve.mjs.
+ */
+window.resolveCouncilTmRates = function(council) {
+  var c = council && typeof council === 'object' ? council : {};
+  var pct = parseFloat(c.subsidyPercent != null ? c.subsidyPercent : (c.councilSubsidyPercent != null ? c.councilSubsidyPercent : c.councilPercent));
+  var capRaw = parseFloat(c.capAmount != null ? c.capAmount : (c.councilCapAmount != null ? c.councilCapAmount : c.subsidyCap));
+  var hoistRate = parseFloat(c.hoistRatePerUse != null ? c.hoistRatePerUse : (c.hoistCostPerUnit != null ? c.hoistCostPerUnit : c.hoistUnitCost));
+  var pctOk = isFinite(pct) && pct > 0;
+  var hoistOk = isFinite(hoistRate) && hoistRate >= 0;
+  var uncapped = !isFinite(capRaw) || capRaw <= 0;
+  var cap = uncapped ? 0 : capRaw;
+  if (!pctOk) {
+    return { pct: 0, cap: 0, hoistRate: hoistOk ? hoistRate : 0, ready: false, uncapped: true,
+      reason: 'Council TM subsidy % missing or ≤0 — refuse guessed rate' };
+  }
+  return { pct: pct, cap: cap, hoistRate: hoistOk ? hoistRate : 0, ready: true, uncapped: uncapped, reason: null };
+};
+
+/** Meter subsidy from council config; amount null when config missing (never invents 75%). */
+window.calcTmMeterSubsidyFromCouncil = function(meterFare, council) {
+  var rates = window.resolveCouncilTmRates(council);
+  var fare = Math.max(0, parseFloat(meterFare) || 0);
+  if (!rates.ready) {
+    return { ok: false, amount: null, uncapped: true, configMissing: true, reason: rates.reason, pct: 0, cap: 0 };
+  }
+  var raw = fare * rates.pct / 100;
+  var amount = rates.uncapped ? raw : Math.min(raw, rates.cap);
+  return { ok: true, amount: +amount.toFixed(2), uncapped: rates.uncapped, configMissing: false, reason: null, pct: rates.pct, cap: rates.cap };
+};
+
+/** Prefer stored hoist $; else count × live rate. Never invents $5/use. */
+window.resolveHoistAmount = function(job, council) {
+  job = job || {};
+  var stored = parseFloat(job.tmHoistFeeTotal != null ? job.tmHoistFeeTotal : (job.hoistTotal != null ? job.hoistTotal : (job.hoistFee != null ? job.hoistFee : job.tmSubsidyHoist)));
+  if (isFinite(stored) && stored > 0) {
+    return { amount: +stored.toFixed(2), fromStored: true, configMissing: false, reason: null };
+  }
+  var count = parseInt(String(job.tmHoistCount != null ? job.tmHoistCount : (job.hoistCount || 0)), 10) || 0;
+  if (count <= 0) return { amount: 0, fromStored: false, configMissing: false, reason: null };
+  var rates = window.resolveCouncilTmRates(council);
+  if (!(rates.hoistRate > 0)) {
+    return { amount: 0, fromStored: false, configMissing: true, reason: 'Hoist uses present but hoist rate missing — refuse $5 guess' };
+  }
+  return { amount: +(count * rates.hoistRate).toFixed(2), fromStored: false, configMissing: false, reason: null };
+};
+
+/** SA-Company form: blank → refuse save (no silent 65/37.40/11.50 overwrite). */
+window.parseSaCompanyTmConfigFields = function(pctRaw, capRaw, hoistRaw) {
+  var pctStr = String(pctRaw == null ? '' : pctRaw).trim();
+  var capStr = String(capRaw == null ? '' : capRaw).trim();
+  var hoistStr = String(hoistRaw == null ? '' : hoistRaw).trim();
+  if (!pctStr || !capStr || !hoistStr) {
+    return { ok: false, error: 'Subsidy %, cap, and hoist are all required. Blank fields are not saved as guessed defaults — enter real values or cancel.' };
+  }
+  var pct = parseFloat(pctStr);
+  var cap = parseFloat(capStr);
+  var hoist = parseFloat(hoistStr);
+  if (!isFinite(pct) || pct <= 0 || pct > 100) {
+    return { ok: false, error: 'Council subsidy % must be a number between 1 and 100.' };
+  }
+  if (!isFinite(cap) || cap < 0) {
+    return { ok: false, error: 'Council cap must be a number ≥ 0 (0 = uncapped %).' };
+  }
+  if (!isFinite(hoist) || hoist < 0) {
+    return { ok: false, error: 'Hoist cost per unit must be a number ≥ 0.' };
+  }
+  return { ok: true, pct: pct, cap: cap, hoist: hoist };
+};
+
 /** Push council economics to every company approved for that council. */
 window.syncCouncilTmConfigToApprovedCompanies = function(councilId, council) {
   var payload = window.companyTmConfigFromCouncil(councilId, council);

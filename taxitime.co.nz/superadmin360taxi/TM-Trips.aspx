@@ -278,10 +278,16 @@ function populateTTCompanies() {
 
 function calcTMSubsidy(meterFare, councilId) {
   var council = ttCouncils[councilId] || {};
-  var subPct = parseFloat(council.subsidyPercent || 75);
-  var cap    = parseFloat(council.capAmount || 99999);
-  var raw    = meterFare * subPct / 100;
-  return Math.min(raw, cap);
+  var r = window.calcTmMeterSubsidyFromCouncil
+    ? window.calcTmMeterSubsidyFromCouncil(meterFare, council)
+    : { ok: false, amount: null };
+  // Never invent 75% / uncapped 99999 — missing config → 0 and flag on trip row.
+  return r.ok ? r.amount : 0;
+}
+function councilTmRatesReady(councilId) {
+  var council = ttCouncils[councilId] || {};
+  var rates = window.resolveCouncilTmRates ? window.resolveCouncilTmRates(council) : { ready: false };
+  return !!rates.ready;
 }
 
 /** Prefer tmTripCategory; else map driver source (hail/dispatch/…) — same as council trip detail. */
@@ -355,7 +361,11 @@ function mapTMTrip(j, cid, rawKey) {
   // estimatedFare is the passenger app's total trip fare (authoritative for multi-pax legacy).
   var waitingCharge = +(j.waitingCost || j.WaitingCost || j.waitingCharge || j.waitingFee || 0);
   var tmHoistCount  = +(j.tmHoistCount || j.hoistCount || 0);
-  var hoistTotal    = +(j.tmHoistFeeTotal || j.hoistTotal || j.hoistFee || j.tmSubsidyHoist || (tmHoistCount * 5));
+  var hoistResolved = window.resolveHoistAmount
+    ? window.resolveHoistAmount(j, ttCouncils[councilId] || {})
+    : { amount: +(j.tmHoistFeeTotal || j.hoistTotal || j.hoistFee || j.tmSubsidyHoist || 0), configMissing: false };
+  var hoistTotal = hoistResolved.amount;
+  var hoistConfigMissing = !!hoistResolved.configMissing;
   var meterFare     = +(j.tmMeterFare || j.meterFare || 0);
   if (!meterFare) {
     // Legacy: total may have included hoist — subtract hoist when driver wrote hoist separately.
@@ -365,33 +375,43 @@ function mapTMTrip(j, cid, rawKey) {
       : rawTotal;
   }
 
-  // Prefer driver-written meter subsidy when present; else recompute (multi-card rule).
+  // Prefer driver-written meter subsidy when present; else recompute only with live council rates.
   var tmSubsidyFare;
+  var subsidyConfigMissing = false;
   if (j.tmSubsidyFare != null && j.tmSubsidyFare !== '') {
     tmSubsidyFare = +j.tmSubsidyFare;
   } else if (allCardNums.length > 1) {
     // NZ TM multi-passenger: divide meter fare equally per card, apply cap per card, sum.
     var farePerCard = meterFare / allCardNums.length;
+    var anyMissing = false;
     tmSubsidyFare = allCardNums.reduce(function(sum, cn) {
       var paxCouncilId = (ttCards[cn] || {}).councilId || councilId;
+      if (!councilTmRatesReady(paxCouncilId)) anyMissing = true;
       return sum + calcTMSubsidy(farePerCard, paxCouncilId);
     }, 0);
-  } else {
+    subsidyConfigMissing = anyMissing;
+  } else if (councilTmRatesReady(councilId)) {
     tmSubsidyFare = calcTMSubsidy(meterFare, councilId);
+  } else {
+    tmSubsidyFare = 0;
+    subsidyConfigMissing = true;
   }
 
   // Phase 2A.1 / NZ TM: hoist is always 100% council-paid; never enters meter %/cap.
   var tmSubsidyHoist = hoistTotal;
   if (j.tmSubsidyHoist != null && j.tmSubsidyHoist !== '') tmSubsidyHoist = +j.tmSubsidyHoist;
-  var totalCouncilPays = (j.tmCouncilPays != null && j.tmCouncilPays !== '')
+  var hasStoredCouncil = j.tmCouncilPays != null && j.tmCouncilPays !== '';
+  var totalCouncilPays = hasStoredCouncil
     ? +j.tmCouncilPays
-    : +(tmSubsidyFare + tmSubsidyHoist).toFixed(2);
+    : (subsidyConfigMissing
+      ? null
+      : +(tmSubsidyFare + tmSubsidyHoist).toFixed(2));
 
   // Passenger pays meter share + waiting only (never hoist).
   var passengerShareFare = meterFare - tmSubsidyFare;
   var passengerPays = (j.tmPassengerPays != null && j.tmPassengerPays !== '')
     ? +j.tmPassengerPays
-    : +(passengerShareFare + waitingCharge).toFixed(2);
+    : (subsidyConfigMissing ? null : +(passengerShareFare + waitingCharge).toFixed(2));
 
   // Distance — try multiple field names driver apps may use
   var distRaw = j.distanceKm || j.distance || j.distanceTravelled || j.distanceTraveled
@@ -442,7 +462,8 @@ function mapTMTrip(j, cid, rawKey) {
     companyId: cid,
     status: 'pending',
     flagReasons: [],
-    vehicleHoistEquipped: j.vehicleHoistEquipped || false
+    vehicleHoistEquipped: j.vehicleHoistEquipped || false,
+    tmConfigMissing: !!(subsidyConfigMissing || hoistConfigMissing)
   };
 }
 
@@ -553,7 +574,8 @@ function renderTT() {
       '<td>' + (t.pickup || '\u2014') + '</td>' +
       '<td>' + (t.dropoff || '\u2014') + '</td>' +
       '<td style="font-weight:600">$' + parseFloat(t.meterFare || 0).toFixed(2) + '</td>' +
-      '<td style="color:#2E7D32;font-weight:600">$' + parseFloat(t.tmSubsidyFare || 0).toFixed(2) + '</td>' +
+      '<td style="color:#2E7D32;font-weight:600">$' + parseFloat(t.tmSubsidyFare || 0).toFixed(2) +
+        (t.tmConfigMissing ? '<div style="font-size:10px;color:#C62828;font-weight:600">config missing</div>' : '') + '</td>' +
       '<td>' + (hoistAmt > 0 ? '<span style="color:#1565C0;font-weight:600">$' + hoistAmt.toFixed(2) + '</span>' : '\u2014') + '</td>' +
       '<td>' + (uses > 0 ? uses : '\u2014') + '</td>' +
       '<td>' +
@@ -593,9 +615,13 @@ function viewTT(id) {
   var flagHtml = flags.length ? '<div style="margin:10px 0;padding:10px;background:#FFEBEE;border-radius:4px;border-left:4px solid #C62828"><strong style="color:#C62828">\u26a0 Flag Reasons:</strong><br>' + flags.map(function(f) { return '<span class="fc">' + tmFlagReasonLabel(f) + '</span>'; }).join('') + (t.anomalyDetail ? '<div style="margin-top:6px;font-size:12px;color:#666">' + String(t.anomalyDetail) + '</div>' : '') + '</div>' : '';
 
   var council = ttCouncils[t.councilId] || {};
-  var subPct  = parseFloat(council.subsidyPercent || 75);
-  var capAmt  = parseFloat(council.capAmount || 99999);
-  var capNote = (t.tmSubsidyFare < t.meterFare * subPct / 100)
+  var rates = window.resolveCouncilTmRates ? window.resolveCouncilTmRates(council) : { ready: false, pct: 0, cap: 0, uncapped: true };
+  var subPct  = rates.ready ? rates.pct : null;
+  var capAmt  = rates.ready && !rates.uncapped ? rates.cap : null;
+  var configMissingNote = (!rates.ready || t.tmConfigMissing)
+    ? ' <span style="color:#C62828;font-size:11px">(council TM config missing — not guessed)</span>'
+    : '';
+  var capNote = (rates.ready && !rates.uncapped && t.tmSubsidyFare < t.meterFare * subPct / 100)
     ? ' <span style="color:#E65100;font-size:11px">(capped at $' + capAmt.toFixed(2) + ')</span>' : '';
 
   var hasMap = (t.pickupLat && t.pickupLng && t.dropLat && t.dropLng);
@@ -621,7 +647,7 @@ function viewTT(id) {
     (parseFloat(t.waitingCharge||0) > 0 ? frow('Waiting Charge (passenger pays, not TM)', '$' + parseFloat(t.waitingCharge).toFixed(2), '#9e9e9e') : '') +
     '<tr><td colspan="2" style="padding:4px 0;border-top:1px dashed #ccc"></td></tr>' +
     (t.tmPassengerCount > 1 ? frow(t.tmPassengerCount + ' TM passengers — fare split $' + (t.meterFare/t.tmPassengerCount).toFixed(2) + '/card', '', '#1565C0') : '') +
-    frow('Line 1 — Meter subsidy (' + subPct + '% of meter' + (t.tmPassengerCount > 1 ? ', per card' : '') + ')' + capNote, '<span style="color:#2E7D32;font-weight:600">$' + parseFloat(t.tmSubsidyFare || 0).toFixed(2) + '</span>') +
+    frow('Line 1 — Meter subsidy (' + (subPct != null ? (subPct + '% of meter') : 'config missing') + (t.tmPassengerCount > 1 ? ', per card' : '') + ')' + capNote + configMissingNote, '<span style="color:#2E7D32;font-weight:600">$' + parseFloat(t.tmSubsidyFare || 0).toFixed(2) + '</span>') +
     frow('Line 2 — Hoist fee (100% council, not in meter split)', '<span style="color:#2E7D32;font-weight:600">$' + parseFloat(t.tmSubsidyHoist || t.hoistTotal || 0).toFixed(2) + '</span>') +
     (function() {
       var hoists = Array.isArray(t.tmHoists) ? t.tmHoists : [];
