@@ -508,6 +508,7 @@ function loadTT() {
           t.flaggedAt = st.flaggedAt || null;
           t.sentBackAt = st.sentBackAt || null;
           t.resubmittedAt = st.resubmittedAt || null;
+          t.restoredAt = st.restoredAt || null;
           t.approvedAt = st.approvedAt || null;
           t.rejectedAt = st.rejectedAt || null;
           t.anomalyDetail = st.anomalyDetail || null;
@@ -549,7 +550,13 @@ function renderTT() {
     if (fQ) { var s = (kv[0] + ' ' + (t.driverName || '') + ' ' + (t.cardNumber || '') + ' ' + ((t.allCardNums||[]).join(' ')) + ' ' + (t.passengerName || '') + ' ' + (t.vehicleId || '')).toLowerCase(); if (!s.includes(fQ)) return false; }
     return true;
   });
-  entries.sort(function(a,b) { return tripActivityMs(b[1]) - tripActivityMs(a[1]); });
+  entries.sort(function(a,b) {
+    var ta = a[1], tb = b[1];
+    var ra = (typeof hasResubmittedMarker === 'function' && hasResubmittedMarker(ta)) ? 1 : 0;
+    var rb = (typeof hasResubmittedMarker === 'function' && hasResubmittedMarker(tb)) ? 1 : 0;
+    if (rb !== ra) return rb - ra;
+    return tripActivityMs(tb) - tripActivityMs(ta);
+  });
   document.getElementById('tt-count').textContent = entries.length + ' of ' + Object.keys(ttData).length + ' trip(s)';
   var checkAll = document.getElementById('tt-check-all');
   if (checkAll) checkAll.checked = false;
@@ -559,6 +566,7 @@ function renderTT() {
     var id = kv[0], t = kv[1], sid = "'" + String(id).replace(/\\/g,'\\\\').replace(/'/g,"\\'") + "'";
     var flags = (t.flagReasons || []);
     var statusBadge = ttStatusBadge(t.status);
+    var lifeHtml = (typeof ttLifecycleChips === 'function' ? ttLifecycleChips(t) : '');
     var flagHtml = flags.length ? flags.map(function(f) { return '<span class="fc">' + tmFlagReasonLabel(f) + '</span>'; }).join('') : '';
     var dtRaw = (typeof tripDisplayTimeRaw === 'function' ? tripDisplayTimeRaw(t) : null) || t.startTime || t.endTime || '';
     var dt = dtRaw ? _tzFmtDT(dtRaw) : '\u2014';
@@ -589,7 +597,7 @@ function renderTT() {
         (t.payMethod ? '<br><span class="bx" style="font-size:10px;margin-top:2px;background:#E3F2FD;color:#1565C0">' + t.payMethod + '</span>' : '') +
         (parseFloat(t.waitingCharge||0) > 0 ? '<br><span style="font-size:11px;color:#9e9e9e">incl. $' + parseFloat(t.waitingCharge).toFixed(2) + ' wait</span>' : '') +
       '</td>' +
-      '<td>' + statusBadge + '<br>' + flagHtml + '</td>' +
+      '<td>' + statusBadge + lifeHtml + (flagHtml ? '<br>' + flagHtml : '') + '</td>' +
       '<td style="white-space:nowrap">' +
         '<button class="tm-btn tm-btn-e" onclick="viewTT(' + sid + ')" style="margin-right:4px" title="View Details">&#128065;</button>' +
         archBtn +
@@ -612,6 +620,26 @@ function ttStatusBadge(s) {
     archived: '<span class="bx" style="background:#ECEFF1;color:#546E7A">Archived</span>'
   };
   return map[s] || ('<span class="bx bx-gr">' + (s || 'Unknown') + '</span>');
+}
+/** Same labels as council Trips list — resubmit / restore clarity. */
+function hasResubmittedMarker(t) {
+  if (!t || t.resubmittedAt == null || t.resubmittedAt === '') return false;
+  var st = String(t.status || '').toLowerCase();
+  return st === 'submitted' || st === 'pending' || st === 'company_approved' || st === 'flagged';
+}
+function hasRestoredMarker(t) {
+  if (!t || t.restoredAt == null || t.restoredAt === '') return false;
+  return String(t.status || '').toLowerCase() !== 'archived';
+}
+function ttLifecycleChips(t) {
+  var html = '';
+  if (hasResubmittedMarker(t)) {
+    html += '<div style="margin-top:3px"><span class="bx" style="background:#FFF3E0;color:#E65100" title="Owner fixed after council return">Resubmitted - previously returned</span></div>';
+  }
+  if (hasRestoredMarker(t)) {
+    html += '<div style="margin-top:3px"><span class="bx" style="background:#ECEFF1;color:#546E7A" title="Brought back from Archived">Restored from archive</span></div>';
+  }
+  return html;
 }
 var _ttMap = null;
 function viewTT(id) {

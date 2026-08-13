@@ -5,6 +5,7 @@ import { isArchivedStatus } from './tmArchive';
 import { tripActivityMs } from './tmTripSort';
 import { tripMatchesSearch, type SearchableTrip } from './tmTripSearch';
 import { tzDayEnd, tzDayStart } from './tzDayBounds';
+import { compareTripsResubmitFirst } from './tmLifecycleMarkers';
 
 export type UnifiedTripStatusFilter =
   | 'all'
@@ -128,7 +129,14 @@ export function filterTripsUnified<T extends SearchableTrip & { status?: string;
     const toMs = tzDayEnd(String(opts.to).trim(), 'Pacific/Auckland');
     if (toMs) rows = rows.filter((t) => tripActivityMs(t as any) <= toMs);
   }
-  rows.sort((a, b) => tripActivityMs(b as any) - tripActivityMs(a as any));
+  // Pending: resubmitted (fix-cycle) above brand-new submissions, then newest-first.
+  if (status === 'pending') {
+    rows.sort((a, b) =>
+      compareTripsResubmitFirst(a as any, b as any, (t) => tripActivityMs(t as any)),
+    );
+  } else {
+    rows.sort((a, b) => tripActivityMs(b as any) - tripActivityMs(a as any));
+  }
   return rows;
 }
 

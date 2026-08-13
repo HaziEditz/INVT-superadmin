@@ -29,6 +29,12 @@ import {
   archivePatch,
   restorePatch,
 } from '../lib/tmArchive';
+import {
+  hasResubmittedMarker,
+  hasRestoredMarker,
+  RESUBMITTED_BADGE_LABEL,
+  RESTORED_BADGE_LABEL,
+} from '../lib/tmLifecycleMarkers';
 import { tripMatchesSearch } from '../lib/tmTripSearch';
 import {
   normalizeUnifiedTripStatus,
@@ -359,6 +365,26 @@ function statusBadge(s: string): string {
     archived:         '<span class="cp-bdg-gr">Archived</span>',
   };
   return map[s] || `<span class="cp-bdg-gr">${esc(s || 'pending')}</span>`;
+}
+
+/** List-row lifecycle chips (resubmit / restore) — same labels as SA TM-Trips. */
+function lifecycleListChips(trip: {
+  status?: string | null;
+  resubmittedAt?: unknown;
+  restoredAt?: unknown;
+}): string {
+  const bits: string[] = [];
+  if (hasResubmittedMarker(trip)) {
+    bits.push(
+      `<div style="margin-top:3px"><span class="cp-bdg-a" title="Owner fixed after council return">${esc(RESUBMITTED_BADGE_LABEL)}</span></div>`,
+    );
+  }
+  if (hasRestoredMarker(trip)) {
+    bits.push(
+      `<div style="margin-top:3px"><span class="cp-bdg-gr" title="Brought back from Archived">${esc(RESTORED_BADGE_LABEL)}</span></div>`,
+    );
+  }
+  return bits.join('');
 }
 
 function isTmCompletedJob(job: any): boolean {
@@ -1775,7 +1801,7 @@ ${cb}
 <td style="text-align:right">${uses > 0 ? uses : '—'}</td>
 <td style="font-weight:700;color:#1B5E20">$${d.meterSubsidy.toFixed(2)}</td>
 <td>$${d.passengerPays.toFixed(2)}</td>
-<td>${statusBadge(d.status)}${chips ? `<div style="margin-top:3px">${chips}</div>` : ''}</td>
+<td>${statusBadge(d.status)}${lifecycleListChips(t)}${chips ? `<div style="margin-top:3px">${chips}</div>` : ''}</td>
 <td style="white-space:nowrap" onclick="event.stopPropagation()">${rowActions(t, idx, d)}</td>
 </tr>`;
           })
