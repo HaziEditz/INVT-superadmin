@@ -656,8 +656,9 @@ function dosTmSubsidyParts(job){
 }
 /**
  * Split a job into pay lines.
- * TM: cash/EFTPOS/Account remainder stays $0-owed; subsidy still enters tm.owed.
- * PaymentType===TM never owes full fare â€” subsidy only. Hoist is separate.
+ * TM: cash/EFTPOS/Account remainder stays $0-owed; Card remainder enters Card Mark Paid
+ * on passengerPays only (commission-adjusted). Subsidy still enters tm.owed.
+ * PaymentType===TM never owes full fare — subsidy only. Hoist is separate.
  */
 function dosJobPaymentLines(job, cardSettings){
   cardSettings=cardSettings||{};
@@ -668,11 +669,14 @@ function dosJobPaymentLines(job, cardSettings){
   var lines=[];
   var main=dosCompanyOwesDriver(fare, pm, cardSettings);
   if(dosIsTmJob(job)){
-    // Remainder gross = passenger portion only (council subsidy is not cash/EFTPOS/Account held).
+    // Remainder gross = passenger portion only (council subsidy is not cash/card/EFTPOS/Account held).
     var parts=dosTmSubsidyParts(job);
+    var paxGross=parts.passengerPays>0?parts.passengerPays:Math.max(0,Math.round((parts.fare-parts.hoistAmt-parts.subsidy)*100)/100);
     if(main.bucket==='cash'||main.bucket==='eftpos'||main.bucket==='account'){
-      var paxGross=parts.passengerPays>0?parts.passengerPays:Math.max(0,Math.round((parts.fare-parts.hoistAmt-parts.subsidy)*100)/100);
       lines.push({kind:'main', bucket:main.bucket, gross:paxGross, owed:0, commission:0});
+    } else if(main.bucket==='card' && paxGross>0){
+      var cardLine=dosCompanyOwesDriver(paxGross, pm, cardSettings);
+      lines.push({kind:'main', bucket:'card', gross:paxGross, owed:cardLine.owed, commission:cardLine.commission});
     }
     if(parts.subsidy>0){
       lines.push({kind:'tm_subsidy', bucket:'tm', gross:parts.subsidy, owed:parts.subsidy, commission:0});
