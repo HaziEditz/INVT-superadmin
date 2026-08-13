@@ -1281,6 +1281,12 @@ router.post('/api/council-trip-edit', (req, res) => {
     if (patch.paymentMethod != null && patch.paymentType === undefined) patch.paymentType = patch.paymentMethod;
     const fieldsChanged = Object.keys(patch);
     const who = sess.name || sess.councilId;
+    const correctionNote = String(req.body.correctionNote || req.body.note || '').trim();
+    if (!correctionNote) {
+      return res.redirect(
+        base + '&msg=' + encodeURIComponent('Council correction reason is required') + '&mt=err',
+      );
+    }
     const emitEditedAndRedirect = (okMsg: string) => {
       const editedAt = Date.now();
       fbWrite('PATCH', 'tmTripStatus/' + tripCid + '/' + tripRawKey, { editedAt }, () => {
@@ -1290,6 +1296,7 @@ router.post('/api/council-trip-edit', (req, res) => {
           buildTripEvent('council_edited', {
             by: who,
             byRole: 'council',
+            note: correctionNote,
             fieldsChanged: fieldsChanged.length ? fieldsChanged : null,
           }),
           () => {
@@ -2197,8 +2204,10 @@ function cpTripDetailBehaviorScript(includeEditPanel: boolean): string {
   const editFn = includeEditPanel
     ? `function buildEditPanel(d){
   if(d.status==='archived') return '';
-  var html = '<details style="margin-top:14px;border:1px solid #FFE082;border-radius:6px;padding:10px 12px;background:#FFFDE7" '+(d.status==='revision_needed'?'open':'')+'>';
-  html += '<summary style="cursor:pointer;font-weight:700;color:#E65100">Edit all fields</summary>';
+  // Emergency override only — collapsed by default; Return to company is the normal path.
+  var html = '<details style="margin-top:16px;border:1px dashed #BDBDBD;border-radius:6px;padding:10px 12px;background:#FAFAFA">';
+  html += '<summary style="cursor:pointer;font-weight:700;color:#616161;font-size:12.5px">Emergency correction — council edits fields directly (exception)</summary>';
+  html += '<p style="margin:10px 0 8px;font-size:12px;color:#5d4037;line-height:1.45;padding:8px 10px;background:#FFF8E1;border-left:4px solid #E65100;border-radius:4px"><strong>Prefer Return to company</strong> for normal fixes so the operator edits the trip and writes their own fix comment. Use this only when council must correct the record themselves.</p>';
   html += '<form method="POST" action="/api/council-trip-edit" style="margin-top:10px">';
   html += '<input type="hidden" name="_token" value="'+_escAttr(_cpToken)+'"/>';
   html += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
@@ -2224,8 +2233,10 @@ function cpTripDetailBehaviorScript(includeEditPanel: boolean): string {
   html += _fld('driverName','Driver',d.driverName);
   html += _fld('vehicleId','Vehicle / cab',d.vehicleId);
   html += '</div>';
-  html += '<label style="display:flex;align-items:center;gap:6px;margin:12px 0 8px;font-size:12.5px"><input type="checkbox" name="resubmit" value="1"/> Mark status as submitted after save</label>';
-  html += '<button type="submit" class="cp-btn cp-btn-g">Save trip fields</button>';
+  html += '<div style="margin:12px 0 8px"><label style="display:block;font-size:12px;font-weight:700;color:#424242;margin-bottom:4px">Council correction reason <span style="color:#C62828">(required)</span></label>';
+  html += '<textarea name="correctionNote" class="cp-input" rows="3" required placeholder="Explain what you changed and why (audit trail — bypasses the normal company fix comment)" style="width:100%;min-height:64px;resize:vertical"></textarea></div>';
+  html += '<label style="display:flex;align-items:center;gap:6px;margin:8px 0 10px;font-size:12.5px"><input type="checkbox" name="resubmit" value="1"/> Also mark status as submitted after save</label>';
+  html += '<button type="submit" class="cp-btn" style="background:#757575;color:#fff">Save emergency correction</button>';
   html += '</form></details>';
   return html;
 }`
@@ -2278,6 +2289,7 @@ function buildActionForms(d){
     }
     h += (d.status==='flagged' ? '<div style="flex-basis:100%;font-size:12px;color:#5d4037;margin-bottom:2px"><strong>Return unlocks company editing.</strong> Trip stays view-only for the company until you click Return — so council can review the original flagged data before anything is edited.</div>' : '');
     h += (d.status==='approved' ? '<div style="flex-basis:100%;font-size:12px;color:#5d4037;margin-bottom:2px"><strong>Return from Approved (unpaid).</strong> Removes this trip from its claim batch and sends it back to the company with your note.</div>' : '');
+    h += '<div style="flex-basis:100%;font-size:11.5px;color:#2E7D32;font-weight:700;margin:2px 0 4px">Normal path — return for company to fix</div>';
     h += '<input name="note" class="cp-input" placeholder="Revision note (required)" style="min-width:160px" required/>';
     h += '<button type="submit" class="cp-btn" style="background:#E65100;color:#fff">&#8617; Return to company</button></form>';
   }

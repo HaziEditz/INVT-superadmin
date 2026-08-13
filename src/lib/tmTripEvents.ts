@@ -143,6 +143,7 @@ export function formatEventLabel(e: TripEvent): string {
   if (e.reasons && e.reasons.length) line += ' (' + e.reasons.join(', ') + ')';
   if (e.note) {
     if (type === 'owner_edited' || type === 'resubmitted') line += ' — Owner: ' + e.note;
+    else if (type === 'council_edited') line += ' — Council: ' + e.note;
     else line += ' — ' + e.note;
   }
   if (e.fromStatus && e.toStatus && type === 'archived') {
