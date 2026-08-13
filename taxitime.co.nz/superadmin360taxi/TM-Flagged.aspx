@@ -156,9 +156,10 @@ firebase.initializeApp(config);
 <div class="tm-wrap">
 <div class="tm-card">
   <div class="tm-bar" style="background:#B71C1C">
-    <h3>Flagged TM Trips <small id="fl-count" style="opacity:.85;font-size:12px"></small></h3>
+    <h3>Attention queue <small id="fl-count" style="opacity:.85;font-size:12px"></small></h3>
     <button class="tm-btn tm-btn-wh" onclick="refreshFL()">&#8635;</button>
   </div>
+  <p style="margin:0 14px 8px;font-size:12px;color:#6d4c41;line-height:1.4">Wider than owner/council <strong>Flagged</strong>: includes <code>flagged</code> + <code>revision_needed</code> + <code>company_approved</code> + <code>rejected</code>. Use Stage to narrow.</p>
   <div class="filt">
     <select id="fl-f-council" onchange="renderFL()"><option value="">All Councils</option></select>
     <select id="fl-f-company" onchange="renderFL()"><option value="">All Companies</option></select>
@@ -179,6 +180,7 @@ firebase.initializeApp(config);
     <select id="fl-f-stage" onchange="renderFL()">
       <option value="">All Stages</option>
       <option value="flagged">Awaiting Company Fix</option>
+      <option value="revision_needed">Needs Revision (returned)</option>
       <option value="company_approved">Awaiting Council</option>
       <option value="rejected">Rejected by Council</option>
     </select>
@@ -268,6 +270,9 @@ function mapTMTripFL(j, cid, rawKey) {
     cardNumber: j.tmVoucherNo || j.cardNumber || '',
     passengerName: j.tmPassengerName || j.passengerName || '',
     startTime: j.startedAt_ISO || j.startedAt || '',
+    endTime: j.completedAt_ISO || j.completedAt || j.timestamp || '',
+    completedAt_ISO: j.completedAt_ISO || '',
+    completedAt: j.completedAt || j.timestamp || '',
     pickup: j.pickupAddress || j.pickup || '',
     dropoff: j.dropAddress || j.dropoff || '',
     meterFare: +(j.fare || j.meterFare || 0),
@@ -333,20 +338,37 @@ function renderFL() {
     if (fCo && String(t._cid || '') !== fCo) return false;
     if (fR && !(t.flagReasons || []).includes(fR)) return false;
     if (fSt && t.status !== fSt) return false;
-    var day = t.startTime ? String(t.startTime).slice(0, 10) : '';
+    // Same display-time as Date column (start → completedAt) — match TM-Trips From/To.
+    var filterDt = (typeof tripDisplayTimeRaw === 'function' ? tripDisplayTimeRaw(t) : null) || t.startTime || t.endTime || '';
+    var day = filterDt && typeof _tzToDate === 'function' ? _tzToDate(filterDt) : (filterDt ? String(filterDt).slice(0, 10) : '');
     if (fFrom && day && day < fFrom) return false;
     if (fTo && day && day > fTo) return false;
     return true;
   });
   entries.sort(function(a,b) { return tripActivityMs(b[1]) - tripActivityMs(a[1]); });
-  document.getElementById('fl-count').textContent = entries.length + ' flagged trip(s)';
-  if (!entries.length) { document.getElementById('fl-tb').innerHTML = '<tr><td colspan="10" style="text-align:center;padding:40px;color:#9e9e9e">No flagged trips \u2014 all clear!</td></tr>'; return; }
+  var stageBits = { flagged: 0, revision_needed: 0, company_approved: 0, rejected: 0 };
+  entries.forEach(function(kv) {
+    var s = kv[1].status;
+    if (stageBits[s] != null) stageBits[s]++;
+  });
+  document.getElementById('fl-count').textContent =
+    entries.length + ' in queue (flagged ' + stageBits.flagged +
+    ' · revision ' + stageBits.revision_needed +
+    ' · co-approved ' + stageBits.company_approved +
+    ' · rejected ' + stageBits.rejected + ')';
+  if (!entries.length) { document.getElementById('fl-tb').innerHTML = '<tr><td colspan="10" style="text-align:center;padding:40px;color:#9e9e9e">No trips in attention queue \u2014 all clear!</td></tr>'; return; }
   var cnames = {}; Object.entries(flCouncils).forEach(function(kv) { cnames[kv[0]] = (kv[1].name) || kv[0]; });
   document.getElementById('fl-tb').innerHTML = entries.map(function(kv) {
     var id = kv[0], t = kv[1], sid = "'" + String(id).replace(/\\/g,'\\\\').replace(/'/g,"\\'") + "'";
     var flags = (t.flagReasons || []).map(function(f) { return '<span class="fc">' + tmFlagReasonLabel(f) + '</span>'; }).join('');
-    var stageMap = { flagged: '<span class="bx bx-r">Needs Fix</span>', company_approved: '<span class="bx bx-b">Sent to Council</span>', rejected: '<span class="bx bx-r">Rejected</span>' };
-    var dt = t.startTime ? (t.startTime.slice(0,10) + ' ' + t.startTime.slice(11,16)) : '\u2014';
+    var stageMap = {
+      flagged: '<span class="bx bx-r">Needs Fix</span>',
+      revision_needed: '<span class="bx bx-a" style="background:#FFF3E0;color:#E65100">Needs Revision</span>',
+      company_approved: '<span class="bx bx-b">Sent to Council</span>',
+      rejected: '<span class="bx bx-r">Rejected</span>'
+    };
+    var dtRaw = (typeof tripDisplayTimeRaw === 'function' ? tripDisplayTimeRaw(t) : null) || t.startTime || t.endTime || '';
+    var dt = dtRaw ? (typeof _tzFmtDT === 'function' ? _tzFmtDT(dtRaw) : String(dtRaw).slice(0, 16).replace('T', ' ')) : '\u2014';
     return '<tr style="background:#FFF8F8">' +
       '<td style="font-family:monospace;font-size:12px;font-weight:600">' + id + '</td>' +
       '<td>' + (t.driverName || '\u2014') + '</td>' +

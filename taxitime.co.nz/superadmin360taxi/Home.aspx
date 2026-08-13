@@ -283,8 +283,8 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
     <a class="kpi" style="border-left-color:#F9A825" href="TM-Flagged.aspx">
       <span class="kpi-icon material-icons">flag</span>
       <div class="kpi-val" id="kpi-tm-flagged">&#8230;</div>
-      <div class="kpi-lbl">Trips Awaiting SA Review</div>
-      <div class="kpi-sub">company_approved status</div>
+      <div class="kpi-lbl">Flagged Trips</div>
+      <div class="kpi-sub">status=flagged · open attention queue</div>
     </a>
   </div>
 
@@ -1016,11 +1016,11 @@ function loadTmStats(){
       return r.ok ? r.amount : null;
     }
 
-    // company_approved count (trips awaiting SA review)
+    // Real flagged count (status=flagged) — was company_approved-only and showed 0 while Flagged queue had dozens.
     var flaggedCount = 0;
     Object.values(allStatus).forEach(function(cidMap){
       Object.values(cidMap||{}).forEach(function(st){
-        if(st && st.status==='company_approved') flaggedCount++;
+        if(st && String(st.status||'').toLowerCase()==='flagged') flaggedCount++;
       });
     });
     document.getElementById('kpi-tm-flagged').textContent = flaggedCount;
