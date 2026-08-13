@@ -243,7 +243,7 @@ function mapTMTripRP(j, cid, rawKey) {
     driverName: j.driverName || '',
     vehicleId: j.vehicleId || '',
     cardNumber: j.tmVoucherNo || j.cardNumber || '',
-    passengerName: j.tmPassengerName || j.passengerName || '',
+    passengerName: (typeof resolveCardholderName === 'function' ? resolveCardholderName(j) : '') || j.tmCardName || j.tmPassengerName || j.passengerName || '',
     startTime: j.startedAt_ISO || j.startedAt || '',
     endTime: j.completedAt_ISO || j.completedAt || j.timestamp || '',
     completedAt_ISO: j.completedAt_ISO || '',

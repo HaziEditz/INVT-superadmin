@@ -349,9 +349,10 @@ function mapTMTrip(j, cid, rawKey) {
   var allPassengerNames = tmPassengersList.map(function(p){
     return p.cardholderName || (ttCards[p.cardNumber||'']||{}).passengerName || '';
   }).filter(Boolean);
-  var passengerName = j.tmPassengerName || j.passengerName
+  // Prefer tmCardName (live card-scan field); tmPassengerName is often blank.
+  var passengerName = (typeof resolveCardholderName === 'function' ? resolveCardholderName(j) : '')
     || (allPassengerNames.length ? allPassengerNames.join(' + ') : '')
-    || card.passengerName || '';
+    || card.passengerName || card.cardholderName || '';
 
   // Driver name — try all known field names, clean email if present
   var rawDriverName = j.driverFullName || j.driverDisplayName || j.driver_name || j.driverName || j.driverEmail || '';

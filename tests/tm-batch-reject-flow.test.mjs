@@ -155,12 +155,13 @@ test('tripWasEverFlagged / shouldAutoApproveCleanTrip treat council reject as fo
   );
 });
 
-test('source wires per-trip batch Reject + ever-flagged reject + no batch-level Reject UI', () => {
+test('source wires per-trip Return (batch remove) + ever-flagged reject history + no batch-level Reject UI', () => {
   assert.match(createSrc, /export function planRemoveTripFromBatch/);
   assert.match(anomalySrc, /rejectedAt/);
   assert.match(anomalySrc, /type === 'rejected'/);
   assert.match(councilSrc, /Trips in this batch/);
-  assert.match(councilSrc, /Reject \(return for fix\)/);
+  assert.match(councilSrc, /Return to company/);
+  assert.doesNotMatch(councilSrc, /Reject \(return for fix\)/);
   assert.match(councilSrc, /afterRejectRemoveFromBatch/);
   assert.match(councilSrc, /planRemoveTripFromBatch/);
   assert.match(councilSrc, /status: 'revision_needed'/);
@@ -169,5 +170,5 @@ test('source wires per-trip batch Reject + ever-flagged reject + no batch-level 
   assert.match(councilSrc, /rejectFlow: 'per-trip-details-v1'/);
   assert.doesNotMatch(councilSrc, /confirm\('Reject this batch\?'\)/);
   assert.doesNotMatch(councilSrc, /Reject selected/);
-  assert.match(councilSrc, /canReject = canApprove \|\| d\.status==='approved'/);
+  assert.match(councilSrc, /canReturn = canApprove \|\| d\.status==='approved'/);
 });

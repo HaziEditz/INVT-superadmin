@@ -84,7 +84,7 @@ test('council Reports has three-action approve + edit + map', () => {
   assert.match(councilSrc, /action === 'return'/);
   assert.match(councilSrc, /revision_needed/);
   assert.match(councilSrc, /\/api\/council-trip-edit/);
-  assert.match(councilSrc, /Reject \(return for fix\)/);
+  assert.doesNotMatch(councilSrc, /Reject \(return for fix\)/);
   assert.match(councilSrc, /Return to company/);
   assert.match(councilSrc, /cp-trip-map/);
   assert.match(councilSrc, /leaflet/i);
@@ -103,7 +103,6 @@ test('Reports detail script does not nest single-quoted alert inside single-quot
     councilSrc,
     /h \+= '[^']*alert\('/,
   );
-  assert.match(councilSrc, /alert\(&#39;Reject note required&#39;\)/);
   assert.match(councilSrc, /alert\(&#39;Revision note required&#39;\)/);
 });
 

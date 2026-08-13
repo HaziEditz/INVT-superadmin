@@ -12,6 +12,7 @@ import {
 } from '../lib/tmProvenance';
 import {
   buildTmTripDetail,
+  resolveCardholderName,
   tmTripDetailToCsvRow,
   TM_TRIP_CSV_HEADERS,
   type TmTripDetail,
@@ -159,6 +160,11 @@ function afterRejectRemoveFromBatch(
       removedSubsidy,
     });
     if (!plan.found) return clearTripBatch(cb);
+    // Empty after last trip removed — delete the batch so Submitted tabs do not
+    // keep $0 / 0-trip ghosts (e.g. live 2026-08-b4 after reject-out).
+    if (plan.tripCount === 0) {
+      return fbWrite('DELETE', batchPath, null, () => clearTripBatch(cb));
+    }
     fbWrite('PATCH', batchPath, plan.payload, () => clearTripBatch(cb));
   });
 }
@@ -1385,13 +1391,17 @@ router.get('/council-portal/dashboard', requirePortalAuth, (req, res) => {
 <p style="font-size:12px;margin-top:10px"><a href="/council-portal/config?t=${encodeURIComponent(token)}" style="color:#2E7D32;font-weight:600">Edit subsidy %, cap &amp; hoist rate &rarr;</a></p>
 </div></div>` : '';
       const recentRows = recent.map(t => {
-        const dt = t.startedAt_ISO ? t.startedAt_ISO.slice(0, 16).replace('T', ' ') : '—';
+        const dtRaw = t.startedAt_ISO || t.startedAt || t.completedAt_ISO || t.completedAt || '';
+        const dt = dtRaw
+          ? String(dtRaw).slice(0, 16).replace('T', ' ')
+          : '—';
         const hoist$ = hoistPaysOf(t);
         const uses = hoistUsesOf(t);
+        const paxName = resolveCardholderName(t) || '—';
         return `<tr><td style="font-family:monospace;font-size:11px">${esc(t.tmVoucherNo || t._rawKey)}</td>
-<td>${esc(t.tmPassengerName || '—')}</td>
+<td>${esc(paxName)}</td>
 <td style="font-size:12px;color:#555">${esc(t._companyName || '—')}</td>
-<td>${dt}</td><td>$${parseFloat(t.fare || 0).toFixed(2)}</td>
+<td>${esc(dt)}</td><td>$${parseFloat(t.fare || 0).toFixed(2)}</td>
 <td style="color:#1565C0">${hoist$ > 0 ? '$' + hoist$.toFixed(2) + (uses ? ' · ' + uses + '×' : '') : '—'}</td>
 <td style="color:#2E7D32;font-weight:600">$${subsidyOf(t).toFixed(2)}</td>
 <td>${statusBadge(t.status)}</td></tr>`;
@@ -1661,16 +1671,6 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
     <input type="hidden" name="returnTo" value="${rt}"/>
     <button type="submit" class="cp-btn cp-btn-g" style="margin-right:4px">&#10003; Approve</button>
   </form>
-  <form method="POST" action="/api/council-approve" style="display:inline" onsubmit="return cpRejectTrip(this)">
-    <input type="hidden" name="_token" value="${esc(token)}"/>
-    <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
-    <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
-    <input type="hidden" name="action" value="reject"/>
-    <input type="hidden" name="returnTo" value="${rt}"/>
-    <input type="hidden" name="flagReason" value=""/>
-    <input type="hidden" name="note" value=""/>
-    <button type="submit" class="cp-btn cp-btn-r" style="margin-right:4px">&#10007; Reject</button>
-  </form>
   <form method="POST" action="/api/council-approve" style="display:inline" onsubmit="return cpReturnTrip(this)">
     <input type="hidden" name="_token" value="${esc(token)}"/>
     <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
@@ -1698,15 +1698,23 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
     <input type="hidden" name="note" value=""/>
     <button type="submit" class="cp-btn" style="background:#E65100;color:#fff;margin-right:4px">&#8617; Return</button>
   </form>
-  <form method="POST" action="/api/council-approve" style="display:inline" onsubmit="return cpRejectTrip(this)">
+  <form method="POST" action="/api/council-archive" style="display:inline" onsubmit="return cpArchiveTrip(this)">
     <input type="hidden" name="_token" value="${esc(token)}"/>
     <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
     <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
-    <input type="hidden" name="action" value="reject"/>
     <input type="hidden" name="returnTo" value="${rt}"/>
-    <input type="hidden" name="flagReason" value=""/>
+    <button type="submit" class="cp-btn" style="background:#757575;color:#fff">&#128193; Archive</button>
+  </form>`;
+          } else if (status === 'approved') {
+            h += `
+  <form method="POST" action="/api/council-approve" style="display:inline" onsubmit="return cpReturnTrip(this)">
+    <input type="hidden" name="_token" value="${esc(token)}"/>
+    <input type="hidden" name="tripCid" value="${esc(t._cid)}"/>
+    <input type="hidden" name="tripRawKey" value="${esc(t._rawKey)}"/>
+    <input type="hidden" name="action" value="return"/>
+    <input type="hidden" name="returnTo" value="${rt}"/>
     <input type="hidden" name="note" value=""/>
-    <button type="submit" class="cp-btn cp-btn-r" style="margin-right:4px">&#10007; Reject</button>
+    <button type="submit" class="cp-btn" style="background:#E65100;color:#fff;margin-right:4px">&#8617; Return</button>
   </form>
   <form method="POST" action="/api/council-archive" style="display:inline" onsubmit="return cpArchiveTrip(this)">
     <input type="hidden" name="_token" value="${esc(token)}"/>
@@ -2217,7 +2225,9 @@ function buildActionForms(d){
     return h;
   }
   var canApprove = !!_ACTIONABLE[d.status];
-  var canReject = canApprove || d.status==='approved';
+  // Return also allowed on approved (unpaid) — clean trips auto-approve into batches,
+  // so council's real review moment is often Approved (unpaid), not Submitted.
+  var canReturn = canApprove || d.status==='approved';
   if(canApprove){
     h += '<form method="POST" action="/api/council-approve">';
     h += '<input type="hidden" name="_token" value="'+_escAttr(_cpToken)+'"/>';
@@ -2227,12 +2237,12 @@ function buildActionForms(d){
     h += '<input type="hidden" name="returnTo" value="'+_escAttr(_cpReturnTo)+'"/>';
     h += '<button type="submit" class="cp-btn cp-btn-g">&#10003; Approve</button></form>';
   }
-  if(canReject){
-    h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFCDD2;border-radius:6px;background:#FFEBEE" onsubmit="return !!this.note.value.trim()||(alert(&#39;Reject note required&#39;),false)">';
+  if(canReturn){
+    h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFE082;border-radius:6px;background:#FFF8E1" onsubmit="return !!this.note.value.trim()||(alert(&#39;Revision note required&#39;),false)">';
     h += '<input type="hidden" name="_token" value="'+_escAttr(_cpToken)+'"/>';
     h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
     h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
-    h += '<input type="hidden" name="action" value="reject"/>';
+    h += '<input type="hidden" name="action" value="return"/>';
     h += '<input type="hidden" name="returnTo" value="'+_escAttr(_cpReturnTo)+'"/>';
     if(_cpReturnTo==='batches'){
       h += '<input type="hidden" name="tab" value="'+_escAttr(typeof _cpTab==='string'?_cpTab:'submitted')+'"/>';
@@ -2240,26 +2250,8 @@ function buildActionForms(d){
       h += '<input type="hidden" name="to" value="'+_escAttr(typeof _cpTo==='string'?_cpTo:'')+'"/>';
       h += '<input type="hidden" name="company" value="'+_escAttr(typeof _cpCompany==='string'?_cpCompany:'')+'"/>';
     }
-    h += '<select name="flagReason" class="cp-input" style="width:auto">';
-    h += '<option value="fare_mismatch">fare_mismatch</option>';
-    h += '<option value="waiting_charged">waiting_charged</option>';
-    h += '<option value="hoist_rate_mismatch">hoist_rate_mismatch</option>';
-    h += '<option value="limit_exceeded_daily">limit_exceeded_daily</option>';
-    h += '<option value="limit_exceeded_monthly">limit_exceeded_monthly</option>';
-    h += '<option value="card_expired">card_expired</option>';
-    h += '<option value="implausible_short_trip">implausible_short_trip</option>';
-    h += '<option value="other">other</option></select>';
-    h += '<input name="note" class="cp-input" placeholder="Reject note (required)" style="min-width:160px" required/>';
-    h += '<button type="submit" class="cp-btn cp-btn-r">&#10007; Reject (return for fix)</button></form>';
-  }
-  if(canApprove){
-    h += '<form method="POST" action="/api/council-approve" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid #FFE082;border-radius:6px;background:#FFF8E1" onsubmit="return !!this.note.value.trim()||(alert(&#39;Revision note required&#39;),false)">';
-    h += '<input type="hidden" name="_token" value="'+_escAttr(_cpToken)+'"/>';
-    h += '<input type="hidden" name="tripCid" value="'+_escAttr(d.cid)+'"/>';
-    h += '<input type="hidden" name="tripRawKey" value="'+_escAttr(d.rawKey)+'"/>';
-    h += '<input type="hidden" name="action" value="return"/>';
-    h += '<input type="hidden" name="returnTo" value="'+_escAttr(_cpReturnTo)+'"/>';
     h += (d.status==='flagged' ? '<div style="flex-basis:100%;font-size:12px;color:#5d4037;margin-bottom:2px"><strong>Return unlocks company editing.</strong> Trip stays view-only for the company until you click Return — so council can review the original flagged data before anything is edited.</div>' : '');
+    h += (d.status==='approved' ? '<div style="flex-basis:100%;font-size:12px;color:#5d4037;margin-bottom:2px"><strong>Return from Approved (unpaid).</strong> Removes this trip from its claim batch and sends it back to the company with your note.</div>' : '');
     h += '<input name="note" class="cp-input" placeholder="Revision note (required)" style="min-width:160px" required/>';
     h += '<button type="submit" class="cp-btn" style="background:#E65100;color:#fff">&#8617; Return to company</button></form>';
   }
@@ -2502,7 +2494,25 @@ router.post('/api/council-bulk-return', (req, res) => {
             fromStatus: st.status || null,
             toStatus: 'revision_needed',
           }),
-          finishOne,
+          () => {
+            fbRead('completedJobs/' + cid + '/' + rawKey, (_ej: any, job: any) => {
+              const tripLike: CouncilTripLike = {
+                ...(job && typeof job === 'object' ? job : {}),
+                ...st,
+                _cid: cid,
+                _rawKey: rawKey,
+                ...normalizeTmTripEconomics(job && typeof job === 'object' ? job : {}),
+              };
+              afterRejectRemoveFromBatch(
+                sess.councilId,
+                cid,
+                rawKey,
+                st,
+                subsidyOfTrip(tripLike),
+                finishOne,
+              );
+            });
+          },
         );
       });
     });
@@ -3215,7 +3225,7 @@ router.get('/council-portal/batches', requirePortalAuth, (req, res) => {
   <input type="hidden" name="company" value="${esc(filterCompany)}"/>
   <button type="submit" class="cp-btn cp-btn-g" style="margin-right:4px">&#10003; Approve All</button>
 </form>
-<span style="font-size:11px;color:#888">Reject trips via Details below</span>`
+<span style="font-size:11px;color:#888">Return trips via Details below</span>`
                 : b.status === 'approved'
                   ? `
 <button type="button" class="cp-btn cp-btn-g" onclick="cpOpenMarkPaid('${esc(b._cid)}','${esc(b._ym)}',${Number(b._displaySubsidy || 0)})">&#128181; Mark Paid</button>`

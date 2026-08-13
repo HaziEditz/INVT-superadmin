@@ -796,6 +796,30 @@ function tripDisplayTimeRaw(t) {
 window.tripDisplayTimeRaw = tripDisplayTimeRaw;
 window.tripActivityMs = tripActivityMs;
 
+/**
+ * Passenger / cardholder display — prefer TM card entry name (tmCardName).
+ * Live jobs often write tmCardName only; tmPassengerName is frequently blank.
+ */
+function resolveCardholderName(job) {
+  if (!job || typeof job !== 'object') return '';
+  var passengers = Array.isArray(job.tmPassengers) ? job.tmPassengers : [];
+  var fromList = passengers
+    .map(function (p) {
+      return String((p && (p.cardholderName || p.cardHolderName || p.name)) || '').trim();
+    })
+    .filter(Boolean);
+  if (fromList.length) return fromList.join(' + ');
+  return String(
+    job.tmCardName ||
+      job.cardholderName ||
+      job.tmPassengerName ||
+      job.passengerName ||
+      job.customerName ||
+      '',
+  ).trim();
+}
+window.resolveCardholderName = resolveCardholderName;
+
 function hoistPaysOf(t) {
   if (!t) return 0;
   return parseFloat(t.tmSubsidyHoist != null ? t.tmSubsidyHoist : (t.hoistTotal != null ? t.hoistTotal : (t.hoistCost || 0))) || 0;
