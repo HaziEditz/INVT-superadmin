@@ -15,11 +15,11 @@
 <script src="https://www.gstatic.com/firebasejs/7.24.0/firebase-database.js"></script>
 <script>
 var config = {
-  apiKey: "AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",
-  authDomain: "bookawaka2026-564e1.firebaseapp.com",
-  databaseURL: "https://bookawaka2026-564e1-default-rtdb.firebaseio.com",
-  projectId: "bookawaka2026-564e1",
-  storageBucket: "bookawaka2026-564e1.firebasestorage.app"
+  apiKey: "AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA",
+  authDomain: "taxilatest.firebaseapp.com",
+  databaseURL: "https://taxilatest.firebaseio.com",
+  projectId: "taxilatest",
+  storageBucket: "taxilatest.appspot.com"
 };
 firebase.initializeApp(config);
 </script>
@@ -155,6 +155,7 @@ firebase.initializeApp(config);
   </div>
   <div class="filt">
     <select id="rp-f-council" onchange="renderRP()"><option value="">All Councils</option></select>
+    <select id="rp-f-company" onchange="renderRP()"><option value="">All Companies</option></select>
     <select id="rp-f-month" onchange="renderRP()"><option value="">All Months</option></select>
     <select id="rp-f-status" onchange="renderRP()">
       <option value="">All Statuses</option>
@@ -168,10 +169,10 @@ firebase.initializeApp(config);
   <div style="overflow-x:auto">
     <table class="tm-tbl">
       <thead><tr>
-        <th>Council</th><th>Month</th><th>Trips</th><th>Flagged</th><th>Total Fare</th>
-        <th>TM Subsidy</th><th>Hoist Subsidy</th><th>Total Council Claim</th><th>Pax Total</th><th>Status Breakdown</th>
+        <th>Council</th><th>Month</th><th>Trips</th><th>Flagged</th><th>Gross fare (meter + hoist)</th>
+        <th>Meter base (%/cap)</th><th>TM Subsidy</th><th>Hoist Subsidy</th><th>Total Council Claim</th><th>Pax Total</th><th>Status Breakdown</th>
       </tr></thead>
-      <tbody id="rp-tb"><tr><td colspan="10" style="text-align:center;padding:40px;color:#9e9e9e">Loading&#8230;</td></tr></tbody>
+      <tbody id="rp-tb"><tr><td colspan="11" style="text-align:center;padding:40px;color:#9e9e9e">Loading&#8230;</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -201,15 +202,39 @@ firebase.initializeApp(config);
 <script src="assets/js/altair_admin_common.min.js"></script>
 <script src="assets/js/tm-helpers.js"></script>
 <script>
-var rpData = {}, rpCouncils = {};
+var rpData = {}, rpCouncils = {}, rpCompanies = {};
 window._fbOnLogin = function() {
-  adminRead('tmConfig').then(function(d) { rpCouncils = d || {}; populateRPCouncils(); });
-  loadRP();
+  Promise.all([
+    adminRead('tmConfig').then(function(d) { return d || {}; }).catch(function(){ return {}; }),
+    adminRead('companies').then(function(d) { return d || {}; }).catch(function(){ return {}; })
+  ]).then(function(res) {
+    rpCouncils = res[0] || {};
+    rpCompanies = res[1] || {};
+    populateRPCouncils();
+    loadRP();
+  });
 };
 function populateRPCouncils() {
   var o = '<option value="">All Councils</option>';
   Object.entries(rpCouncils).forEach(function(kv) { o += '<option value="' + kv[0] + '">' + ((kv[1].name) || kv[0]) + '</option>'; });
   document.getElementById('rp-f-council').innerHTML = o;
+}
+function populateRPCompanies() {
+  var sel = document.getElementById('rp-f-company');
+  if (!sel) return;
+  var old = sel.value;
+  var map = {};
+  Object.keys(rpData).forEach(function(id) {
+    var cid = String((rpData[id] && rpData[id]._cid) || '').trim();
+    if (!cid) return;
+    var name = (rpCompanies[cid] && (rpCompanies[cid].name || rpCompanies[cid].companyName)) || ('Operator ' + cid);
+    map[cid] = name;
+  });
+  var o = '<option value="">All Companies</option>';
+  Object.keys(map).sort(function(a,b){ return map[a].localeCompare(map[b]); }).forEach(function(cid) {
+    o += '<option value="' + cid + '"' + (cid === old ? ' selected' : '') + '>' + map[cid] + '</option>';
+  });
+  sel.innerHTML = o;
 }
 function mapTMTripRP(j, cid, rawKey) {
   return {
@@ -220,18 +245,21 @@ function mapTMTripRP(j, cid, rawKey) {
     cardNumber: j.tmVoucherNo || j.cardNumber || '',
     passengerName: j.tmPassengerName || j.passengerName || '',
     startTime: j.startedAt_ISO || j.startedAt || '',
+    endTime: j.completedAt_ISO || j.completedAt || j.timestamp || '',
+    completedAt_ISO: j.completedAt_ISO || '',
+    completedAt: j.completedAt || j.timestamp || '',
     pickup: j.pickupAddress || j.pickup || '',
     dropoff: j.dropAddress || j.dropoff || '',
-    meterFare: +(j.fare || j.meterFare || 0),
-    tmSubsidyFare: +(j.tmSubsidy || j.tmSubsidyFare || 0),
-    tmSubsidyHoist: +(j.tmSubsidyHoist || 0),
-    hoistTotal: +(j.hoistTotal || 0),
+    meterFare: +(j.fare || j.meterFare || j.totalFare || 0),
+    tmSubsidyFare: +(j.tmSubsidyFare != null ? j.tmSubsidyFare : (j.tmSubsidy || 0)),
+    tmSubsidyHoist: +(j.tmSubsidyHoist || j.hoistTotal || 0),
+    hoistTotal: +(j.hoistTotal || j.tmSubsidyHoist || 0),
     passengerPays: +(j.tmPassengerPays || j.passengerPays || 0),
-    totalCouncilPays: +(j.tmSubsidy || j.totalCouncilPays || j.fare || 0),
+    totalCouncilPays: +(j.tmCouncilPays != null ? j.tmCouncilPays : ((+(j.tmSubsidyFare || j.tmSubsidy || 0)) + (+(j.tmSubsidyHoist || j.hoistTotal || 0)))),
     waitingCharge: +(j.waitingCost || j.WaitingCost || 0),
     distance: j.distanceKm || '',
     hoistUsed: j.hoistUsed || false,
-    hoistCount: j.hoistCount || 0,
+    hoistCount: j.hoistCount || j.tmHoistCount || 0,
     status: 'pending', flagReasons: []
   };
 }
@@ -256,16 +284,23 @@ function loadRP() {
         var st = s[t._cid] && s[t._cid][t._rawKey];
         if (st) { t.status = st.status || t.status; t.flagReasons = st.flagReasons || []; }
       });
+      populateRPCompanies();
       buildMonthFilter(); renderRP();
-    }).catch(function() { buildMonthFilter(); renderRP(); });
-  }).catch(function() { buildMonthFilter(); renderRP(); });
+    }).catch(function() { populateRPCompanies(); buildMonthFilter(); renderRP(); });
+  }).catch(function() { populateRPCompanies(); buildMonthFilter(); renderRP(); });
 }
-function refreshRP() {
-  loadRP();
+function refreshRP() { loadRP(); }
+function rpTripMonthKey(t) {
+  var raw = (typeof tripDisplayTimeRaw === 'function' ? tripDisplayTimeRaw(t) : null) || t.startTime || t.endTime || '';
+  if (!raw) return '';
+  if (typeof _tzToMonth === 'function') return _tzToMonth(raw) || '';
+  var ms = (typeof tripActivityMs === 'function' ? tripActivityMs(t) : 0);
+  if (!ms) return String(raw).slice(0, 7);
+  return new Date(ms).toLocaleDateString('en-CA', { timeZone: 'Pacific/Auckland' }).slice(0, 7);
 }
 function buildMonthFilter() {
   var months = {};
-  Object.values(rpData).forEach(function(t) { if (t.startTime) months[t.startTime.slice(0,7)] = true; });
+  Object.values(rpData).forEach(function(t) { var m = rpTripMonthKey(t); if (m) months[m] = true; });
   var sorted = Object.keys(months).sort().reverse();
   var cur = document.getElementById('rp-f-month').value;
   var o = '<option value="">All Months</option>';
@@ -274,42 +309,62 @@ function buildMonthFilter() {
 }
 function renderRP() {
   var fC = document.getElementById('rp-f-council').value;
+  var fCo = document.getElementById('rp-f-company') ? document.getElementById('rp-f-company').value : '';
   var fM = document.getElementById('rp-f-month').value;
   var fS = document.getElementById('rp-f-status').value;
   var filtered = Object.entries(rpData).filter(function(kv) {
     var t = kv[1];
     if (fC && t.councilId !== fC) return false;
-    if (fM && (t.startTime || '').slice(0,7) !== fM) return false;
+    if (fCo && String(t._cid || '') !== fCo) return false;
+    if (fM && rpTripMonthKey(t) !== fM) return false;
     if (fS && t.status !== fS) return false;
     return true;
   });
   document.getElementById('rp-count').textContent = filtered.length + ' trips';
   var cnames = {}; Object.entries(rpCouncils).forEach(function(kv) { cnames[kv[0]] = (kv[1].name) || kv[0]; });
   var agg = {};
+  var totGross = 0, totMeterBase = 0, totClaim = 0, totTrips = 0, totFlagged = 0, zeroClaimN = 0;
   filtered.forEach(function(kv) {
     var t = kv[1];
-    var month = (t.startTime || '').slice(0,7) || 'Unknown';
+    var month = rpTripMonthKey(t) || 'Unknown';
     var council = t.councilId || 'unknown';
     var aggKey = council + '||' + month;
-    if (!agg[aggKey]) agg[aggKey] = { council: council, month: month, trips: 0, flagged: 0, totalFare: 0, tmSubFare: 0, tmSubHoist: 0, totalClaim: 0, paxTotal: 0, statuses: {} };
+    if (!agg[aggKey]) agg[aggKey] = { council: council, month: month, trips: 0, flagged: 0, totalFare: 0, meterBase: 0, tmSubFare: 0, tmSubHoist: 0, totalClaim: 0, paxTotal: 0, statuses: {} };
     var a = agg[aggKey];
+    var fare = parseFloat(t.meterFare || 0) || 0;
+    var hoist = parseFloat(t.tmSubsidyHoist || t.hoistTotal || 0) || 0;
+    var sub = parseFloat(t.tmSubsidyFare || 0) || 0;
+    var claim = parseFloat(t.totalCouncilPays || 0) || (sub + hoist);
     a.trips++;
     if (t.status === 'flagged') a.flagged++;
-    a.totalFare += parseFloat(t.meterFare || 0);
-    a.tmSubFare += parseFloat(t.tmSubsidyFare || 0);
-    a.tmSubHoist += parseFloat(t.tmSubsidyHoist || 0);
-    a.totalClaim += parseFloat(t.totalCouncilPays || 0);
+    a.totalFare += fare;
+    a.tmSubFare += sub;
+    a.tmSubHoist += hoist;
+    a.totalClaim += claim;
     a.paxTotal += parseFloat(t.passengerPays || 0);
+    if (!(sub > 0.009) && fare > 0.009) { zeroClaimN++; }
+    else { a.meterBase += Math.max(0, fare - hoist); totMeterBase += Math.max(0, fare - hoist); }
     a.statuses[t.status || 'pending'] = (a.statuses[t.status || 'pending'] || 0) + 1;
+    totGross += fare; totClaim += claim; totTrips++;
+    if (t.status === 'flagged') totFlagged++;
   });
-  var totFare = 0, totClaim = 0, totTrips = 0, totFlagged = 0;
-  Object.values(agg).forEach(function(a) { totFare += a.totalFare; totClaim += a.totalClaim; totTrips += a.trips; totFlagged += a.flagged; });
   document.getElementById('rp-summary').innerHTML =
     sumBox('Total Trips', totTrips, '') + sumBox('Flagged', totFlagged, '#B71C1C') +
-    sumBox('Total Fare', '$' + totFare.toFixed(2), '') + sumBox('Total Council Claim', '$' + totClaim.toFixed(2), '#2E7D32');
+    sumBox('Gross fare (meter + hoist)', '$' + totGross.toFixed(2), '') +
+    sumBox('Meter base (%/cap applies here)', '$' + totMeterBase.toFixed(2), '#065f46') +
+    sumBox('Total Council Claim', '$' + totClaim.toFixed(2), '#2E7D32');
+  var hint = document.getElementById('rp-clarity-hint');
+  if (!hint) {
+    hint = document.createElement('div');
+    hint.id = 'rp-clarity-hint';
+    hint.style.cssText = 'font-size:11px;color:#64748b;margin:6px 0 10px;padding:0 18px;line-height:1.4';
+    var sum = document.getElementById('rp-summary');
+    if (sum && sum.parentNode) sum.parentNode.insertBefore(hint, sum.nextSibling);
+  }
+  hint.textContent = 'Gross fare includes hoist' + (zeroClaimN ? ' and ' + zeroClaimN + ' zero-claim trip(s)' : '') + '. %/cap subsidy applies to Meter base, not Gross fare. Council Claim = meter subsidy + hoist.';
   var rows = Object.values(agg).sort(function(a,b) { return b.month.localeCompare(a.month) || a.council.localeCompare(b.council); });
   document.getElementById('rp-tb').innerHTML = !rows.length
-    ? '<tr><td colspan="10" style="text-align:center;padding:30px;color:#9e9e9e">No trips match the selected filters.</td></tr>'
+    ? '<tr><td colspan="11" style="text-align:center;padding:30px;color:#9e9e9e">No trips match the selected filters.</td></tr>'
     : rows.map(function(a) {
       var stBreak = Object.entries(a.statuses).map(function(kv) { return kv[0] + ':' + kv[1]; }).join(', ');
       return '<tr>' +
@@ -317,7 +372,8 @@ function renderRP() {
         '<td>' + a.month + '</td>' +
         '<td style="font-weight:600">' + a.trips + '</td>' +
         '<td>' + (a.flagged > 0 ? '<span class="bx bx-r">' + a.flagged + '</span>' : '0') + '</td>' +
-        '<td>$' + a.totalFare.toFixed(2) + '</td>' +
+        '<td>$' + a.totalFare.toFixed(2) + '<div style="font-size:10px;color:#888">incl. hoist</div></td>' +
+        '<td style="color:#065f46;font-weight:600">$' + a.meterBase.toFixed(2) + '<div style="font-size:10px;color:#888">%/cap base</div></td>' +
         '<td style="color:#2E7D32;font-weight:600">$' + a.tmSubFare.toFixed(2) + '</td>' +
         '<td style="color:#1565C0">$' + a.tmSubHoist.toFixed(2) + '</td>' +
         '<td style="font-weight:700;color:#2E7D32;font-size:14px">$' + a.totalClaim.toFixed(2) + '</td>' +
@@ -330,7 +386,10 @@ function renderRP() {
     ? '<tr><td colspan="16" style="text-align:center;padding:20px;color:#9e9e9e">No trips.</td></tr>'
     : detailRows.map(function(kv) {
       var id = kv[0], t = kv[1];
-      var dt = t.startTime ? (t.startTime.slice(0,10) + ' ' + t.startTime.slice(11,16)) : '\u2014';
+      var dtRaw = (typeof tripDisplayTimeRaw === 'function' ? tripDisplayTimeRaw(t) : null) || t.startTime || t.endTime || '';
+      var dt = dtRaw
+        ? (typeof _tzFmtDT === 'function' ? _tzFmtDT(dtRaw) : (String(dtRaw).slice(0,10) + ' ' + String(dtRaw).slice(11,16)))
+        : '\u2014';
       var stMap = { pending: '<span class="bx bx-gr">Pending</span>', flagged: '<span class="bx bx-r">Flagged</span>', company_approved: '<span class="bx bx-b">Co.Approved</span>', approved: '<span class="bx bx-g">Approved</span>', rejected: '<span class="bx bx-r">Rejected</span>' };
       var uses = hoistUsesOf(t);
       return '<tr>' +
@@ -339,7 +398,7 @@ function renderRP() {
         '<td>' + (t.vehicleId || '\u2014') + '</td>' +
         '<td style="font-family:monospace">' + (t.cardNumber || '\u2014') + '</td>' +
         '<td>' + (t.passengerName || '\u2014') + '</td>' +
-        '<td>' + dt + '</td>' +
+        '<td style="white-space:nowrap">' + dt + '</td>' +
         '<td>' + (t.pickup || '\u2014') + '</td>' +
         '<td>' + (t.dropoff || '\u2014') + '</td>' +
         '<td>' + (t.distance ? t.distance + ' km' : '\u2014') + '</td>' +
@@ -357,17 +416,20 @@ function sumBox(label, val, color) {
 }
 function exportRPCSV() {
   var fC = document.getElementById('rp-f-council').value;
+  var fCo = document.getElementById('rp-f-company') ? document.getElementById('rp-f-company').value : '';
   var fM = document.getElementById('rp-f-month').value;
   var fS = document.getElementById('rp-f-status').value;
   var cnames = {}; Object.entries(rpCouncils).forEach(function(kv) { cnames[kv[0]] = (kv[1].name) || kv[0]; });
-  var rows = [['Job ID','Driver','Vehicle','Card #','Passenger','Council','Date','Pickup','Dropoff','Distance(km)','Meter Fare','TM Subsidy Fare','TM Subsidy Hoist','Total Council Pays','Passenger Pays','Hoist Used','Hoist Count','Waiting','Status','Flag Reasons']];
+  var rows = [['Job ID','Company','Driver','Vehicle','Card #','Passenger','Council','Date','Pickup','Dropoff','Distance(km)','Meter Fare','TM Subsidy Fare','TM Subsidy Hoist','Total Council Pays','Passenger Pays','Hoist Used','Hoist Count','Waiting','Status','Flag Reasons']];
   Object.entries(rpData).forEach(function(kv) {
     var t = kv[1];
     if (fC && t.councilId !== fC) return;
-    if (fM && (t.startTime || '').slice(0,7) !== fM) return;
+    if (fCo && String(t._cid || '') !== fCo) return;
+    if (fM && rpTripMonthKey(t) !== fM) return;
     if (fS && t.status !== fS) return;
-    rows.push([kv[0], t.driverName || '', t.vehicleId || '', t.cardNumber || '', t.passengerName || '',
-      cnames[t.councilId] || t.councilId || '', t.startTime ? t.startTime.slice(0,16) : '',
+    var dtRaw = (typeof tripDisplayTimeRaw === 'function' ? tripDisplayTimeRaw(t) : null) || t.startTime || t.endTime || '';
+    rows.push([kv[0], t._cid || '', t.driverName || '', t.vehicleId || '', t.cardNumber || '', t.passengerName || '',
+      cnames[t.councilId] || t.councilId || '', dtRaw ? String(dtRaw).slice(0,16) : '',
       t.pickup || '', t.dropoff || '', t.distance || '',
       parseFloat(t.meterFare || 0).toFixed(2), parseFloat(t.tmSubsidyFare || 0).toFixed(2),
       parseFloat(t.tmSubsidyHoist || 0).toFixed(2), parseFloat(t.totalCouncilPays || 0).toFixed(2),
@@ -378,7 +440,7 @@ function exportRPCSV() {
   var blob = new Blob([csv], { type: 'text/csv' });
   var url = URL.createObjectURL(blob);
   var a = document.createElement('a');
-  a.href = url; a.download = 'TM_Report_' + (fM || 'All') + '_' + (fC || 'AllCouncils') + '.csv';
+  a.href = url; a.download = 'TM_Report_' + (fM || 'All') + '_' + (fCo || 'AllCompanies') + '_' + (fC || 'AllCouncils') + '.csv';
   document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
 }
 </script>

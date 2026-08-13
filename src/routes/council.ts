@@ -1402,8 +1402,8 @@ router.get('/council-portal/dashboard', requirePortalAuth, (req, res) => {
 <div class="cp-stats">
   <div class="cp-stat"><div class="cp-stat-v">${approvedOps}</div><div class="cp-stat-l">Approved Companies</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${thisMonthTrips.length}</div><div class="cp-stat-l">Trips This Month (${esc(curMonth)})</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totalCouncilPays.toFixed(2)}</div><div class="cp-stat-l">Council claim (%/cap) This Month</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totalHoistPays.toFixed(2)}</div><div class="cp-stat-l">Hoist $ This Month (${totalHoistUses} use${totalHoistUses === 1 ? '' : 's'})</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totalCouncilPays.toFixed(2)}</div><div class="cp-stat-l">Council claim (%/cap) This Month</div><div style="font-size:10px;color:#888;margin-top:2px">meter base only · hoist separate below</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totalHoistPays.toFixed(2)}</div><div class="cp-stat-l">Hoist $ This Month (${totalHoistUses} use${totalHoistUses === 1 ? '' : 's'} · separate)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${totalHoistUses}</div><div class="cp-stat-l">Hoist Uses This Month</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${avg}</div><div class="cp-stat-l">Avg Per Trip</div></div>
   ${pendingCount > 0 ? `<div class="cp-stat flag"><div class="cp-stat-v">${pendingCount}</div><div class="cp-stat-l"><a href="/council-portal/trips?t=${encodeURIComponent(token)}&status=pending" style="color:inherit">Awaiting Your Approval</a></div></div>` : ''}
@@ -1840,10 +1840,11 @@ ${tabsHtml}
 </div>
 <div class="cp-stats">
   <div class="cp-stat"><div class="cp-stat-v">${details.length}</div><div class="cp-stat-l">Trips in selection</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totFare.toFixed(2)}</div><div class="cp-stat-l">Total Meter Fare</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totHoist.toFixed(2)}</div><div class="cp-stat-l">Hoist $</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${(totFare + totHoist).toFixed(2)}</div><div class="cp-stat-l">Gross fare (meter + hoist)</div><div style="font-size:10px;color:#888;margin-top:2px">includes hoist — %/cap is not on this number</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totFare.toFixed(2)}</div><div class="cp-stat-l">Meter base (%/cap applies here)</div><div style="font-size:10px;color:#888;margin-top:2px">meter only · excludes hoist</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totHoist.toFixed(2)}</div><div class="cp-stat-l">Hoist $ (separate)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${totHoistUses}</div><div class="cp-stat-l">Hoist Uses</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totCouncil.toFixed(2)}</div><div class="cp-stat-l">Council claim (%/cap)</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totCouncil.toFixed(2)}</div><div class="cp-stat-l">Council claim (%/cap)</div><div style="font-size:10px;color:#888;margin-top:2px">applied to Meter base</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totPax.toFixed(2)}</div><div class="cp-stat-l">Total Passenger Pays</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${esc(totDistanceLabel)}</div><div class="cp-stat-l">Total Distance</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${esc(totDurationLabel)}</div><div class="cp-stat-l">Total Trip Time</div></div>
@@ -3376,9 +3377,9 @@ ${(() => {
 })()}
 <div class="cp-stats" style="margin-bottom:18px">
   <div class="cp-stat"><div class="cp-stat-v">${submitted.length}</div><div class="cp-stat-l">Awaiting Approval</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totalPending.toFixed(2)}</div><div class="cp-stat-l">Pending claim (%/cap)</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totalPending.toFixed(2)}</div><div class="cp-stat-l">Pending claim (%/cap)</div><div style="font-size:10px;color:#888;margin-top:2px">meter %/cap · hoist separate</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${approved.length}</div><div class="cp-stat-l">Approved (unpaid)</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totalApproved.toFixed(2)}</div><div class="cp-stat-l">Approved claim (%/cap)</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totalApproved.toFixed(2)}</div><div class="cp-stat-l">Approved claim (%/cap)</div><div style="font-size:10px;color:#888;margin-top:2px">meter %/cap · hoist separate</div></div>
   <div class="cp-stat${orphanApproved.length ? ' warn' : ''}"><div class="cp-stat-v">${orphanApproved.length}</div><div class="cp-stat-l">Orphan approved (no batch)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totalHoistFiltered.toFixed(2)}</div><div class="cp-stat-l">Hoist $ (date filter)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">${totalHoistUsesFiltered}</div><div class="cp-stat-l">Hoist Uses (date filter)</div></div>
@@ -4451,9 +4452,10 @@ router.get('/council-portal/entity', requirePortalAuth, (req, res) => {
 </form>
 <div class="cp-stats">
   <div class="cp-stat"><div class="cp-stat-v">${totals.trips}</div><div class="cp-stat-l">Trips</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totals.meterFare.toFixed(2)}</div><div class="cp-stat-l">Meter Fare</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${totals.councilPays.toFixed(2)}</div><div class="cp-stat-l">Council claim (%/cap)</div></div>
-  <div class="cp-stat"><div class="cp-stat-v">$${hoistPaysLabel.toFixed(2)}</div><div class="cp-stat-l">Hoist $ (${hoistUsesLabel} uses)</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${(totals.meterFare + hoistPaysLabel).toFixed(2)}</div><div class="cp-stat-l">Gross fare (meter + hoist)</div><div style="font-size:10px;color:#888;margin-top:2px">%/cap is not on this number</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totals.meterFare.toFixed(2)}</div><div class="cp-stat-l">Meter base (%/cap applies here)</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${totals.councilPays.toFixed(2)}</div><div class="cp-stat-l">Council claim (%/cap)</div><div style="font-size:10px;color:#888;margin-top:2px">applied to Meter base</div></div>
+  <div class="cp-stat"><div class="cp-stat-v">$${hoistPaysLabel.toFixed(2)}</div><div class="cp-stat-l">Hoist $ (${hoistUsesLabel} uses · separate)</div></div>
   <div class="cp-stat"><div class="cp-stat-v">$${totals.passengerPays.toFixed(2)}</div><div class="cp-stat-l">Passenger Pays</div></div>
 </div>
 <div class="cp-card" style="margin-bottom:18px;padding:14px 18px">

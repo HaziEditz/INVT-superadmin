@@ -434,7 +434,10 @@ function mapTMTrip(j, cid, rawKey) {
     cardNumber: cardNum,
     passengerName: passengerName,
     startTime: j.startedAt_ISO || j.startedAt || '',
-    endTime: j.completedAt_ISO || j.completedAt || '',
+    endTime: j.completedAt_ISO || j.completedAt || j.timestamp || '',
+    // Keep raw completion fields so Date column can fall back when start is missing.
+    completedAt_ISO: j.completedAt_ISO || '',
+    completedAt: j.completedAt || j.timestamp || '',
     pickup: j.pickupAddress || j.pickup || j.pickupLocation_address || (j.pickupLocation && j.pickupLocation.address) || '',
     dropoff: j.dropAddress || j.dropoff || j.dropLocation_address || (j.dropoffLocation && j.dropoffLocation.address) || j.destination || '',
     allCardNums: allCardNums,
@@ -539,8 +542,9 @@ function renderTT() {
     if (fC && t.councilId !== fC) return false;
     if (fCo && String(t._cid || '') !== fCo) return false;
     if (fS && t.status !== fS) return false;
-    if (fFrom && t.startTime && _tzToDate(t.startTime) < fFrom) return false;
-    if (fTo && t.startTime && _tzToDate(t.startTime) > fTo) return false;
+    var filterDt = (typeof tripDisplayTimeRaw === 'function' ? tripDisplayTimeRaw(t) : null) || t.startTime || t.endTime || '';
+    if (fFrom && filterDt && _tzToDate(filterDt) < fFrom) return false;
+    if (fTo && filterDt && _tzToDate(filterDt) > fTo) return false;
     if (fQ) { var s = (kv[0] + ' ' + (t.driverName || '') + ' ' + (t.cardNumber || '') + ' ' + ((t.allCardNums||[]).join(' ')) + ' ' + (t.passengerName || '') + ' ' + (t.vehicleId || '')).toLowerCase(); if (!s.includes(fQ)) return false; }
     return true;
   });
@@ -555,7 +559,8 @@ function renderTT() {
     var flags = (t.flagReasons || []);
     var statusBadge = ttStatusBadge(t.status);
     var flagHtml = flags.length ? flags.map(function(f) { return '<span class="fc">' + tmFlagReasonLabel(f) + '</span>'; }).join('') : '';
-    var dt = t.startTime ? _tzFmtDT(t.startTime) : '\u2014';
+    var dtRaw = (typeof tripDisplayTimeRaw === 'function' ? tripDisplayTimeRaw(t) : null) || t.startTime || t.endTime || '';
+    var dt = dtRaw ? _tzFmtDT(dtRaw) : '\u2014';
     var hoistAmt = parseFloat(t.hoistTotal || t.tmSubsidyHoist || 0);
     var uses = hoistUsesOf(t);
     var isArch = t.status === 'archived';
@@ -869,8 +874,9 @@ function ttMatchingIds() {
     var t = kv[1];
     if (fC && t.councilId !== fC) return false;
     if (fS && t.status !== fS) return false;
-    if (fFrom && t.startTime && _tzToDate(t.startTime) < fFrom) return false;
-    if (fTo && t.startTime && _tzToDate(t.startTime) > fTo) return false;
+    var filterDt = (typeof tripDisplayTimeRaw === 'function' ? tripDisplayTimeRaw(t) : null) || t.startTime || t.endTime || '';
+    if (fFrom && filterDt && _tzToDate(filterDt) < fFrom) return false;
+    if (fTo && filterDt && _tzToDate(filterDt) > fTo) return false;
     if (fQ) {
       var s = (kv[0] + ' ' + (t.driverName || '') + ' ' + (t.cardNumber || '') + ' ' + ((t.allCardNums||[]).join(' ')) + ' ' + (t.passengerName || '') + ' ' + (t.vehicleId || '')).toLowerCase();
       if (!s.includes(fQ)) return false;

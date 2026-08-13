@@ -567,7 +567,7 @@ test('council Trips/Dashboard/Batches expose hoist uses', () => {
   assert.match(councilSrc, /Council claim \(%\/cap\)/);
   assert.match(
     councilSrc,
-    /Hoist \$ This Month \(\$\{totalHoistUses\} use\$\{totalHoistUses === 1 \? '' : 's'\}\)/,
+    /Hoist \$ This Month \(\$\{totalHoistUses\} use\$\{totalHoistUses === 1 \? '' : 's'\} · separate\)/,
   );
   assert.match(councilSrc, /<th>Hoist \$<\/th><th>Uses<\/th>/);
   assert.match(councilSrc, /_displayHoistUses/);

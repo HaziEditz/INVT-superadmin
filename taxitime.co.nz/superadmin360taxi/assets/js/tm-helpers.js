@@ -781,6 +781,21 @@ function tripActivityMs(t) {
   );
 }
 
+/**
+ * Best timestamp for Date column display: prefer start, fall back to completed/end
+ * (many hail jobs only write completedAt epoch — do not show blank).
+ */
+function tripDisplayTimeRaw(t) {
+  if (!t || typeof t !== 'object') return '';
+  return (
+    t.startedAt_ISO || t.startedAt || t.startTime ||
+    t.completedAt_ISO || t.completedAt || t.endTime ||
+    t.timestamp || t.JobCompleteTime || t.submittedAt || ''
+  );
+}
+window.tripDisplayTimeRaw = tripDisplayTimeRaw;
+window.tripActivityMs = tripActivityMs;
+
 function hoistPaysOf(t) {
   if (!t) return 0;
   return parseFloat(t.tmSubsidyHoist != null ? t.tmSubsidyHoist : (t.hoistTotal != null ? t.hoistTotal : (t.hoistCost || 0))) || 0;
