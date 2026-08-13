@@ -414,7 +414,7 @@ function normalizeTmTripEconomics(job: any): {
 } {
   const hoist = Number(job.tmSubsidyHoist ?? job.hoistTotal ?? job.hoistCost ?? 0) || 0;
   const meterFare = Number(job.tmMeterFare ?? job.meterFare ?? 0) || 0;
-  const legacyFare = Number(job.fare ?? job.totalFare ?? job.tmTotalFare ?? 0) || 0;
+  const legacyFare = Number(job.fare ?? job.totalFare ?? job.tmTotalFare ?? job.TotalFare ?? 0) || 0;
   const fare = meterFare || Math.max(0, legacyFare - (job.hoistTotal || job.tmSubsidyHoist ? hoist : 0));
   const combined =
     Number(job.tmCouncilPays ?? job.councilPays ?? job.tmSubsidy ?? 0) || 0;
@@ -434,17 +434,76 @@ function normalizeTmTripEconomics(job: any): {
   };
 }
 
+function councilJobLooksSparse(job: any): boolean {
+  if (!job || typeof job !== 'object' || !Object.keys(job).length) return true;
+  const fare = Number(job.TotalFare ?? job.totalFare ?? job.fare ?? job.tmMeterFare ?? 0) || 0;
+  const hasDriver = !!(job.driverId || job.DriverId);
+  const hasPickup = !!(job.pickup || job.PickAddress || job.pickAddress || job.pickupAddress);
+  return !(fare > 0 && hasDriver && hasPickup);
+}
+
+function fillCouncilJobFromAllbookings(job: any, ab: any): any {
+  const base = job && typeof job === 'object' ? { ...job } : {};
+  if (!ab || typeof ab !== 'object') return base;
+  const setIfEmpty = (k: string, v: any) => {
+    if (v == null || v === '') return;
+    if (base[k] != null && base[k] !== '') return;
+    base[k] = v;
+  };
+  setIfEmpty('driverId', ab.driverId || ab.DriverId);
+  setIfEmpty('DriverId', ab.DriverId || ab.driverId);
+  setIfEmpty('vehicleId', ab.vehicleId || ab.VehicleNo || ab.CallSign);
+  setIfEmpty('pickup', ab.pickup || ab.PickAddress || ab.pickAddress);
+  setIfEmpty('PickAddress', ab.PickAddress || ab.pickAddress || ab.pickup);
+  setIfEmpty('dropoff', ab.dropoff || ab.DropAddress || ab.dropAddress);
+  setIfEmpty('DropAddress', ab.DropAddress || ab.dropAddress || ab.dropoff);
+  setIfEmpty('TotalFare', ab.TotalFare ?? ab.totalFare ?? ab.fare);
+  setIfEmpty('totalFare', ab.totalFare ?? ab.TotalFare ?? ab.fare);
+  setIfEmpty('fare', ab.fare ?? ab.TotalFare ?? ab.totalFare);
+  setIfEmpty('paymentType', ab.paymentType || ab.PaymentType);
+  setIfEmpty('PaymentType', ab.PaymentType || ab.paymentType);
+  setIfEmpty('tmPassengerPays', ab.tmPassengerPays ?? ab.passengerPays);
+  setIfEmpty('tmCouncilPays', ab.tmCouncilPays ?? ab.tmSubsidy);
+  setIfEmpty('tmSubsidyFare', ab.tmSubsidyFare ?? ab.tmCouncilPays);
+  setIfEmpty('tmMeterFare', ab.tmMeterFare ?? ab.TotalFare);
+  setIfEmpty('tmCardNumber', ab.tmCardNumber || ab.tmVoucherNo);
+  setIfEmpty('passengerName', ab.passengerName || ab.PassengerName || ab.tmCardName);
+  if (ab.isTotalMobility || ab.tmUsed) {
+    base.isTotalMobility = true;
+    base.tmUsed = true;
+  }
+  return base;
+}
+
+function applyCouncilStatusEconomics(job: any, st: any): any {
+  const base = job && typeof job === 'object' ? { ...job } : {};
+  if (!st || typeof st !== 'object') return base;
+  if (st.isTotalMobility) base.isTotalMobility = true;
+  if (base.tmCouncilPays == null && (st.tmCouncilPays != null || st.tmSubsidy != null)) {
+    base.tmCouncilPays = st.tmCouncilPays != null ? st.tmCouncilPays : st.tmSubsidy;
+  }
+  if (base.tmPassengerPays == null && st.tmPassengerPays != null) base.tmPassengerPays = st.tmPassengerPays;
+  if (base.tmSubsidyFare == null && (st.tmSubsidyFare != null || st.tmCouncilPays != null)) {
+    base.tmSubsidyFare = st.tmSubsidyFare != null ? st.tmSubsidyFare : st.tmCouncilPays;
+  }
+  if (!base.tmCardNumber && st.tmCardNumber) base.tmCardNumber = st.tmCardNumber;
+  if (!base.councilId && st.councilId) base.councilId = st.councilId;
+  return base;
+}
+
 function loadCouncilTrips(councilId: string, cb: (err: any, trips: any[]) => void): void {
   fbRead('tmTripStatus', (err: any, allStatus: any) => {
     if (err || !allStatus) return cb(null, []);
     const cids = Object.keys(allStatus);
     if (cids.length === 0) return cb(null, []);
-    let pending = cids.length * 2;
+    let pending = cids.length * 3;
     const jobsMap: Record<string, any> = {};
+    const allbookingsMap: Record<string, any> = {};
     const namesMap: Record<string, string> = {};
     function done() { if (--pending === 0) merge(); }
     cids.forEach(cid => {
       fbRead('completedJobs/' + cid, (e2: any, jobs: any) => { jobsMap[cid] = jobs || {}; done(); });
+      fbRead('allbookings/' + cid, (eAb: any, ab: any) => { allbookingsMap[cid] = ab || {}; done(); });
       fbRead('superClients/' + cid, (e3: any, sc: any) => { namesMap[cid] = (sc && sc.name) ? sc.name : ('Operator ' + cid); done(); });
     });
     function merge() {
@@ -452,12 +511,18 @@ function loadCouncilTrips(councilId: string, cb: (err: any, trips: any[]) => voi
       cids.forEach(cid => {
         const statusMap = allStatus[cid] || {};
         const jobs = jobsMap[cid] || {};
+        const abs = allbookingsMap[cid] || {};
         Object.entries(statusMap).forEach(([rawKey, st]: [string, any]) => {
           if (!st || st.councilId !== councilId) return;
-          const job = jobs[rawKey] || {};
+          let job = jobs[rawKey] || {};
           // tmTripStatus row for this council is authoritative for the claims list;
           // also accept completed jobs that carry TM economics even if paymentType is the remainder method.
           if (Object.keys(job).length && !isTmCompletedJob(job) && !st.submittedAt && !st.status) return;
+          if (councilJobLooksSparse(job)) {
+            job = fillCouncilJobFromAllbookings(job, abs[rawKey]);
+          }
+          job = applyCouncilStatusEconomics(job, st);
+          if (!Object.keys(job).length && !st.submittedAt && !st.status) return;
           const econ = normalizeTmTripEconomics(job);
           result.push({
             _cid: cid, _rawKey: rawKey, _companyName: namesMap[cid] || ('Operator ' + cid),

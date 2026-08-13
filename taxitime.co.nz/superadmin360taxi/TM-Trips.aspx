@@ -473,8 +473,56 @@ function mapTMTrip(j, cid, rawKey) {
 
 function loadTT() {
   document.getElementById('tt-tb').innerHTML = '<tr><td colspan="15" style="text-align:center;padding:40px;color:#9e9e9e">Loading\u2026</td></tr>';
-  adminRead('completedJobs').then(function(allJobs) {
+  Promise.all([
+    adminRead('completedJobs'),
+    adminRead('tmTripStatus').catch(function(){ return {}; })
+  ]).then(function(res) {
+    var allJobs = res[0] || {};
+    var statuses = res[1] || {};
+    tmStatuses = statuses;
     ttData = {};
+    var needAb = {};
+
+    function _ttSparse(j) {
+      if (!j || typeof j !== 'object') return true;
+      var fare = Number(j.TotalFare != null ? j.TotalFare : j.totalFare != null ? j.totalFare : j.fare || 0) || 0;
+      return !(fare > 0 && (j.driverId || j.DriverId) && (j.pickup || j.PickAddress || j.pickAddress));
+    }
+    function _ttFillFromAb(j, ab) {
+      if (!ab || typeof ab !== 'object') return j;
+      function set(k, v){ if (v==null||v==='') return; if (j[k]!=null&&j[k]!=='') return; j[k]=v; }
+      set('driverId', ab.driverId || ab.DriverId);
+      set('vehicleId', ab.vehicleId || ab.VehicleNo || ab.CallSign);
+      set('pickup', ab.pickup || ab.PickAddress || ab.pickAddress);
+      set('PickAddress', ab.PickAddress || ab.pickAddress || ab.pickup);
+      set('dropoff', ab.dropoff || ab.DropAddress || ab.dropAddress);
+      set('DropAddress', ab.DropAddress || ab.dropAddress || ab.dropoff);
+      set('TotalFare', ab.TotalFare != null ? ab.TotalFare : ab.totalFare != null ? ab.totalFare : ab.fare);
+      set('totalFare', ab.totalFare != null ? ab.totalFare : ab.TotalFare);
+      set('fare', ab.fare != null ? ab.fare : ab.TotalFare);
+      set('paymentType', ab.paymentType || ab.PaymentType);
+      set('PaymentType', ab.PaymentType || ab.paymentType);
+      set('tmPassengerPays', ab.tmPassengerPays != null ? ab.tmPassengerPays : ab.passengerPays);
+      set('tmCouncilPays', ab.tmCouncilPays != null ? ab.tmCouncilPays : ab.tmSubsidy);
+      set('tmSubsidyFare', ab.tmSubsidyFare != null ? ab.tmSubsidyFare : ab.tmCouncilPays);
+      set('tmMeterFare', ab.tmMeterFare != null ? ab.tmMeterFare : ab.TotalFare);
+      set('tmCardNumber', ab.tmCardNumber || ab.tmVoucherNo);
+      set('passengerName', ab.passengerName || ab.PassengerName || ab.tmCardName);
+      if (ab.isTotalMobility || ab.tmUsed) { j.isTotalMobility = true; j.tmUsed = true; }
+      return j;
+    }
+    function _ttApplyStatus(j, st) {
+      if (!st) return j;
+      if (st.isTotalMobility) j.isTotalMobility = true;
+      if (j.tmCouncilPays == null && (st.tmCouncilPays != null || st.tmSubsidy != null)) j.tmCouncilPays = st.tmCouncilPays != null ? st.tmCouncilPays : st.tmSubsidy;
+      if (j.tmPassengerPays == null && st.tmPassengerPays != null) j.tmPassengerPays = st.tmPassengerPays;
+      if (j.tmSubsidyFare == null && (st.tmSubsidyFare != null || st.tmCouncilPays != null)) j.tmSubsidyFare = st.tmSubsidyFare != null ? st.tmSubsidyFare : st.tmCouncilPays;
+      if (!j.tmCardNumber && st.tmCardNumber) j.tmCardNumber = st.tmCardNumber;
+      if (!j.councilId && st.councilId) j.councilId = st.councilId;
+      return j;
+    }
+
+    // Primary: completedJobs TM rows
     if (allJobs && typeof allJobs === 'object') {
       Object.entries(allJobs).forEach(function(cidEntry) {
         var cid = cidEntry[0], jobs = cidEntry[1] || {};
@@ -486,38 +534,108 @@ function loadTT() {
         });
       });
     }
-    adminRead('tmTripStatus').then(function(statuses) {
-      tmStatuses = statuses || {};
-      Object.keys(ttData).forEach(function(id) {
-        var t = ttData[id];
-        var st = tmStatuses[t._cid] && tmStatuses[t._cid][t._rawKey];
-        if (st) {
-          t.status      = st.status      || t.status;
-          t.councilId   = st.councilId   || t.councilId;
+
+    // A-lite: union in tmTripStatus keys missing from completedJobs (never silently invisible)
+    Object.keys(statuses || {}).forEach(function(cid) {
+      var stMap = statuses[cid] || {};
+      Object.keys(stMap).forEach(function(rawKey) {
+        var st = stMap[rawKey];
+        if (!st || typeof st !== 'object') return;
+        var id = rawKey;
+        if (ttData[id] && ttData[id]._cid === cid) {
+          // overlay status on existing
+          var t = ttData[id];
+          t.status = st.status || t.status;
+          t.councilId = st.councilId || t.councilId;
           t.flagReasons = st.flagReasons || [];
           t.submittedAt = st.submittedAt || null;
-          t.approvedAt  = st.approvedAt  || null;
-          t.rejectedAt  = st.rejectedAt  || null;
+          t.approvedAt = st.approvedAt || null;
+          t.rejectedAt = st.rejectedAt || null;
           t.revisionNote = st.revisionNote || '';
           t.archivedAt = st.archivedAt || null;
           t.archivedBy = st.archivedBy || null;
           t.archivedFromStatus = st.archivedFromStatus || null;
           t.archiveNote = st.archiveNote || null;
           t.events = st.events || null;
-          t.submittedAt = st.submittedAt || t.submittedAt;
           t.flaggedAt = st.flaggedAt || null;
           t.sentBackAt = st.sentBackAt || null;
           t.resubmittedAt = st.resubmittedAt || null;
           t.restoredAt = st.restoredAt || null;
-          t.approvedAt = st.approvedAt || null;
-          t.rejectedAt = st.rejectedAt || null;
           t.anomalyDetail = st.anomalyDetail || null;
-          t.revisionNote = st.revisionNote || st.revisionNotes || t.revisionNote || '';
+          return;
+        }
+        // Missing from completedJobs — seed from status + allbookings fill
+        needAb[cid] = true;
+        var stub = _ttApplyStatus({ isTotalMobility: true, bookingId: rawKey }, st);
+        ttData[id] = mapTMTrip(stub, cid, rawKey);
+        ttData[id]._needsAbFill = true;
+      });
+    });
+
+    // Overlay status onto completedJobs-backed rows (legacy path)
+    Object.keys(ttData).forEach(function(id) {
+      var t = ttData[id];
+      if (t._needsAbFill) return;
+      var st = tmStatuses[t._cid] && tmStatuses[t._cid][t._rawKey];
+      if (!st) return;
+      t.status      = st.status      || t.status;
+      t.councilId   = st.councilId   || t.councilId;
+      t.flagReasons = st.flagReasons || [];
+      t.submittedAt = st.submittedAt || null;
+      t.approvedAt  = st.approvedAt  || null;
+      t.rejectedAt  = st.rejectedAt  || null;
+      t.revisionNote = st.revisionNote || '';
+      t.archivedAt = st.archivedAt || null;
+      t.archivedBy = st.archivedBy || null;
+      t.archivedFromStatus = st.archivedFromStatus || null;
+      t.archiveNote = st.archiveNote || null;
+      t.events = st.events || null;
+      t.flaggedAt = st.flaggedAt || null;
+      t.sentBackAt = st.sentBackAt || null;
+      t.resubmittedAt = st.resubmittedAt || null;
+      t.restoredAt = st.restoredAt || null;
+      t.anomalyDetail = st.anomalyDetail || null;
+      t.revisionNote = st.revisionNote || st.revisionNotes || t.revisionNote || '';
+    });
+
+    var abCids = Object.keys(needAb);
+    if (!abCids.length) {
+      renderTT();
+      populateTTCompanies();
+      return;
+    }
+    Promise.all(abCids.map(function(cid) {
+      return adminRead('allbookings/' + cid).then(function(ab){ return [cid, ab || {}]; }).catch(function(){ return [cid, {}]; });
+    })).then(function(pairs) {
+      var abByCid = {};
+      pairs.forEach(function(p){ abByCid[p[0]] = p[1]; });
+      Object.keys(ttData).forEach(function(id) {
+        var t = ttData[id];
+        if (!t._needsAbFill && !_ttSparse(t)) return;
+        var ab = (abByCid[t._cid] || {})[t._rawKey] || (abByCid[t._cid] || {})[id];
+        if (!ab) return;
+        var filled = _ttFillFromAb({}, ab);
+        var st = tmStatuses[t._cid] && tmStatuses[t._cid][t._rawKey];
+        filled = _ttApplyStatus(filled, st);
+        ttData[id] = mapTMTrip(filled, t._cid, t._rawKey);
+        // re-apply status overlay fields
+        if (st) {
+          ttData[id].status = st.status || ttData[id].status;
+          ttData[id].councilId = st.councilId || ttData[id].councilId;
+          ttData[id].flagReasons = st.flagReasons || [];
+          ttData[id].submittedAt = st.submittedAt || null;
+          ttData[id].approvedAt = st.approvedAt || null;
+          ttData[id].rejectedAt = st.rejectedAt || null;
+          ttData[id].revisionNote = st.revisionNote || st.revisionNotes || '';
+          ttData[id].archivedAt = st.archivedAt || null;
+          ttData[id].resubmittedAt = st.resubmittedAt || null;
+          ttData[id].restoredAt = st.restoredAt || null;
+          ttData[id].events = st.events || null;
         }
       });
       renderTT();
       populateTTCompanies();
-    }).catch(function() { renderTT(); populateTTCompanies(); });
+    }).catch(function(){ renderTT(); populateTTCompanies(); });
   }).catch(function() {
     document.getElementById('tt-tb').innerHTML = '<tr><td colspan="15" style="text-align:center;padding:40px;color:#C62828">Error loading trips.</td></tr>';
   });
