@@ -5,7 +5,10 @@ import { isArchivedStatus } from './tmArchive';
 import { tripActivityMs } from './tmTripSort';
 import { tripMatchesSearch, type SearchableTrip } from './tmTripSearch';
 import { tzDayEnd, tzDayStart } from './tzDayBounds';
-import { compareTripsResubmitFirst } from './tmLifecycleMarkers';
+import {
+  compareTripsResubmitFirst,
+  isAwaitingCouncilRecheck,
+} from './tmLifecycleMarkers';
 
 export type UnifiedTripStatusFilter =
   | 'all'
@@ -88,14 +91,19 @@ export function normalizeEntityType(raw: string | null | undefined): EntityType 
 }
 
 export function tripMatchesUnifiedStatus(
-  trip: { status?: string } | null | undefined,
+  trip: { status?: string; resubmittedAt?: unknown } | null | undefined,
   status: UnifiedTripStatusFilter,
 ): boolean {
   if (!trip) return false;
   const st = String(trip.status || '').trim().toLowerCase();
   if (status === 'all') return !isArchivedStatus(st);
-  if (status === 'pending') return PENDING_TAB_STATUSES.has(st);
-  if (status === 'revision') return st === 'revision_needed';
+  // Pending = first-look queue; exclude resubmits (those belong on Revision).
+  if (status === 'pending') {
+    return PENDING_TAB_STATUSES.has(st) && !isAwaitingCouncilRecheck(trip);
+  }
+  // Revision = company says fixed — awaiting council recheck (submitted + resubmittedAt).
+  // revision_needed (awaiting company) is NOT here — stays visible under All only.
+  if (status === 'revision') return isAwaitingCouncilRecheck(trip);
   if (status === 'flagged') return st === 'flagged';
   if (status === 'archived') return isArchivedStatus(st);
   if (status === 'approved') return st === 'approved';
@@ -104,7 +112,9 @@ export function tripMatchesUnifiedStatus(
   return true;
 }
 
-export function filterTripsUnified<T extends SearchableTrip & { status?: string; _cid?: string }>(
+export function filterTripsUnified<
+  T extends SearchableTrip & { status?: string; resubmittedAt?: unknown; _cid?: string },
+>(
   trips: T[],
   opts: {
     status?: string | null;
@@ -129,8 +139,8 @@ export function filterTripsUnified<T extends SearchableTrip & { status?: string;
     const toMs = tzDayEnd(String(opts.to).trim(), 'Pacific/Auckland');
     if (toMs) rows = rows.filter((t) => tripActivityMs(t as any) <= toMs);
   }
-  // Pending: resubmitted (fix-cycle) above brand-new submissions, then newest-first.
-  if (status === 'pending') {
+  // Revision / Pending: resubmit-aware sort (Revision rows are all resubmits).
+  if (status === 'pending' || status === 'revision') {
     rows.sort((a, b) =>
       compareTripsResubmitFirst(a as any, b as any, (t) => tripActivityMs(t as any)),
     );
@@ -536,13 +546,16 @@ export function countTripsByUnifiedStatus(trips: any[]): Record<UnifiedTripStatu
     if (isArchivedStatus(st)) out.archived++;
     else {
       out.all++;
-      if (PENDING_TAB_STATUSES.has(st)) out.pending++;
-      else if (st === 'revision_needed') out.revision++;
+      // Specialty tabs are action queues — revision_needed (awaiting company) is All-only.
+      if (isAwaitingCouncilRecheck(t)) out.revision++;
+      else if (PENDING_TAB_STATUSES.has(st)) out.pending++;
       else if (st === 'flagged') out.flagged++;
       else if (st === 'approved') out.approved++;
       else if (st === 'paid') out.paid++;
       else if (st === 'rejected') out.rejected++;
-      else out.pending++; // unknown non-archived → Pending so All always reconciles
+      else if (st === 'revision_needed') {
+        /* All-only — awaiting company fix */
+      } else out.pending++; // unknown non-archived → Pending so it stays findable
     }
   }
   return out;

@@ -11,8 +11,11 @@ import {
   hasRestoredMarker,
   lifecycleMarkerLabels,
   compareTripsResubmitFirst,
+  isAwaitingCouncilRecheck,
+  isAwaitingCompanyFix,
   RESUBMITTED_BADGE_LABEL,
   RESTORED_BADGE_LABEL,
+  AWAITING_COMPANY_FIX_LABEL,
 } from '../src/lib/tmLifecycleMarkers.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -31,6 +34,13 @@ test('hasResubmittedMarker only while awaiting re-review', () => {
   assert.equal(hasResubmittedMarker({ status: 'paid', resubmittedAt: 1 }), false);
   assert.equal(hasResubmittedMarker({ status: 'submitted' }), false);
   assert.equal(hasResubmittedMarker({ status: 'revision_needed', resubmittedAt: 1 }), false);
+});
+
+test('Revision recheck = submitted+resubmittedAt; awaiting company = revision_needed', () => {
+  assert.equal(isAwaitingCouncilRecheck({ status: 'submitted', resubmittedAt: 1 }), true);
+  assert.equal(isAwaitingCouncilRecheck({ status: 'flagged', resubmittedAt: 1 }), false);
+  assert.equal(isAwaitingCompanyFix({ status: 'revision_needed' }), true);
+  assert.equal(AWAITING_COMPANY_FIX_LABEL, 'Awaiting company fix');
 });
 
 test('hasRestoredMarker when restoredAt set and not archived', () => {
@@ -56,9 +66,10 @@ test('compareTripsResubmitFirst puts resubmits above brand-new', () => {
   assert.ok(cmp > 0, 'b (resubmit) should sort before a');
 });
 
-test('tmUnifiedTrips Pending sort uses compareTripsResubmitFirst', () => {
+test('tmUnifiedTrips Pending/Revision sort uses compareTripsResubmitFirst', () => {
   assert.match(unifiedSrc, /compareTripsResubmitFirst/);
-  assert.match(unifiedSrc, /status === 'pending'/);
+  assert.match(unifiedSrc, /status === 'pending' \|\| status === 'revision'/);
+  assert.match(unifiedSrc, /isAwaitingCouncilRecheck/);
 });
 
 test('council Trips wires lifecycleListChips into Status column', () => {

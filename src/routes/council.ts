@@ -34,6 +34,7 @@ import {
   hasRestoredMarker,
   RESUBMITTED_BADGE_LABEL,
   RESTORED_BADGE_LABEL,
+  AWAITING_COMPANY_FIX_LABEL,
 } from '../lib/tmLifecycleMarkers';
 import { tripMatchesSearch } from '../lib/tmTripSearch';
 import {
@@ -358,7 +359,7 @@ function statusBadge(s: string): string {
     company_approved: '<span class="cp-bdg-b">Owner Approved</span>',
     submitted:        '<span class="cp-bdg-b">Submitted to Council</span>',
     approved:         '<span class="cp-bdg-g">Council Approved</span>',
-    revision_needed:  '<span class="cp-bdg-a">Revision Needed</span>',
+    revision_needed:  `<span class="cp-bdg-a">${AWAITING_COMPANY_FIX_LABEL}</span>`,
     rejected:         '<span class="cp-bdg-r">Rejected</span>',
     paid:             '<span class="cp-bdg-g">Paid</span>',
     flagged:          '<span class="cp-bdg-r">Flagged</span>',
@@ -1154,6 +1155,9 @@ router.post('/api/council-approve', (req, res) => {
         flagReasons: [reason],
         rejectNote: note,
         revisionNote: note,
+        // Clear prior resubmit stamp so trip leaves Revision (recheck) until owner resubmits again.
+        resubmittedAt: null,
+        resubmittedBy: null,
       };
       msg = 'Trip rejected and returned for revision (removed from claim batch).';
       eventType = 'rejected';
@@ -1165,6 +1169,9 @@ router.post('/api/council-approve', (req, res) => {
         sentBackBy: who,
         flagReasons: Array.isArray(st.flagReasons) ? st.flagReasons : [],
         anomalyDetail: st.anomalyDetail || null,
+        // Clear prior resubmit stamp so trip leaves Revision (recheck) until owner resubmits again.
+        resubmittedAt: null,
+        resubmittedBy: null,
       };
       msg = 'Trip returned to company for revision.';
       eventType = 'returned';
@@ -2511,6 +2518,8 @@ router.post('/api/council-bulk-return', (req, res) => {
         sentBackBy: who,
         flagReasons: Array.isArray(st.flagReasons) ? st.flagReasons : [],
         anomalyDetail: st.anomalyDetail || null,
+        resubmittedAt: null,
+        resubmittedBy: null,
       };
       fbWrite('PATCH', 'tmTripStatus/' + cid + '/' + rawKey, patch, (err: any) => {
         const finishOne = () => {

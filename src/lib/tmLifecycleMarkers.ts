@@ -11,10 +11,41 @@ const RESUBMIT_VISIBLE_STATUSES = new Set([
   'flagged',
 ]);
 
+function hasResubmittedAt(trip: { resubmittedAt?: unknown } | null | undefined): boolean {
+  if (!trip) return false;
+  return trip.resubmittedAt != null && trip.resubmittedAt !== '';
+}
+
+/**
+ * Council Revision tab: company says fixed — awaiting council recheck.
+ * status=submitted + resubmittedAt (no new status value).
+ */
+export function isAwaitingCouncilRecheck(
+  trip: { status?: string | null; resubmittedAt?: unknown } | null | undefined,
+): boolean {
+  if (!hasResubmittedAt(trip)) return false;
+  const st = String(trip?.status || '')
+    .trim()
+    .toLowerCase();
+  return st === 'submitted';
+}
+
+/** Council list: returned to company, waiting on owner Save & Resubmit. */
+export function isAwaitingCompanyFix(
+  trip: { status?: string | null } | null | undefined,
+): boolean {
+  if (!trip) return false;
+  return (
+    String(trip.status || '')
+      .trim()
+      .toLowerCase() === 'revision_needed'
+  );
+}
+
 export function hasResubmittedMarker(
   trip: { status?: string | null; resubmittedAt?: unknown } | null | undefined,
 ): boolean {
-  if (!trip || trip.resubmittedAt == null || trip.resubmittedAt === '') return false;
+  if (!hasResubmittedAt(trip)) return false;
   const st = String(trip.status || '')
     .trim()
     .toLowerCase();
@@ -33,6 +64,8 @@ export function hasRestoredMarker(
 
 export const RESUBMITTED_BADGE_LABEL = 'Resubmitted - previously returned';
 export const RESTORED_BADGE_LABEL = 'Restored from archive';
+/** Council badge while status is revision_needed (with company). */
+export const AWAITING_COMPANY_FIX_LABEL = 'Awaiting company fix';
 
 /** Plain labels for list chips (caller wraps in HTML). */
 export function lifecycleMarkerLabels(

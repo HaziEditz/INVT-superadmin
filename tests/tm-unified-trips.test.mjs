@@ -63,12 +63,18 @@ function normalizeUnifiedTripStatus(raw) {
   return 'all';
 }
 const PENDING_TAB_STATUSES = new Set(['submitted', 'pending', 'company_approved']);
+function isAwaitingCouncilRecheck(trip) {
+  if (!trip || trip.resubmittedAt == null || trip.resubmittedAt === '') return false;
+  return String(trip.status || '').trim().toLowerCase() === 'submitted';
+}
 function tripMatchesUnifiedStatus(trip, status) {
   if (!trip) return false;
   const st = String(trip.status || '').trim().toLowerCase();
   if (status === 'all') return !isArchivedStatus(st);
-  if (status === 'pending') return PENDING_TAB_STATUSES.has(st);
-  if (status === 'revision') return st === 'revision_needed';
+  if (status === 'pending') {
+    return PENDING_TAB_STATUSES.has(st) && !isAwaitingCouncilRecheck(trip);
+  }
+  if (status === 'revision') return isAwaitingCouncilRecheck(trip);
   if (status === 'flagged') return st === 'flagged';
   if (status === 'archived') return isArchivedStatus(st);
   if (status === 'approved') return st === 'approved';
@@ -191,13 +197,15 @@ function countTripsByUnifiedStatus(trips) {
     if (isArchivedStatus(st)) out.archived++;
     else {
       out.all++;
-      if (PENDING_TAB_STATUSES.has(st)) out.pending++;
-      else if (st === 'revision_needed') out.revision++;
+      if (isAwaitingCouncilRecheck(t)) out.revision++;
+      else if (PENDING_TAB_STATUSES.has(st)) out.pending++;
       else if (st === 'flagged') out.flagged++;
       else if (st === 'approved') out.approved++;
       else if (st === 'paid') out.paid++;
       else if (st === 'rejected') out.rejected++;
-      else out.pending++;
+      else if (st === 'revision_needed') {
+        /* All-only */
+      } else out.pending++;
     }
   }
   return out;
@@ -372,10 +380,11 @@ test('aggregateTripUsage and countTripsByUnifiedStatus', () => {
   assert.equal(counts.all, 3);
 });
 
-test('company pending + revision_needed map into tab buckets', () => {
+test('company pending + revision_needed / resubmit map into tab buckets', () => {
   const trips = [
     { status: 'pending' },
     { status: 'submitted' },
+    { status: 'submitted', resubmittedAt: 42 },
     { status: 'company_approved' },
     { status: 'revision_needed' },
     { status: 'flagged' },
@@ -385,20 +394,32 @@ test('company pending + revision_needed map into tab buckets', () => {
     { status: 'archived' },
   ];
   const counts = countTripsByUnifiedStatus(trips);
-  assert.equal(counts.all, 8);
-  assert.equal(counts.pending, 3);
-  assert.equal(counts.revision, 1);
+  assert.equal(counts.all, 9);
+  assert.equal(counts.pending, 3); // pending + submitted + company_approved (not resubmit)
+  assert.equal(counts.revision, 1); // submitted + resubmittedAt
   assert.equal(counts.flagged, 1);
   assert.equal(counts.approved, 1);
   assert.equal(counts.paid, 1);
   assert.equal(counts.rejected, 1);
   assert.equal(counts.archived, 1);
+  // Specialty queues do not include revision_needed (All-only awaiting company)
   assert.equal(
     counts.pending + counts.revision + counts.flagged + counts.approved + counts.paid + counts.rejected,
-    counts.all,
+    counts.all - 1,
   );
   assert.equal(filterTripsUnified(trips, { status: 'pending' }).length, 3);
   assert.equal(filterTripsUnified(trips, { status: 'revision' }).length, 1);
+  assert.equal(filterTripsUnified(trips, { status: 'all' }).length, 9);
+  assert.equal(
+    filterTripsUnified(trips, { status: 'revision' })[0].resubmittedAt,
+    42,
+  );
+  assert.ok(
+    filterTripsUnified(trips, { status: 'all' }).some((t) => t.status === 'revision_needed'),
+  );
+  assert.ok(
+    !filterTripsUnified(trips, { status: 'revision' }).some((t) => t.status === 'revision_needed'),
+  );
 });
 
 test('byPassenger keys by card and prefers fuller name', () => {
