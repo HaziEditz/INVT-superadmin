@@ -371,6 +371,14 @@ export function buildTmTripDetail(
     revisionNote: str(t.revisionNote || t.revisionNotes || ''),
     expectedMeter: expected,
     fareMismatch,
+    resubmittedAt:
+      t.resubmittedAt != null && t.resubmittedAt !== '' && Number.isFinite(Number(t.resubmittedAt))
+        ? Number(t.resubmittedAt)
+        : null,
+    restoredAt:
+      t.restoredAt != null && t.restoredAt !== '' && Number.isFinite(Number(t.restoredAt))
+        ? Number(t.restoredAt)
+        : null,
   };
 }
 
