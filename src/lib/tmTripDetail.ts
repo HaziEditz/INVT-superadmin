@@ -240,6 +240,9 @@ export type TmTripDetail = {
   revisionNote: string;
   expectedMeter: number | null;
   fareMismatch: boolean;
+  /** Present when owner/council Save & Resubmit stamped a recheck. */
+  resubmittedAt: number | null;
+  restoredAt: number | null;
 };
 
 export type RefTariff = {
