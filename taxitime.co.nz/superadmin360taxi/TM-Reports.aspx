@@ -176,6 +176,28 @@ firebase.initializeApp(config);
     </table>
   </div>
 </div>
+<div class="tm-card" style="margin-top:0" id="rp-usage-card">
+  <div class="tm-bar" style="background:#0d9488">
+    <h3>Cardholder usage (Insights) <small id="rp-usage-count" style="opacity:.75;font-size:12px"></small></h3>
+  </div>
+  <div class="filt">
+    <label style="font-size:12px;color:#666">From <input type="date" id="rp-usage-from" onchange="renderRP()" style="padding:6px 9px;border:1px solid #ddd;border-radius:4px"/></label>
+    <label style="font-size:12px;color:#666">To <input type="date" id="rp-usage-to" onchange="renderRP()" style="padding:6px 9px;border:1px solid #ddd;border-radius:4px"/></label>
+    <button type="button" class="tm-btn tm-btn-p" id="rp-usage-day" onclick="rpSetUsagePeriod('day')">Day</button>
+    <button type="button" class="tm-btn" id="rp-usage-month" onclick="rpSetUsagePeriod('month')" style="background:#eee;color:#333">Month</button>
+    <span style="font-size:12px;color:#888">Uses council / company / month filters above, then optional from/to</span>
+  </div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;padding:14px 18px">
+    <div style="flex:1;min-width:280px;overflow-x:auto">
+      <h4 style="font-size:13px;margin:0 0 8px;color:#0d9488">By card</h4>
+      <div id="rp-usage-by-card"><div style="padding:16px;color:#9e9e9e">Loading&#8230;</div></div>
+    </div>
+    <div style="flex:1;min-width:280px;overflow-x:auto">
+      <h4 style="font-size:13px;margin:0 0 8px;color:#0d9488" id="rp-usage-period-hd">Usage by day</h4>
+      <div id="rp-usage-period"><div style="padding:16px;color:#9e9e9e">Loading&#8230;</div></div>
+    </div>
+  </div>
+</div>
 <div class="tm-card" style="margin-top:0">
   <div class="tm-bar" style="background:#455A64">
     <h3>Trip Detail for Selection <small id="rp-detail-count" style="opacity:.75;font-size:12px"></small></h3>
@@ -201,8 +223,88 @@ firebase.initializeApp(config);
 <script src="assets/js/uikit_custom.min.js"></script>
 <script src="assets/js/altair_admin_common.min.js"></script>
 <script src="assets/js/tm-helpers.js"></script>
+<script src="assets/js/tmUsageAggregate.client.js"></script>
 <script>
 var rpData = {}, rpCouncils = {}, rpCompanies = {};
+var rpUsagePeriod = 'day';
+function rpEsc(s) {
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function rpSetUsagePeriod(p) {
+  rpUsagePeriod = p === 'month' ? 'month' : 'day';
+  var dayBtn = document.getElementById('rp-usage-day');
+  var monthBtn = document.getElementById('rp-usage-month');
+  if (dayBtn) {
+    dayBtn.className = 'tm-btn' + (rpUsagePeriod === 'day' ? ' tm-btn-p' : '');
+    dayBtn.style.background = rpUsagePeriod === 'day' ? '' : '#eee';
+    dayBtn.style.color = rpUsagePeriod === 'day' ? '' : '#333';
+  }
+  if (monthBtn) {
+    monthBtn.className = 'tm-btn' + (rpUsagePeriod === 'month' ? ' tm-btn-p' : '');
+    monthBtn.style.background = rpUsagePeriod === 'month' ? '' : '#eee';
+    monthBtn.style.color = rpUsagePeriod === 'month' ? '' : '#333';
+  }
+  var hd = document.getElementById('rp-usage-period-hd');
+  if (hd) hd.textContent = rpUsagePeriod === 'day' ? 'Usage by day' : 'Usage by month';
+  renderRP();
+}
+function rpNormalizeTripForUsage(t) {
+  return Object.assign({}, t, {
+    tmCardNumber: t.tmCardNumber || t.cardNumber || t.tmVoucherNo || '',
+    tmVoucherNo: t.tmVoucherNo || t.cardNumber || '',
+    tmPassengerName: t.tmPassengerName || t.passengerName || '',
+    tmCardName: t.tmCardName || t.passengerName || '',
+    tmMeterFare: t.tmMeterFare != null ? t.tmMeterFare : t.meterFare,
+    fare: t.fare != null ? t.fare : t.meterFare,
+    tmPassengerPays: t.tmPassengerPays != null ? t.tmPassengerPays : t.passengerPays,
+    passengerPays: t.passengerPays,
+    paymentType: t.paymentType || t.PaymentType || t.paymentMethod || '',
+    startedAt_ISO: t.startedAt_ISO || t.startTime || '',
+    completedAt_ISO: t.completedAt_ISO || t.endTime || t.completedAt || '',
+    driverName: t.driverName || '',
+    vehicleId: t.vehicleId || ''
+  });
+}
+function renderCardholderUsage(tripList) {
+  var U = window.TmUsageAggregate;
+  var byCardEl = document.getElementById('rp-usage-by-card');
+  var periodEl = document.getElementById('rp-usage-period');
+  var countEl = document.getElementById('rp-usage-count');
+  if (!byCardEl || !periodEl) return;
+  if (!U) {
+    byCardEl.innerHTML = '<div style="padding:16px;color:#C62828">Usage helper failed to load.</div>';
+    return;
+  }
+  var from = (document.getElementById('rp-usage-from') && document.getElementById('rp-usage-from').value) || '';
+  var to = (document.getElementById('rp-usage-to') && document.getElementById('rp-usage-to').value) || '';
+  var normalized = (tripList || []).map(rpNormalizeTripForUsage);
+  var trips = U.filterByDateRange(normalized, from, to);
+  if (countEl) countEl.textContent = trips.length + ' trips';
+  var usage = U.aggregateTripUsage(trips);
+  var period = rpUsagePeriod === 'month' ? U.aggregateUsageByMonth(trips) : U.aggregateUsageByDay(trips);
+  function usageTable(rows) {
+    if (!rows.length) return '<div style="padding:16px;color:#9e9e9e">No cardholder data for this selection.</div>';
+    return '<table class="tm-tbl"><thead><tr><th>Name</th><th>Trips</th><th>Fare $</th><th>Council $</th><th>Pax $</th><th>Pay type</th><th>Hoist $</th></tr></thead><tbody>' +
+      rows.map(function(r) {
+        return '<tr><td>' + rpEsc(r.label) + '</td><td>' + r.trips + '</td><td>$' + (r.meterFare||0).toFixed(2) +
+          '</td><td>$' + (r.councilPays||0).toFixed(2) + '</td><td>$' + (r.passengerPays||0).toFixed(2) +
+          '</td><td style="font-size:11px">' + rpEsc(U.formatPayByType(r.payByType)) +
+          '</td><td>$' + (r.hoistPays||0).toFixed(2) + '</td></tr>';
+      }).join('') + '</tbody></table>';
+  }
+  function periodTable(rows) {
+    if (!rows.length) return '<div style="padding:16px;color:#9e9e9e">No period data.</div>';
+    return '<table class="tm-tbl"><thead><tr><th>Period</th><th>Trips</th><th>Fare $</th><th>Council $</th><th>Pax $</th><th>Pay type</th><th>Hoist $</th><th>Uses</th></tr></thead><tbody>' +
+      rows.map(function(r) {
+        return '<tr><td>' + rpEsc(r.key) + '</td><td>' + r.trips + '</td><td>$' + (r.meterFare||0).toFixed(2) +
+          '</td><td>$' + (r.councilPays||0).toFixed(2) + '</td><td>$' + (r.passengerPays||0).toFixed(2) +
+          '</td><td style="font-size:11px">' + rpEsc(U.formatPayByType(r.payByType)) +
+          '</td><td>$' + (r.hoistPays||0).toFixed(2) + '</td><td>' + r.hoistUses + '</td></tr>';
+      }).join('') + '</tbody></table>';
+  }
+  byCardEl.innerHTML = usageTable(usage.byCard);
+  periodEl.innerHTML = periodTable(period);
+}
 window._fbOnLogin = function() {
   Promise.all([
     adminRead('tmConfig').then(function(d) { return d || {}; }).catch(function(){ return {}; }),
@@ -242,7 +344,8 @@ function mapTMTripRP(j, cid, rawKey) {
     councilId: j.councilId || '',
     driverName: j.driverName || '',
     vehicleId: j.vehicleId || '',
-    cardNumber: j.tmVoucherNo || j.cardNumber || '',
+    cardNumber: j.tmVoucherNo || j.tmCardNumber || j.cardNumber || '',
+    tmCardNumber: j.tmCardNumber || j.tmVoucherNo || j.cardNumber || '',
     passengerName: (typeof resolveCardholderName === 'function' ? resolveCardholderName(j) : '') || j.tmCardName || j.tmPassengerName || j.passengerName || '',
     startTime: j.startedAt_ISO || j.startedAt || '',
     endTime: j.completedAt_ISO || j.completedAt || j.timestamp || '',
@@ -250,11 +353,14 @@ function mapTMTripRP(j, cid, rawKey) {
     completedAt: j.completedAt || j.timestamp || '',
     pickup: j.pickupAddress || j.pickup || '',
     dropoff: j.dropAddress || j.dropoff || '',
-    meterFare: +(j.fare || j.meterFare || j.totalFare || 0),
+    meterFare: +(j.fare || j.tmMeterFare || j.meterFare || j.totalFare || 0),
+    tmMeterFare: +(j.tmMeterFare || j.fare || j.meterFare || j.totalFare || 0),
     tmSubsidyFare: +(j.tmSubsidyFare != null ? j.tmSubsidyFare : (j.tmSubsidy || 0)),
     tmSubsidyHoist: +(j.tmSubsidyHoist || j.hoistTotal || 0),
     hoistTotal: +(j.hoistTotal || j.tmSubsidyHoist || 0),
     passengerPays: +(j.tmPassengerPays || j.passengerPays || 0),
+    tmPassengerPays: +(j.tmPassengerPays || j.passengerPays || 0),
+    paymentType: j.paymentType || j.PaymentType || j.paymentMethod || j.tmPassengerPaymentType || '',
     totalCouncilPays: +(j.tmCouncilPays != null ? j.tmCouncilPays : ((+(j.tmSubsidyFare || j.tmSubsidy || 0)) + (+(j.tmSubsidyHoist || j.hoistTotal || 0)))),
     waitingCharge: +(j.waitingCost || j.WaitingCost || 0),
     distance: j.distanceKm || '',
@@ -410,6 +516,7 @@ function renderRP() {
         '<td>' + (t.hoistUsed || uses > 0 ? 'Yes (' + uses + ')' : 'No') + '</td>' +
         '<td>' + (stMap[t.status] || t.status || '\u2014') + '</td></tr>';
     }).join('');
+  renderCardholderUsage(filtered.map(function(kv){ return kv[1]; }));
 }
 function sumBox(label, val, color) {
   return '<div class="sum-box"><div class="sv" style="' + (color ? 'color:' + color : '') + '">' + val + '</div><div class="sl">' + label + '</div></div>';

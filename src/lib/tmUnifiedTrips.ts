@@ -150,12 +150,22 @@ export function filterTripsUnified<
   return rows;
 }
 
+/** Remainder payment method counts within a usage bucket (Cash / Card / Account…). */
+export type PayTypeBucket = {
+  trips: number;
+  passengerPays: number;
+};
+
 export type UsageBucket = {
   key: string;
   label: string;
   trips: number;
+  meterFare: number;
   councilPays: number;
+  passengerPays: number;
   hoistPays: number;
+  /** Passenger remainder payment type → trips + passenger $ */
+  payByType: Record<string, PayTypeBucket>;
 };
 
 export type HoistDayBucket = {
@@ -169,9 +179,12 @@ export type HoistDayBucket = {
 export type PeriodUsageBucket = {
   key: string;
   trips: number;
+  meterFare: number;
   councilPays: number;
+  passengerPays: number;
   hoistPays: number;
   hoistUses: number;
+  payByType: Record<string, PayTypeBucket>;
 };
 
 export type EntityTotals = {
@@ -201,6 +214,83 @@ export function hoistPaysOf(t: any): number {
   return (
     parseFloat(String(t.tmSubsidyHoist ?? t.hoistTotal ?? t.hoistCost ?? 0)) || 0
   );
+}
+
+/** Meter base used for %/cap split (excludes flat hoist). */
+export function meterFareOf(t: any): number {
+  return parseFloat(String(t?.tmMeterFare ?? t?.fare ?? t?.Fare ?? t?.meterFare ?? 0)) || 0;
+}
+
+/** Passenger remainder after council %/cap (falls back to meter − council). */
+export function passengerPaysOf(t: any): number {
+  const council = subsidyOf(t);
+  const explicit = parseFloat(String(t?.tmPassengerPays ?? t?.passengerPays ?? t?.patientPays ?? ''));
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  return Math.max(0, +(meterFareOf(t) - council).toFixed(2));
+}
+
+/**
+ * Normalize passenger remainder payment type for Insights breakdown.
+ * Prefers explicit paymentType / paymentMethod fields on the trip record.
+ */
+export function normalizeTripPayMethod(t: any): string {
+  const raw = String(
+    t?.paymentType ||
+      t?.PaymentType ||
+      t?.paymentMethod ||
+      t?.PaymentMethod ||
+      t?.payMethod ||
+      t?.tmPaymentType ||
+      t?.tmPassengerPaymentType ||
+      '',
+  )
+    .trim();
+  if (!raw || raw === '—') return 'Unknown';
+  const lower = raw.toLowerCase();
+  if (lower === 'tm' || lower === 'total_mobility' || lower === 'total mobility') {
+    return 'TM';
+  }
+  if (lower === 'eftpos' || lower === 'eFTPOS') return 'EFTPOS';
+  if (lower === 'card' || lower === 'credit' || lower === 'debit') return 'Card';
+  if (lower === 'cash') return 'Cash';
+  if (lower === 'account' || lower === 'charge') return 'Account';
+  if (lower === 'acc') return 'ACC';
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
+/** Compact "Cash:2 $14 · Card:1 $6" label for Insights tables. */
+export function formatPayByType(payByType: Record<string, PayTypeBucket> | undefined | null): string {
+  const entries = Object.entries(payByType || {}).filter(([, v]) => v && v.trips > 0);
+  if (!entries.length) return '—';
+  entries.sort((a, b) => b[1].trips - a[1].trips || a[0].localeCompare(b[0]));
+  return entries
+    .map(([k, v]) => `${k}:${v.trips} $${(+v.passengerPays).toFixed(2)}`)
+    .join(' · ');
+}
+
+function bumpPayType(
+  payByType: Record<string, PayTypeBucket>,
+  method: string,
+  passengerPays: number,
+): void {
+  const m = String(method || 'Unknown').trim() || 'Unknown';
+  let row = payByType[m];
+  if (!row) {
+    row = { trips: 0, passengerPays: 0 };
+    payByType[m] = row;
+  }
+  row.trips++;
+  row.passengerPays += passengerPays;
+}
+
+function roundPayByType(
+  payByType: Record<string, PayTypeBucket>,
+): Record<string, PayTypeBucket> {
+  const out: Record<string, PayTypeBucket> = {};
+  for (const [k, v] of Object.entries(payByType || {})) {
+    out[k] = { trips: v.trips, passengerPays: +v.passengerPays.toFixed(2) };
+  }
+  return out;
 }
 
 /** Count hoist uses on a trip (prefer line items / explicit counts). */
@@ -362,18 +452,35 @@ function bumpUsage(
   map: Map<string, UsageBucket>,
   key: string,
   label: string,
-  councilPays: number,
-  hoistPays: number,
+  amounts: {
+    councilPays: number;
+    hoistPays: number;
+    meterFare: number;
+    passengerPays: number;
+    payMethod: string;
+  },
 ): void {
   const k = String(key || '').trim() || '—';
   let row = map.get(k);
   if (!row) {
-    row = { key: k, label: label || k, trips: 0, councilPays: 0, hoistPays: 0 };
+    row = {
+      key: k,
+      label: label || k,
+      trips: 0,
+      meterFare: 0,
+      councilPays: 0,
+      passengerPays: 0,
+      hoistPays: 0,
+      payByType: {},
+    };
     map.set(k, row);
   }
   row.trips++;
-  row.councilPays += councilPays;
-  row.hoistPays += hoistPays;
+  row.meterFare += amounts.meterFare;
+  row.councilPays += amounts.councilPays;
+  row.passengerPays += amounts.passengerPays;
+  row.hoistPays += amounts.hoistPays;
+  bumpPayType(row.payByType, amounts.payMethod, amounts.passengerPays);
   if (label) row.label = preferPassengerLabel(row.label, label);
 }
 
@@ -399,36 +506,41 @@ export function aggregateTripUsage(
   const passengers = new Map<string, UsageBucket>();
 
   for (const t of trips || []) {
-    const pay = subsidyOf(t);
-    const hoist = hoistPaysOf(t);
-    const card =
-      tripCardKeys(t)[0] ||
-      '—';
+    const amounts = {
+      councilPays: subsidyOf(t),
+      hoistPays: hoistPaysOf(t),
+      meterFare: meterFareOf(t),
+      passengerPays: passengerPaysOf(t),
+      payMethod: normalizeTripPayMethod(t),
+    };
+    const card = tripCardKeys(t)[0] || '—';
     const cardLabel = tripPassengerKey(t);
     bumpUsage(
       cards,
       card,
       cardLabel + (card !== '—' && cardLabel !== card && cardLabel !== '—' ? ` (${card})` : card === '—' ? cardLabel : ` (${card})`),
-      pay,
-      hoist,
+      amounts,
     );
 
     const driver = tripDriverKey(t);
-    bumpUsage(drivers, driver, driver, pay, hoist);
+    bumpUsage(drivers, driver, driver, amounts);
 
     const vehicle = tripVehicleKey(t);
-    bumpUsage(vehicles, vehicle, vehicle, pay, hoist);
+    bumpUsage(vehicles, vehicle, vehicle, amounts);
 
     const passenger = tripPassengerIdentity(t);
-    bumpUsage(passengers, passenger.key, passenger.label, pay, hoist);
+    bumpUsage(passengers, passenger.key, passenger.label, amounts);
   }
 
   const sortTop = (m: Map<string, UsageBucket>) => {
     let rows = Array.from(m.values())
       .map((r) => ({
         ...r,
+        meterFare: +r.meterFare.toFixed(2),
         councilPays: +r.councilPays.toFixed(2),
+        passengerPays: +r.passengerPays.toFixed(2),
         hoistPays: +r.hoistPays.toFixed(2),
+        payByType: roundPayByType(r.payByType),
       }))
       .sort((a, b) => b.trips - a.trips || b.councilPays - a.councilPays);
     if (Number.isFinite(limit) && limit >= 0) rows = rows.slice(0, limit);
@@ -476,19 +588,38 @@ function aggregateByPeriod(
     const key = keyFn(t) || 'unknown';
     let row = map.get(key);
     if (!row) {
-      row = { key, trips: 0, councilPays: 0, hoistPays: 0, hoistUses: 0 };
+      row = {
+        key,
+        trips: 0,
+        meterFare: 0,
+        councilPays: 0,
+        passengerPays: 0,
+        hoistPays: 0,
+        hoistUses: 0,
+        payByType: {},
+      };
       map.set(key, row);
     }
+    const meter = meterFareOf(t);
+    const council = subsidyOf(t);
+    const pax = passengerPaysOf(t);
+    const hoist = hoistPaysOf(t);
     row.trips++;
-    row.councilPays += subsidyOf(t);
-    row.hoistPays += hoistPaysOf(t);
+    row.meterFare += meter;
+    row.councilPays += council;
+    row.passengerPays += pax;
+    row.hoistPays += hoist;
     row.hoistUses += hoistUsesOf(t);
+    bumpPayType(row.payByType, normalizeTripPayMethod(t), pax);
   }
   return Array.from(map.values())
     .map((r) => ({
       ...r,
+      meterFare: +r.meterFare.toFixed(2),
       councilPays: +r.councilPays.toFixed(2),
+      passengerPays: +r.passengerPays.toFixed(2),
       hoistPays: +r.hoistPays.toFixed(2),
+      payByType: roundPayByType(r.payByType),
     }))
     .sort((a, b) => a.key.localeCompare(b.key));
 }
@@ -508,16 +639,12 @@ export function sumEntityTotals(trips: any[]): EntityTotals {
   let hoistPays = 0;
   let hoistUses = 0;
   for (const t of trips || []) {
-    meterFare += parseFloat(String(t.tmMeterFare ?? t.fare ?? t.Fare ?? 0)) || 0;
+    meterFare += meterFareOf(t);
     const hoist = hoistPaysOf(t);
     hoistPays += hoist;
     hoistUses += hoistUsesOf(t);
-    const council = subsidyOf(t);
-    councilPays += council;
-    const pax =
-      parseFloat(String(t.tmPassengerPays ?? t.passengerPays ?? 0)) ||
-      Math.max(0, (parseFloat(String(t.tmMeterFare ?? t.fare ?? 0)) || 0) - council);
-    passengerPays += pax;
+    councilPays += subsidyOf(t);
+    passengerPays += passengerPaysOf(t);
   }
   return {
     trips: (trips || []).length,

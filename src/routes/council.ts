@@ -58,6 +58,7 @@ import {
   tripDistanceKmOf,
   tripDurationMinOf,
   formatDurationTotal,
+  formatPayByType,
 } from '../lib/tmUnifiedTrips';
 import { formatNzDate, formatNzDateTime, tzDayEnd, tzDayStart } from '../lib/tzDayBounds';
 import {
@@ -1547,6 +1548,8 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
   const filterCompany = String(req.query.company || '').trim();
   const filterFrom = String(req.query.from || '').trim();
   const filterTo = String(req.query.to || '').trim();
+  const periodRaw = String(req.query.period || 'month').trim().toLowerCase();
+  const periodView = periodRaw === 'day' ? 'day' : 'month';
   const msg = (req.query.msg as string) || '';
   const mt = (req.query.mt as string) || '';
   const noticeHtml = msg ? `<div class="cp-notice ${mt === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>` : '';
@@ -1557,6 +1560,7 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
     if (filterCompany) parts.push('company=' + encodeURIComponent(filterCompany));
     if (filterFrom) parts.push('from=' + encodeURIComponent(filterFrom));
     if (filterTo) parts.push('to=' + encodeURIComponent(filterTo));
+    if (periodView !== 'month') parts.push('period=' + encodeURIComponent(periodView));
     return parts.join('&');
   };
 
@@ -1638,44 +1642,59 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
           `/council-portal/entity?t=${te}&type=${encodeURIComponent(type)}&key=${encodeURIComponent(key)}${entityFilterQs}`;
 
         const usageTable = (title: string, rows: typeof usage.byCard, entityType: string) =>
-          `<div style="flex:1;min-width:200px"><h4 style="font-size:12.5px;color:#33691E;margin:0 0 8px">${esc(title)}</h4>` +
+          `<div style="flex:1;min-width:260px"><h4 style="font-size:12.5px;color:#33691E;margin:0 0 8px">${esc(title)}</h4>` +
           (rows.length
-            ? `<table class="cp-tbl"><thead><tr><th>Name</th><th>Trips</th><th>Council $</th><th>Hoist $</th></tr></thead><tbody>` +
+            ? `<table class="cp-tbl"><thead><tr><th>Name</th><th>Trips</th><th>Fare $</th><th>Council $</th><th>Pax $</th><th>Pay type</th><th>Hoist $</th></tr></thead><tbody>` +
               rows
                 .map(
                   (r) =>
-                    `<tr><td><a href="${entityHref(entityType, r.key)}" style="color:#2E7D32;font-weight:600">${esc(r.label)}</a></td><td>${r.trips}</td><td>$${r.councilPays.toFixed(2)}</td><td>$${(r.hoistPays || 0).toFixed(2)}</td></tr>`,
+                    `<tr><td><a href="${entityHref(entityType, r.key)}" style="color:#2E7D32;font-weight:600">${esc(r.label)}</a></td><td>${r.trips}</td><td>$${(r.meterFare || 0).toFixed(2)}</td><td>$${r.councilPays.toFixed(2)}</td><td>$${(r.passengerPays || 0).toFixed(2)}</td><td style="font-size:11px;max-width:160px">${esc(formatPayByType(r.payByType))}</td><td>$${(r.hoistPays || 0).toFixed(2)}</td></tr>`,
                 )
                 .join('') +
               `</tbody></table>`
             : '<div class="cp-empty" style="padding:12px">No data</div>') +
           '</div>';
 
-        const periodTable = (title: string, rows: typeof usageByDay) =>
-          `<details style="margin-top:12px"><summary style="cursor:pointer;font-weight:600;color:#33691E">${esc(title)}</summary>` +
-          (rows.length
-            ? `<table class="cp-tbl" style="margin-top:8px"><thead><tr><th>Period</th><th>Trips</th><th>Council $</th><th>Hoist $</th><th>Hoist uses</th></tr></thead><tbody>` +
-              rows
+        const periodRows = periodView === 'day' ? usageByDay : usageByMonth;
+        const periodTable =
+          (periodRows.length
+            ? `<table class="cp-tbl" style="margin-top:8px"><thead><tr><th>Period</th><th>Trips</th><th>Fare $</th><th>Council $</th><th>Pax $</th><th>Pay type</th><th>Hoist $</th><th>Hoist uses</th></tr></thead><tbody>` +
+              periodRows
                 .map(
                   (r) =>
-                    `<tr><td>${esc(r.key)}</td><td>${r.trips}</td><td>$${r.councilPays.toFixed(2)}</td><td>$${r.hoistPays.toFixed(2)}</td><td>${r.hoistUses}</td></tr>`,
+                    `<tr><td>${esc(r.key)}</td><td>${r.trips}</td><td>$${(r.meterFare || 0).toFixed(2)}</td><td>$${r.councilPays.toFixed(2)}</td><td>$${(r.passengerPays || 0).toFixed(2)}</td><td style="font-size:11px">${esc(formatPayByType(r.payByType))}</td><td>$${r.hoistPays.toFixed(2)}</td><td>${r.hoistUses}</td></tr>`,
                 )
                 .join('') +
               `</tbody></table>`
-            : '<div class="cp-empty" style="padding:12px">No data</div>') +
-          '</details>';
+            : '<div class="cp-empty" style="padding:12px">No data</div>');
 
-        const insightsOpen = filterFrom || filterTo ? ' open' : '';
+        const periodToggleQs = (next: 'day' | 'month') => {
+          const parts = [`t=${te}`, `status=${encodeURIComponent(status)}`];
+          if (q) parts.push('q=' + encodeURIComponent(q));
+          if (filterCompany) parts.push('company=' + encodeURIComponent(filterCompany));
+          if (filterFrom) parts.push('from=' + encodeURIComponent(filterFrom));
+          if (filterTo) parts.push('to=' + encodeURIComponent(filterTo));
+          parts.push('period=' + next);
+          return parts.join('&');
+        };
+
+        const insightsOpen = filterFrom || filterTo || filterCompany ? ' open' : '';
         const insightsHtml = `<details class="cp-card" style="padding:14px 18px;margin-bottom:18px"${insightsOpen}>
   <summary style="cursor:pointer;font-weight:700;color:#1B5E20">Insights — usage by card, driver, vehicle &amp; passenger</summary>
+  <p style="font-size:12px;color:#666;margin:10px 0 0">Scoped to the company + date filters above (All Companies or one operator). Fare = meter base; Pax $ = passenger remainder; Pay type = how the passenger paid their share.</p>
   <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:12px">
     ${usageTable('By card', usage.byCard, 'card')}
     ${usageTable('By driver', usage.byDriver, 'driver')}
     ${usageTable('By vehicle', usage.byVehicle, 'vehicle')}
     ${usageTable('By passenger', usage.byPassenger, 'passenger')}
   </div>
-  ${periodTable('Usage by day', usageByDay)}
-  ${periodTable('Usage by month', usageByMonth)}
+  <div style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <span style="font-size:12px;font-weight:600;color:#33691E">Usage by</span>
+    <a class="cp-btn${periodView === 'day' ? ' cp-btn-g' : ''}" style="${periodView === 'day' ? '' : 'background:#eee;color:#333'}" href="/council-portal/trips?${periodToggleQs('day')}">Day</a>
+    <a class="cp-btn${periodView === 'month' ? ' cp-btn-g' : ''}" style="${periodView === 'month' ? '' : 'background:#eee;color:#333'}" href="/council-portal/trips?${periodToggleQs('month')}">Month</a>
+    <span style="font-size:11px;color:#888">Custom range: use From / To above</span>
+  </div>
+  ${periodTable}
 </details>`;
 
         const filterHiddens =
@@ -1945,6 +1964,7 @@ ${tabsHtml}
       <input type="date" name="from" class="cp-input" value="${esc(filterFrom)}"/></div>
     <div><label style="display:block;font-size:11px;color:#666;margin-bottom:3px">To</label>
       <input type="date" name="to" class="cp-input" value="${esc(filterTo)}"/></div>
+    <input type="hidden" name="period" value="${esc(periodView)}"/>
     <button type="submit" class="cp-btn cp-btn-g">Apply filters</button>
     ${hasFilters ? `<a href="/council-portal/trips?t=${te}&status=all" class="cp-btn" style="background:#eee;color:#333">Clear all</a>` : ''}
   </form>
