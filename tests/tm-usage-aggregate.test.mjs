@@ -94,7 +94,8 @@ test('council Insights wires fare/pax/pay-type + day/month toggle', () => {
   assert.match(src, /formatPayByType/);
   assert.match(src, /Fare \$/);
   assert.match(src, /Pax \$/);
-  assert.match(src, /Pay type/);
+  assert.match(src, /Passenger paid via/);
+  assert.doesNotMatch(src, />Pay type</);
   assert.match(src, /periodView/);
   assert.match(src, /periodToggleQs\('day'\)/);
   assert.match(src, /periodToggleQs\('month'\)/);

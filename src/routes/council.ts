@@ -1644,7 +1644,7 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
         const usageTable = (title: string, rows: typeof usage.byCard, entityType: string) =>
           `<div style="flex:1;min-width:260px"><h4 style="font-size:12.5px;color:#33691E;margin:0 0 8px">${esc(title)}</h4>` +
           (rows.length
-            ? `<table class="cp-tbl"><thead><tr><th>Name</th><th>Trips</th><th>Fare $</th><th>Council $</th><th>Pax $</th><th>Pay type</th><th>Hoist $</th></tr></thead><tbody>` +
+            ? `<table class="cp-tbl"><thead><tr><th>Name</th><th>Trips</th><th>Fare $</th><th>Council $</th><th>Pax $</th><th>Passenger paid via</th><th>Hoist $</th></tr></thead><tbody>` +
               rows
                 .map(
                   (r) =>
@@ -1658,7 +1658,7 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
         const periodRows = periodView === 'day' ? usageByDay : usageByMonth;
         const periodTable =
           (periodRows.length
-            ? `<table class="cp-tbl" style="margin-top:8px"><thead><tr><th>Period</th><th>Trips</th><th>Fare $</th><th>Council $</th><th>Pax $</th><th>Pay type</th><th>Hoist $</th><th>Hoist uses</th></tr></thead><tbody>` +
+            ? `<table class="cp-tbl" style="margin-top:8px"><thead><tr><th>Period</th><th>Trips</th><th>Fare $</th><th>Council $</th><th>Pax $</th><th>Passenger paid via</th><th>Hoist $</th><th>Hoist uses</th></tr></thead><tbody>` +
               periodRows
                 .map(
                   (r) =>
@@ -1681,7 +1681,7 @@ router.get('/council-portal/trips', requirePortalAuth, (req, res) => {
         const insightsOpen = filterFrom || filterTo || filterCompany ? ' open' : '';
         const insightsHtml = `<details class="cp-card" style="padding:14px 18px;margin-bottom:18px"${insightsOpen}>
   <summary style="cursor:pointer;font-weight:700;color:#1B5E20">Insights — usage by card, driver, vehicle &amp; passenger</summary>
-  <p style="font-size:12px;color:#666;margin:10px 0 0">Scoped to the company + date filters above (All Companies or one operator). Fare = meter base; Pax $ = passenger remainder; Pay type = how the passenger paid their share.</p>
+  <p style="font-size:12px;color:#666;margin:10px 0 0">Scoped to the company + date filters above (All Companies or one operator). Fare = meter base; Pax $ = passenger remainder; Passenger paid via = how the passenger paid their own share (not a split of the council subsidy — different trips can use different methods).</p>
   <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:12px">
     ${usageTable('By card', usage.byCard, 'card')}
     ${usageTable('By driver', usage.byDriver, 'driver')}

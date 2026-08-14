@@ -284,7 +284,7 @@ function renderCardholderUsage(tripList) {
   var period = rpUsagePeriod === 'month' ? U.aggregateUsageByMonth(trips) : U.aggregateUsageByDay(trips);
   function usageTable(rows) {
     if (!rows.length) return '<div style="padding:16px;color:#9e9e9e">No cardholder data for this selection.</div>';
-    return '<table class="tm-tbl"><thead><tr><th>Name</th><th>Trips</th><th>Fare $</th><th>Council $</th><th>Pax $</th><th>Pay type</th><th>Hoist $</th></tr></thead><tbody>' +
+    return '<table class="tm-tbl"><thead><tr><th>Name</th><th>Trips</th><th>Fare $</th><th>Council $</th><th>Pax $</th><th>Passenger paid via</th><th>Hoist $</th></tr></thead><tbody>' +
       rows.map(function(r) {
         return '<tr><td>' + rpEsc(r.label) + '</td><td>' + r.trips + '</td><td>$' + (r.meterFare||0).toFixed(2) +
           '</td><td>$' + (r.councilPays||0).toFixed(2) + '</td><td>$' + (r.passengerPays||0).toFixed(2) +
@@ -294,7 +294,7 @@ function renderCardholderUsage(tripList) {
   }
   function periodTable(rows) {
     if (!rows.length) return '<div style="padding:16px;color:#9e9e9e">No period data.</div>';
-    return '<table class="tm-tbl"><thead><tr><th>Period</th><th>Trips</th><th>Fare $</th><th>Council $</th><th>Pax $</th><th>Pay type</th><th>Hoist $</th><th>Uses</th></tr></thead><tbody>' +
+    return '<table class="tm-tbl"><thead><tr><th>Period</th><th>Trips</th><th>Fare $</th><th>Council $</th><th>Pax $</th><th>Passenger paid via</th><th>Hoist $</th><th>Uses</th></tr></thead><tbody>' +
       rows.map(function(r) {
         return '<tr><td>' + rpEsc(r.key) + '</td><td>' + r.trips + '</td><td>$' + (r.meterFare||0).toFixed(2) +
           '</td><td>$' + (r.councilPays||0).toFixed(2) + '</td><td>$' + (r.passengerPays||0).toFixed(2) +
