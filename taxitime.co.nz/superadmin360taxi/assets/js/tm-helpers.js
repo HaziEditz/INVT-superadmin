@@ -3,8 +3,20 @@ var IS_SUPER_ADMIN = false;     // true when the logged-in user is a BookaWaka S
 
 /* ── Firebase Proxy Helpers ───────────────────────────────────────────────────
    All Firebase reads/writes go via /api/fb on the server, which authenticates
-   using the FIREBASE_DB_SECRET. No client-side Firebase auth needed.
+   using the FIREBASE_DB_SECRET after verifying the caller's Firebase ID token
+   and superAdmins membership (same Bearer pattern as SA-Wallet / TM Settlement).
    ─────────────────────────────────────────────────────────────────────────── */
+
+function _fbAuthHeaders() {
+  var user = (typeof firebase !== 'undefined' && firebase.auth) ? firebase.auth().currentUser : null;
+  if (!user) return Promise.reject(new Error('Not signed in'));
+  return user.getIdToken(/* forceRefresh */ false).then(function(idToken) {
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + idToken
+    };
+  });
+}
 
 function _fbGet(path, opts) {
   var qs = '/api/fb?path=' + encodeURIComponent(path);
@@ -12,21 +24,35 @@ function _fbGet(path, opts) {
     if (opts.limitToLast) qs += '&limitToLast=' + opts.limitToLast;
     if (opts.orderBy)     qs += '&orderBy=' + encodeURIComponent(opts.orderBy);
   }
-  return fetch(qs).then(function(r) {
-    return r.json().then(function(data) {
-      if (data && typeof data === 'object' && typeof data.error === 'string' && Object.keys(data).length === 1) {
-        throw new Error(data.error);
-      }
-      return data;
+  return _fbAuthHeaders().then(function(headers) {
+    return fetch(qs, { headers: headers }).then(function(r) {
+      return r.json().then(function(data) {
+        if (!r.ok) {
+          throw new Error((data && data.error) || ('HTTP ' + r.status));
+        }
+        if (data && typeof data === 'object' && typeof data.error === 'string' && Object.keys(data).length === 1) {
+          throw new Error(data.error);
+        }
+        return data;
+      });
     });
   });
 }
 function _fbPost(path, method, data) {
-  return fetch('/api/fb', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: path, method: method, data: data })
-  }).then(function(r) { return r.json(); });
+  return _fbAuthHeaders().then(function(headers) {
+    return fetch('/api/fb', {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify({ path: path, method: method, data: data })
+    }).then(function(r) {
+      return r.json().then(function(body) {
+        if (!r.ok) {
+          throw new Error((body && body.error) || ('HTTP ' + r.status));
+        }
+        return body;
+      });
+    });
+  });
 }
 
 /* Build a full Firebase-compatible snapshot object from a raw value */
@@ -380,12 +406,12 @@ window.openViewAs = function(cid, cidName) {
 /* ── Auth-aware init ──────────────────────────────────────────────────────────
    Waits for Firebase Auth state, then determines the user's role:
 
-   1. Check superAdmins/{uid} — if true, user is a BookaWaka SA admin.
+   1. GET /api/sa/me with Bearer token — if isSA, user is a BookaWaka SA admin.
       Sets IS_SUPER_ADMIN = true, COMPANY_ID stays null.
       Then handles the View-As flow for viewing as a specific company.
 
-   2. Otherwise look up adminAccess/{cid}/{uid} — sets COMPANY_ID for
-      owner-portal users. (Non-SA path.)
+   2. Otherwise look up users/{uid}/companyId via client RTDB (own-uid rules)
+      for owner-portal users. (Non-SA path; /api/fb is SA-only.)
 
    Redirects to SA-Login.aspx if no user is authenticated.
    ─────────────────────────────────────────────────────────────────────────── */
@@ -406,9 +432,21 @@ function _resolveCompanyAndInit() {
 
     var uid = user.uid;
 
-    /* Step 1: Check if this user is a BookaWaka SA admin */
-    _fbGet('superAdmins/' + uid).then(function(saVal) {
-      if (saVal === true) {
+    user.getIdToken(false).then(function(idToken) {
+      return fetch('/api/sa/me', {
+        headers: { 'Authorization': 'Bearer ' + idToken, 'Accept': 'application/json' }
+      }).then(function(r) {
+        return r.json().then(function(body) {
+          return { status: r.status, body: body || {} };
+        });
+      });
+    }).then(function(res) {
+      if (res.status === 401) {
+        console.warn('[tm-helpers] /api/sa/me unauthorized — redirecting to login');
+        window.location.href = 'SA-Login.aspx';
+        return;
+      }
+      if (res.body && res.body.isSA === true) {
         IS_SUPER_ADMIN = true;
         window.IS_SUPER_ADMIN = true;
         COMPANY_ID = null;
@@ -417,16 +455,15 @@ function _resolveCompanyAndInit() {
         return;
       }
 
-      /* Step 2: Not SA — look up owner company via adminAccess */
-      _fbGet('adminAccess').then(function(accessMap) {
-        var foundCid = null;
-        if (accessMap && typeof accessMap === 'object') {
-          Object.keys(accessMap).forEach(function(cid) {
-            if (!foundCid && accessMap[cid] && accessMap[cid][uid] === true) {
-              foundCid = cid;
-            }
-          });
-        }
+      /* Step 2: Not SA — resolve owner company via client RTDB (own profile) */
+      var dbRef = (firebase.database && firebase.database()) ? firebase.database().ref('users/' + uid + '/companyId') : null;
+      if (!dbRef) {
+        console.warn('[tm-helpers] No role found for uid', uid, '— firebase.database unavailable');
+        if (typeof window._fbOnLogin === 'function') window._fbOnLogin();
+        return;
+      }
+      dbRef.once('value').then(function(snap) {
+        var foundCid = snap && snap.val() ? String(snap.val()) : null;
         if (foundCid) {
           COMPANY_ID = foundCid;
           console.log('[tm-helpers] Owner company resolved to', COMPANY_ID, 'for uid', uid);
@@ -436,11 +473,11 @@ function _resolveCompanyAndInit() {
         _wireCompanyPortalLinks();
         if (typeof window._fbOnLogin === 'function') window._fbOnLogin();
       }).catch(function(err) {
-        console.error('[tm-helpers] adminAccess lookup failed:', err);
+        console.error('[tm-helpers] users/companyId lookup failed:', err);
         if (typeof window._fbOnLogin === 'function') window._fbOnLogin();
       });
     }).catch(function(err) {
-      console.error('[tm-helpers] superAdmins lookup failed:', err);
+      console.error('[tm-helpers] /api/sa/me failed:', err);
       if (typeof window._fbOnLogin === 'function') window._fbOnLogin();
     });
   });

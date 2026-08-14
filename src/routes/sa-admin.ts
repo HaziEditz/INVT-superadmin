@@ -16,6 +16,7 @@ import {
 } from '../utils';
 import { provisionCompanyStripeConnect } from '../lib/stripeConnectCompany';
 import { saViewSessions, genToken, persistSessionDirect, unpersistSessionDirect } from '../sessions';
+import { requireFirebaseUser, requireSa } from '../lib/saAuth';
 
 const router = Router();
 
@@ -32,10 +33,15 @@ async function grantOwnerFirebaseAccess(cid: string, uid: string, companyName: s
 }
 
 // ── Firebase Proxy ────────────────────────────────────────────────────────────
-// Sensitive paths that must NEVER be read via the unauthenticated /api/fb
-// proxy. Any read/write whose path starts with one of these segments is
-// rejected — these are admin-only paths that should be accessed through
-// dedicated authenticated endpoints, not the generic browser-side proxy.
+// Auth model (hardened Phase A): browser must send
+//   Authorization: Bearer <Firebase ID token>
+// Server verifies the token and requires superAdmins/{uid} === true — same
+// pattern as /api/sa-wallet and TM Settlement / Clean Scan. The DB secret used
+// by fbRead/fbWrite still bypasses RTDB rules; the gate below is what stops
+// anonymous internet callers from using this proxy.
+//
+// Sensitive paths that must NEVER be read via /api/fb even for SA:
+// dedicated authenticated endpoints only (wallet / stripe / superAdmins list).
 //
 // Added 2026-05-18 after code review flagged a UID-enumeration auth bypass:
 //   - superAdmins/* exposed the list of admin UIDs, which any caller could
@@ -56,7 +62,16 @@ function isUnsafeFbPath(p: string): boolean {
   return segs.some((s) => !String(s || '').trim());
 }
 
-router.get('/api/fb', (req, res) => {
+/** Who am I — any signed-in Firebase user. Used by tm-helpers bootstrap (SA vs owner). */
+router.get('/api/sa/me', async (req, res) => {
+  const auth = await requireFirebaseUser(req);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error, isSA: false });
+  return res.json({ ok: true, uid: auth.uid, isSA: !!auth.isSA });
+});
+
+router.get('/api/fb', async (req, res) => {
+  const auth = await requireSa(req);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
   let p = ((req.query.path as string) || '').replace(/^\/+/, '');
   if (!p) return res.status(400).json({ error: 'missing path' });
   if (isBlockedFbPath(p)) return res.status(403).json({ error: 'Path not accessible via /api/fb — use the dedicated admin endpoint' });
@@ -76,7 +91,9 @@ router.get('/api/fb', (req, res) => {
   });
 });
 
-router.post('/api/fb', (req, res) => {
+router.post('/api/fb', async (req, res) => {
+  const auth = await requireSa(req);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
   const p = ((req.body.path as string) || '').replace(/^\/+/, '');
   const method = ((req.body.method as string) || 'PATCH').toUpperCase();
   let data = req.body.data;

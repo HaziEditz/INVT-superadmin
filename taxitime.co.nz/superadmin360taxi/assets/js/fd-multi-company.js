@@ -69,14 +69,11 @@
     prompt.innerHTML = '&#9757; Select a ' + roleLabel.toLowerCase() + ' from the dropdown above to view data.';
     wrap.insertBefore(prompt, bar.nextSibling);
 
-    // Use the server-side /api/fb proxy (admin-credentialed) instead of a
-     // direct client-side firebase read — Firebase rules deny browser reads of
-     // `superClients` for SA admins, so the previous call was returning
-     // PERMISSION_DENIED and the dropdown showed "Error loading companies".
-    fetch('/api/fb?path=' + encodeURIComponent('superClients')).then(function(r){
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.json();
-    }).then(function(data){
+    // Use the server-side /api/fb proxy (SA Bearer + DB secret) instead of a
+    // direct client-side firebase read — Firebase rules deny browser reads of
+    // `superClients` for SA admins, so the previous call was returning
+    // PERMISSION_DENIED and the dropdown showed "Error loading companies".
+    _fbGet('superClients').then(function(data){
       data = data || {};
       var sel = document.getElementById('co-sel');
       sel.innerHTML = '';
