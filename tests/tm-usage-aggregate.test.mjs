@@ -50,6 +50,50 @@ const sample = [
   },
 ];
 
+test('preferPassengerLabel keeps real names over blanks; card identity merges splits', () => {
+  assert.equal(U.preferPassengerLabel('—', 'Marianne Hodges'), 'Marianne Hodges');
+  assert.equal(U.preferPassengerLabel('Marianne Hodges', '—'), 'Marianne Hodges');
+  assert.equal(U.preferPassengerLabel('Marianne', 'Marianne Hodges'), 'Marianne Hodges');
+
+  // Newest-first order used to last-write-win a blank over a full name.
+  const mixed = [
+    {
+      tmCardNumber: '41353203',
+      tmCardName: 'Marianne Hodges',
+      tmMeterFare: 10,
+      tmSubsidyFare: 5,
+      tmPassengerPays: 5,
+      paymentType: 'Cash',
+      completedAt_ISO: '2026-08-10T02:00:00.000Z',
+    },
+    {
+      tmCardNumber: '41353203',
+      tmCardName: 'Marianne',
+      tmMeterFare: 10,
+      tmSubsidyFare: 5,
+      tmPassengerPays: 5,
+      paymentType: 'Cash',
+      completedAt_ISO: '2026-08-11T02:00:00.000Z',
+    },
+    {
+      tmCardNumber: '41353203',
+      tmMeterFare: 10,
+      tmSubsidyFare: 5,
+      tmPassengerPays: 5,
+      paymentType: 'Cash',
+      completedAt_ISO: '2026-08-12T02:00:00.000Z',
+    },
+  ];
+  const usage = U.aggregateTripUsage(mixed);
+  assert.equal(usage.byCard.length, 1);
+  assert.equal(usage.byCard[0].trips, 3);
+  assert.match(usage.byCard[0].label, /Marianne Hodges/);
+  assert.doesNotMatch(usage.byCard[0].label, /^—/);
+  assert.equal(usage.byPassenger.length, 1);
+  assert.equal(usage.byPassenger[0].trips, 3);
+  assert.equal(usage.byPassenger[0].label, 'Marianne Hodges');
+});
+
 test('client aggregate includes fare, pax, pay-type by card', () => {
   const usage = U.aggregateTripUsage(sample);
   assert.equal(usage.byCard.length, 2);
