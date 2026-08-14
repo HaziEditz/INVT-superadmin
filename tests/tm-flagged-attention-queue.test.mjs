@@ -38,16 +38,17 @@ test('TM-Flagged is labelled Attention queue with stage breakdown', () => {
   assert.match(flaggedSrc, /stageBits\.revision_needed/);
 });
 
-test('Home KPI counts status=flagged (not company_approved)', () => {
+test('Home KPI counts status=flagged with councilId (not company_approved, not orphans)', () => {
   assert.match(homeSrc, /kpi-tm-flagged/);
   assert.match(homeSrc, /Flagged Trips/);
   assert.match(homeSrc, /status=flagged/);
-  assert.match(homeSrc, /String\(st\.status\|\|''\)\.toLowerCase\(\)==='flagged'/);
-  // Count loop: increment only on flagged — must not check company_approved for the tally
+  assert.match(homeSrc, /toLowerCase\(\)!=='flagged'|toLowerCase\(\)==='flagged'/);
+  // Count loop: increment only on flagged + councilId — must not check company_approved for the tally
   const loopStart = homeSrc.indexOf('var flaggedCount = 0;');
   assert.ok(loopStart >= 0);
   const loopEnd = homeSrc.indexOf("getElementById('kpi-tm-flagged')", loopStart);
   const loop = homeSrc.slice(loopStart, loopEnd);
-  assert.match(loop, /==='flagged'/);
+  assert.match(loop, /flagged/);
+  assert.match(loop, /councilId/);
   assert.doesNotMatch(loop, /company_approved/);
 });

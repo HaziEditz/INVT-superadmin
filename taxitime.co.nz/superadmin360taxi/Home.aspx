@@ -277,14 +277,14 @@ firebase.initializeApp({apiKey:"AIzaSyDIVSI_GRYG0hCPvc9h80QXZMxwZoejctQ",authDom
     <a class="kpi" style="border-left-color:#2E7D32" href="TM-Reports.aspx">
       <span class="kpi-icon material-icons">account_balance</span>
       <div class="kpi-val" id="kpi-tm-claim">&#8230;</div>
-      <div class="kpi-lbl">Council Claim This Month</div>
+      <div class="kpi-lbl">Council Claim (meter + hoist) This Month</div>
       <div class="kpi-sub" id="kpi-tm-claim-sub">&nbsp;</div>
     </a>
     <a class="kpi" style="border-left-color:#F9A825" href="TM-Flagged.aspx">
       <span class="kpi-icon material-icons">flag</span>
       <div class="kpi-val" id="kpi-tm-flagged">&#8230;</div>
       <div class="kpi-lbl">Flagged Trips</div>
-      <div class="kpi-sub">status=flagged · open attention queue</div>
+      <div class="kpi-sub">status=flagged · with councilId · platform-wide</div>
     </a>
   </div>
 
@@ -1016,11 +1016,14 @@ function loadTmStats(){
       return r.ok ? r.amount : null;
     }
 
-    // Real flagged count (status=flagged) — was company_approved-only and showed 0 while Flagged queue had dozens.
+    // Real flagged count (status=flagged + councilId). Orphans without councilId
+    // never appear on council Flagged and must not inflate this KPI.
     var flaggedCount = 0;
     Object.values(allStatus).forEach(function(cidMap){
       Object.values(cidMap||{}).forEach(function(st){
-        if(st && String(st.status||'').toLowerCase()==='flagged') flaggedCount++;
+        if(!st || String(st.status||'').toLowerCase()!=='flagged') return;
+        if(!String(st.councilId||st.tmCouncilId||'').trim()) return;
+        flaggedCount++;
       });
     });
     document.getElementById('kpi-tm-flagged').textContent = flaggedCount;
@@ -1068,34 +1071,44 @@ function loadTmStats(){
             // Multi-passenger TM: split fare per card, apply cap per card, sum
             // Per NZ TM rules confirmed by passenger app dev — single-cap under-claims on group rides
             var tmPaxList = Array.isArray(j.tmPassengers) ? j.tmPassengers : [];
-            var sub;
+            var meterSub;
             var subConfigMissing = false;
             if (tmPaxList.length > 1) {
               var farePerCard = fare / tmPaxList.length;
-              sub = tmPaxList.reduce(function(total, pax) {
+              meterSub = tmPaxList.reduce(function(total, pax) {
                 var paxCard = cards[pax.cardNumber||''] || {};
                 var paxCouncil = pax.councilId || paxCard.councilId || councilId;
                 var part = calcSub(farePerCard, paxCouncil);
                 if (part == null) { subConfigMissing = true; return total; }
                 return total + part;
               }, 0);
-              if (subConfigMissing) sub = null;
+              if (subConfigMissing) meterSub = null;
             } else {
-              var storedSub = parseFloat(j.tmCouncilAmount||j.tmSubsidy||j.tmSubsidyFare||0);
-              if (storedSub > 0) {
-                sub = storedSub;
+              // Align with council subsidyOf: prefer tmSubsidyFare (meter-only);
+              // never treat combined tmSubsidy as meter then add hoist again.
+              if (typeof subsidyOf === 'function') {
+                meterSub = subsidyOf(j);
+              } else if (j.tmSubsidyFare != null && j.tmSubsidyFare !== '') {
+                meterSub = parseFloat(j.tmSubsidyFare) || 0;
               } else {
-                sub = calcSub(fare, councilId);
-                if (sub == null) subConfigMissing = true;
+                var storedSub = parseFloat(j.tmCouncilAmount||j.tmSubsidy||0);
+                var hoistPeek = parseFloat(j.tmSubsidyHoist || j.hoistTotal || j.hoistFee || 0) || 0;
+                if (storedSub > 0) {
+                  meterSub = Math.max(0, +(storedSub - hoistPeek).toFixed(2));
+                } else {
+                  meterSub = calcSub(fare, councilId);
+                  if (meterSub == null) subConfigMissing = true;
+                }
               }
             }
-            // Prefer stored hoist $; never invent count × $5.
-            var hoistRes = window.resolveHoistAmount
-              ? window.resolveHoistAmount(j, councils[councilId] || {})
-              : { amount: parseFloat(j.tmHoistFeeTotal || j.hoistTotal || j.hoistFee || 0) || 0, configMissing: false };
-            var hoistFee = hoistRes.amount || 0;
+            var hoistFee = (typeof hoistPaysOf === 'function')
+              ? hoistPaysOf(j)
+              : (window.resolveHoistAmount
+                ? (window.resolveHoistAmount(j, councils[councilId] || {}).amount || 0)
+                : (parseFloat(j.tmHoistFeeTotal || j.hoistTotal || j.hoistFee || 0) || 0));
             tmTrips++;
-            if (sub != null) tmClaim += sub + hoistFee;
+            // Total council responsibility = meter %/cap + flat hoist (once).
+            if (meterSub != null && !subConfigMissing) tmClaim += meterSub + hoistFee;
             // If subsidy config missing and no stored amount, count the trip but do not invent claim $.
           });
           done++;

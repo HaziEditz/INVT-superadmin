@@ -862,6 +862,21 @@ function hoistPaysOf(t) {
   return parseFloat(t.tmSubsidyHoist != null ? t.tmSubsidyHoist : (t.hoistTotal != null ? t.hoistTotal : (t.hoistCost || 0))) || 0;
 }
 
+/**
+ * Meter %/cap council claim only — never includes flat hoist.
+ * Prefer tmSubsidyFare; legacy combined tmSubsidy/tmCouncilPays falls back to combined − hoist.
+ * (Same rules as src/lib/tmUnifiedTrips.ts subsidyOf — keep in sync.)
+ */
+function subsidyOf(t) {
+  if (!t) return 0;
+  var hoist = hoistPaysOf(t);
+  if (t.tmSubsidyFare != null && t.tmSubsidyFare !== '') {
+    return parseFloat(String(t.tmSubsidyFare)) || 0;
+  }
+  var combined = parseFloat(String(t.tmSubsidy != null ? t.tmSubsidy : (t.tmCouncilPays || 0))) || 0;
+  return Math.max(0, +(combined - hoist).toFixed(2));
+}
+
 /** Prefer tmHoists[].length, then tmHoistCount / hoistCount, then $ → 1. */
 function hoistUsesOf(t) {
   if (!t) return 0;
@@ -870,6 +885,10 @@ function hoistUsesOf(t) {
   if (isFinite(counted) && counted > 0) return counted;
   return hoistPaysOf(t) > 0 ? 1 : 0;
 }
+
+window.subsidyOf = subsidyOf;
+window.hoistPaysOf = hoistPaysOf;
+window.hoistUsesOf = hoistUsesOf;
 
 /** Human labels for anomaly / flag reason codes (council + SA + owner). */
 var TM_FLAG_REASON_LABELS = {

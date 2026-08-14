@@ -38,6 +38,8 @@ export type AnomalyTripLike = {
   bookingId?: string;
   id?: string;
   status?: string;
+  councilId?: string;
+  tmCouncilId?: string;
   tmCardNumber?: string;
   tmVoucherNo?: string;
   cardNumber?: string;
@@ -112,6 +114,12 @@ function num(v: unknown, fallback = 0): number {
 
 function str(v: unknown): string {
   return v == null ? '' : String(v).trim();
+}
+
+/** Council ownership for claim/flag rows — required for council portal visibility. */
+export function resolveTripCouncilId(trip: AnomalyTripLike | null | undefined): string {
+  if (!trip || typeof trip !== 'object') return '';
+  return str(trip.councilId || trip.tmCouncilId || '');
 }
 
 export function toTripMs(raw: unknown): number {
@@ -677,6 +685,10 @@ export function applyAnomalyScan(
         // Keep revision_needed; refresh flag metadata for owner warning.
         patches.push({ cid, rawKey, patch: { ...base } });
       } else if (status === 'flagged' || status === 'submitted' || status === 'pending' || status === 'company_approved') {
+        const councilId = resolveTripCouncilId(trip);
+        // Never create/refresh flagged rows without councilId — those orphans
+        // inflate SA Home KPIs and never appear on council Flagged tab.
+        if (!councilId) continue;
         patches.push({
           cid,
           rawKey,
@@ -684,6 +696,7 @@ export function applyAnomalyScan(
             ...base,
             status: 'flagged',
             flaggedAt: now,
+            councilId,
           },
         });
       }
