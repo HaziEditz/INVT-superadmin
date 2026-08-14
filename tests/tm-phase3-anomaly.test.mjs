@@ -744,3 +744,30 @@ test('owner panel shows flagged edit-warning on revision_needed and flagged', ()
   assert.match(adminSrc, /st === 'flagged'/);
   assert.match(adminSrc, /tmFlagReasonLabels/);
 });
+
+test('late upload alone does not flag — anomaly reasons have no sync-lag code', () => {
+  assert.equal(
+    detectTripAnomalies({
+      bookingId: 8692609001,
+      companyId: '860869',
+      totalFare: 40,
+      distanceKm: 5.2,
+      durationMin: 12,
+      completedAt: Date.parse('2026-08-14T01:00:00.000Z'),
+      completedAt_ISO: '2026-08-14T01:00:00.000Z',
+      // uploaded 2h later — must not invent a late_upload reason
+      submittedAt: Date.parse('2026-08-14T03:00:00.000Z'),
+      isTotalMobility: true,
+      tmCardNumber: '78628348',
+      paymentType: 'Cash',
+      pickupLat: -46.41,
+      pickupLng: 168.35,
+      dropLat: -46.42,
+      dropLng: 168.36,
+    }).reasons.length,
+    0,
+  );
+  assert.doesNotMatch(anomalySrc, /late[_ ]?upload|synced[_ ]?late|offline[_ ]?complete/i);
+  assert.match(anomalySrc, /fare_mismatch/);
+  assert.match(anomalySrc, /implausible_short_trip/);
+});
