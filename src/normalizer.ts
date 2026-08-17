@@ -1,5 +1,5 @@
 /**
- * Data Normalizer — runs every 30 s on the SA server.
+ * Data Normalizer — runs every 60 s on the SA server.
  *
  * Silently corrects known bad values and fires notifications:
  *
@@ -15,19 +15,51 @@
  *  3. bookingNotifications: when a new booking lands in pendingjobs from
  *     web or passenger app, send confirmation email to client and
  *     notification email to company owner (fires once per booking).
+ *
+ * Download hygiene (2026-08):
+ *  - One shared online + pendingjobs load per cycle (was 1+3 root reads).
+ *  - pendingjobs loaded per operational cid after shallow key list — skips
+ *    load-test tenants (bwtest*) that dominate payload size.
+ *  - Interval 60s (was 30s); still fast enough for cash paymentStatus heal
+ *    and scheduled-booking email flags.
  */
 
 import { fbReadP, fbWriteP } from './firebase';
 import { getResendClient } from './utils';
+import { isSyntheticLoadTestCompanyId } from './lib/loadTestTenants';
 
-const INTERVAL_MS = 30_000;
+const INTERVAL_MS = 60_000;
 const FROM_EMAIL   = 'BookaWaka <info@bookawaka.com>';
+
+/** Shallow key list, then per-cid GET for non-load-test tenants only. */
+async function loadPendingJobsOperational(): Promise<Record<string, any>> {
+  const shallow = await fbReadP('pendingjobs?shallow=true').catch(() => null);
+  if (!shallow || typeof shallow !== 'object') return {};
+  const cids = Object.keys(shallow).filter((cid) => !isSyntheticLoadTestCompanyId(cid));
+  const out: Record<string, any> = {};
+  await Promise.all(
+    cids.map(async (cid) => {
+      const data = await fbReadP('pendingjobs/' + cid).catch(() => null);
+      if (data && typeof data === 'object') out[cid] = data;
+    }),
+  );
+  return out;
+}
+
+function filterOnlineOperational(onlineRoot: any): Record<string, any> {
+  if (!onlineRoot || typeof onlineRoot !== 'object') return {};
+  const out: Record<string, any> = {};
+  for (const cid of Object.keys(onlineRoot)) {
+    if (isSyntheticLoadTestCompanyId(cid)) continue;
+    out[cid] = onlineRoot[cid];
+  }
+  return out;
+}
 
 // ─── 1. vehiclestatus normalizer ─────────────────────────────────────────────
 
-async function normalizeVehicleStatus(): Promise<void> {
+async function normalizeVehicleStatus(onlineRoot: Record<string, any>): Promise<void> {
   try {
-    const onlineRoot = await fbReadP('online');
     if (!onlineRoot || typeof onlineRoot !== 'object') return;
 
     const patches: Promise<any>[] = [];
@@ -63,9 +95,8 @@ async function normalizeVehicleStatus(): Promise<void> {
 
 // ─── 2. paymentStatus normalizer ─────────────────────────────────────────────
 
-async function normalizePaymentStatus(): Promise<void> {
+async function normalizePaymentStatus(pendingRoot: Record<string, any>): Promise<void> {
   try {
-    const pendingRoot = await fbReadP('pendingjobs');
     if (!pendingRoot || typeof pendingRoot !== 'object') return;
 
     const patches: Promise<any>[] = [];
@@ -175,9 +206,8 @@ function buildOwnerEmail(job: any, jobId: string, companyName: string): string {
 </div>`.trim();
 }
 
-async function normalizeBookingNotifications(): Promise<void> {
+async function normalizeBookingNotifications(pendingRoot: Record<string, any>): Promise<void> {
   try {
-    const pendingRoot = await fbReadP('pendingjobs');
     if (!pendingRoot || typeof pendingRoot !== 'object') return;
 
     const resend = await getResendClient();
@@ -277,9 +307,8 @@ async function normalizeBookingNotifications(): Promise<void> {
 // says Completed or Cancelled, the dispatch console never removed it.
 // These ghost records cause auto-assign to re-offer already-finished jobs.
 
-async function normalizeStalePendingJobs(): Promise<void> {
+async function normalizeStalePendingJobs(pendingRoot: Record<string, any>): Promise<void> {
   try {
-    const pendingRoot = await fbReadP('pendingjobs');
     if (!pendingRoot || typeof pendingRoot !== 'object') return;
 
     const deletions: Promise<any>[] = [];
@@ -320,16 +349,21 @@ async function normalizeStalePendingJobs(): Promise<void> {
 // ─── Runner ───────────────────────────────────────────────────────────────────
 
 async function runNormalizer(): Promise<void> {
+  const [onlineRaw, pendingRoot] = await Promise.all([
+    fbReadP('online').catch(() => null),
+    loadPendingJobsOperational(),
+  ]);
+  const onlineRoot = filterOnlineOperational(onlineRaw);
   await Promise.all([
-    normalizeVehicleStatus(),
-    normalizePaymentStatus(),
-    normalizeBookingNotifications(),
-    normalizeStalePendingJobs()
+    normalizeVehicleStatus(onlineRoot),
+    normalizePaymentStatus(pendingRoot),
+    normalizeBookingNotifications(pendingRoot),
+    normalizeStalePendingJobs(pendingRoot),
   ]);
 }
 
 export function startNormalizer(): void {
-  console.log('[normalizer] started — polling every 30 s');
+  console.log('[normalizer] started — polling every 60 s (per-cid pendingjobs, load-test excluded)');
   runNormalizer();
   setInterval(runNormalizer, INTERVAL_MS);
 }
