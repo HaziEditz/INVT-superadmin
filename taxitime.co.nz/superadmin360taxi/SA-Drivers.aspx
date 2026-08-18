@@ -424,6 +424,60 @@ function fmtDate(ts) {
 }
 function coName(cid) { return cid ? (allCompanies[cid] && allCompanies[cid].name || cid) : '—'; }
 
+/** Per-company Driver ID helpers (D001…). Must not reuse another driver's id at dest. */
+function normalizeDriverIdSa(id) {
+  var s = String(id == null ? '' : id).trim().replace(/[\s\-_.]/g, '');
+  var m = s.match(/^([dD])(\d+)$/);
+  if (m) return 'D' + String(parseInt(m[2], 10)).padStart(3, '0');
+  return '';
+}
+function usedDriverIdsAtCompany(cid, excludeUid) {
+  var used = {};
+  allDrivers.forEach(function(d) {
+    if (String(d.companyId || '') !== String(cid)) return;
+    if (excludeUid && d._uid === excludeUid) return;
+    var id = normalizeDriverIdSa(d.id || d.driverId || d.DriverId);
+    if (id) used[id] = true;
+  });
+  return used;
+}
+function allocateNextDriverIdSa(usedMap) {
+  var n = 1;
+  for (;;) {
+    var candidate = 'D' + String(n).padStart(3, '0');
+    if (!usedMap[candidate]) return candidate;
+    n += 1;
+    if (n > 9999) throw new Error('No free driver ID slots');
+  }
+}
+/** Flat + nested membership move with a fresh destination Driver ID. */
+function commitDriverTransfer(d, fromCid, toCid) {
+  var uid = d._uid;
+  var used = usedDriverIdsAtCompany(toCid, uid);
+  var newId = allocateNextDriverIdSa(used);
+  var profile = {};
+  Object.keys(d).forEach(function(k) {
+    if (k === '_uid' || k === '_key' || k === '_sources') return;
+    profile[k] = d[k];
+  });
+  profile.companyId = toCid;
+  profile.id = newId;
+  profile.driverId = newId;
+  profile.DriverId = newId;
+  var updates = {};
+  updates['drivers/' + uid + '/companyId'] = toCid;
+  updates['drivers/' + uid + '/id'] = newId;
+  updates['drivers/' + uid + '/driverId'] = newId;
+  updates['drivers/' + fromCid + '/' + uid] = null;
+  updates['drivers/' + toCid + '/' + uid] = profile;
+  return db.ref().update(updates).then(function() {
+    d.companyId = toCid;
+    d.id = newId;
+    d.driverId = newId;
+    return newId;
+  });
+}
+
 /* ───── tabs ───── */
 function switchTab(name) {
   ['drivers','transfers'].forEach(function(t) {
@@ -853,15 +907,17 @@ function executeManualTransfer() {
       }
     }
 
-    // Execute transfer
-    var patch = { companyId: newCid };
-    return db.ref('drivers/'+currentDriverUid).update(patch).then(function(){
+    // Execute transfer — fresh destination Driver ID + nested leaf move
+    var fromDriverId = normalizeDriverIdSa(d.id || d.driverId || d.DriverId);
+    return commitDriverTransfer(d, fromCid, newCid).then(function(newId){
       // Log the transfer
       return db.ref('driverTransferRequests').push({
         driverUid: currentDriverUid,
         driverName: driverName(d),
         fromCompanyId: fromCid,
         toCompanyId: newCid,
+        fromDriverId: fromDriverId || null,
+        toDriverId: newId,
         ownsVehicle: ownsVehicle,
         vehicleTransferred: transferVehicle,
         vehiclePlate: plate,
@@ -872,12 +928,11 @@ function executeManualTransfer() {
         resolvedAt: new Date().toISOString()
       });
     }).then(function(){
-      d.companyId = newCid;
       msg.style.color = '#2E7D32';
-      msg.textContent = 'Transfer complete.';
+      msg.textContent = 'Transfer complete (new Driver ID: '+(d.id||'')+').';
       applyFilters();
       sendTransferEmail(d, fromCid, newCid, driverVehicle(d), plate, note);
-      setTimeout(function(){ closeModal(); showNotice(driverName(d)+' transferred to '+coName(newCid)+'.','ok'); }, 800);
+      setTimeout(function(){ closeModal(); showNotice(driverName(d)+' transferred to '+coName(newCid)+' as '+esc(d.id)+'.','ok'); }, 800);
     });
   }).catch(function(err){
     msg.style.color = '#C62828';
@@ -975,23 +1030,26 @@ function approveTransfer(rid) {
   if (!r) return;
   var d = allDrivers.find(function(x){ return x._uid===r.driverUid; });
   if (!d) { showNotice('Driver not found in local data.','err'); return; }
+  var fromCid = r.fromCompanyId || d.companyId;
+  var toCid = r.toCompanyId;
+  if (!toCid) { showNotice('Transfer missing destination company.','err'); return; }
 
-  db.ref('drivers/'+r.driverUid).update({ companyId: r.toCompanyId }).then(function(){
+  commitDriverTransfer(d, fromCid, toCid).then(function(newId){
     return db.ref('driverTransferRequests/'+rid).update({
       status: 'approved',
-      resolvedAt: new Date().toISOString()
+      resolvedAt: new Date().toISOString(),
+      toDriverId: newId
     });
   }).then(function(){
-    d.companyId = r.toCompanyId;
     allTransferRequests[rid].status = 'approved';
     allTransferRequests[rid].resolvedAt = new Date().toISOString();
     applyFilters();
     renderTransferRequests();
     updatePendingBadge();
-    showNotice((r.driverName||'Driver')+' transferred to '+coName(r.toCompanyId)+'.','ok');
-    sendTransferEmail(d, r.fromCompanyId, r.toCompanyId, driverVehicle(d), driverPlate(d), r.note);
+    showNotice((r.driverName||'Driver')+' transferred to '+coName(toCid)+' as '+(d.id||'')+'.','ok');
+    sendTransferEmail(d, fromCid, toCid, driverVehicle(d), driverPlate(d), r.note);
     var auditKey = 'LOG'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
-    db.ref('superAuditLog/'+auditKey).set({action:'driver_transfer_approved',actor:(firebase.auth().currentUser||{}).email||'sa-admin',cid:r.toCompanyId,cidName:coName(r.toCompanyId),detail:(r.driverName||r.driverUid||'Driver')+' transferred from '+coName(r.fromCompanyId)+' to '+coName(r.toCompanyId),ts:Date.now()});
+    db.ref('superAuditLog/'+auditKey).set({action:'driver_transfer_approved',actor:(firebase.auth().currentUser||{}).email||'sa-admin',cid:toCid,cidName:coName(toCid),detail:(r.driverName||r.driverUid||'Driver')+' transferred from '+coName(fromCid)+' to '+coName(toCid)+' as '+(d.id||''),ts:Date.now()});
   }).catch(function(err){ showNotice('Error: '+String(err),'err'); });
 }
 
